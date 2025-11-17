@@ -1,10 +1,10 @@
 .PHONY: iac iac-validate ansible k8s
 
 iac:
-	@cd iac && terraform init && terraform plan
+	@cd iac && tofu init && tofu plan
 
 iac-validate:
-	@cd iac && terraform validate
+	@cd iac && tofu validate
 
 ansible:
 	@ansible-playbook ansible/playbooks/bootstrap.yaml
