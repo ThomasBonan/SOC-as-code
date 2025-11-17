@@ -7,7 +7,7 @@ terraform {
   }
 }
 provider "proxmox" {
-  PROXMOX_VE_ENDPOINT      = var.virtual_environment_endpoint
-  PROXMOX_VE_API_TOKEN     = var.virtual_environment_api_token
-  PROXMOX_VE_INSECURE      = true
+  endpoint      = var.virtual_environment_endpoint
+  api_token     = var.virtual_environment_api_token
+  insecure      = true
 }
