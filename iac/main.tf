@@ -20,7 +20,7 @@ resource "proxmox_vm_qemu" "k8s_master" {
   scsihw = "virtio-scsi-pci"
   disks {
     scsi{
-      scis0{
+      scsi0{
         size    = "${var.master_sizing.disk_gb}G"
         storage = var.storage_id
         type    = "disk"
@@ -62,7 +62,7 @@ resource "proxmox_vm_qemu" "k8s_worker" {
   scsihw = "virtio-scsi-pci"
   disks {
     scsi{
-      scis0{
+      scsi0{
         size    = "${var.worker_sizing.disk_gb}G"
         storage = var.storage_id
         type    = "disk"
