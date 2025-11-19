@@ -24,6 +24,7 @@ resource "proxmox_vm_qemu" "k8s_master" {
       scsi0{
         disk{
           id = 0
+          slot = "scsi0"
           size    = "${var.master_sizing.disk_gb}G"
           storage = var.storage_id
           type    = "disk"
@@ -76,10 +77,10 @@ resource "proxmox_vm_qemu" "k8s_worker" {
       scsi0{
         disk{
           id = 0
+          slot = "scsi0"
           size    = "${var.worker_sizing.disk_gb}G"
           storage = var.storage_id
           type    = "disk"
-          passthrough = false
           emulatessd = true
         }
       }
