@@ -15,16 +15,20 @@ resource "proxmox_vm_qemu" "k8s_master" {
   agent  = var.enable_qemu_agent ? 1 : 0
   cores  = var.master_sizing.cores
   memory = var.master_sizing.memory_mb
-  vcpus    = var.master_sizing.cpu_type
+  cpu_type    = var.master_sizing.cpu_type
+  sockets = 1
 
   scsihw = "virtio-scsi-pci"
-  disks {
+  disk {
     scsi{
       scsi0{
-        size    = "${var.master_sizing.disk_gb}G"
-        storage = var.storage_id
-        type    = "disk"
-        passthrough = false
+        disk{
+          id = 0
+          size    = "${var.master_sizing.disk_gb}G"
+          storage = var.storage_id
+          type    = "disk"
+          emulatessd = true
+        }
       }
     }
   }
@@ -40,6 +44,12 @@ resource "proxmox_vm_qemu" "k8s_master" {
 
   cicustom  = var.cloudinit_snippet
   balloon   = var.ballooning ? 1 : 0
+
+  provisioner "remote-exec" {
+    inline = [
+      "ip a"
+    ]
+  }
 }
 
 # --- WORKERS ---
@@ -57,16 +67,21 @@ resource "proxmox_vm_qemu" "k8s_worker" {
   agent  = var.enable_qemu_agent ? 1 : 0
   cores  = var.worker_sizing.cores
   memory = var.worker_sizing.memory_mb
-  vcpus    = var.worker_sizing.cpu_type
+  cpu_type    = var.worker_sizing.cpu_type
+  sockets = 1
 
   scsihw = "virtio-scsi-pci"
   disks {
     scsi{
       scsi0{
-        size    = "${var.worker_sizing.disk_gb}G"
-        storage = var.storage_id
-        type    = "disk"
-        passthrough = false
+        disk{
+          id = 0
+          size    = "${var.worker_sizing.disk_gb}G"
+          storage = var.storage_id
+          type    = "disk"
+          passthrough = false
+          emulatessd = true
+        }
       }
     }
   }
@@ -82,4 +97,10 @@ resource "proxmox_vm_qemu" "k8s_worker" {
 
   cicustom  = var.cloudinit_snippet
   balloon   = var.ballooning ? 1 : 0
+
+  provisioner "remote-exec" {
+    inline = [
+      "ip a"
+    ]
+  }
 }
