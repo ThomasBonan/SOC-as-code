@@ -42,7 +42,7 @@ resource "proxmox_virtual_environment_vm" "k8s_master" {
   }
 
   clone {
-    vm_id_or_name = var.template_name    # le nom/VMID de ton template
+    vm_name = var.template_name
   }
 
   started = true
@@ -91,7 +91,7 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
   }
 
   clone {
-    vm_id_or_name = var.template_name    # le nom/VMID de ton template
+    vm_name = var.template_name
   }
 
   started = true
