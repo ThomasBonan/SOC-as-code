@@ -1,15 +1,13 @@
 terraform {
-    required_providers {
-        proxmox = {
-            source = "telmate/proxmox"
-            version = "3.0.2-rc05"
-            }
-        }
+  required_providers {
+    proxmox = {
+      source  = "bpg/proxmox"
+      version = ">= 0.70.0"
     }
+  }
+}
 provider "proxmox" {
-  pm_api_url          = var.pm_api_url
-  pm_api_token_id     = var.pm_api_token_id
-  pm_api_token_secret = var.pm_api_token_secret
-  pm_tls_insecure     = true
-  pm_parallel         = 3
+  endpoint  = replace(var.pm_api_url, "/api2/json", "/")  # https://<IP>:8006/
+  api_token = "${var.pm_api_token_id}=${var.pm_api_token_secret}"
+  insecure  = true
 }

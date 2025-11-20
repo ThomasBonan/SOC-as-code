@@ -1,67 +1,98 @@
-locals {
-  ssh_key = chomp(file(var.ssh_public_key_path))
+resource "proxmox_virtual_environment_vm" "k8s_master" {
+  name      = "k8s-master"
+  node_name = var.node_name
+  pool_id   = var.pool_id
+  tags      = var.vm_tags
+
+  cpu {
+    type  = var.master_sizing.cpu_type   # "host"
+    cores = var.master_sizing.cores
+  }
+
+  memory {
+    dedicated = var.master_sizing.memory_mb
+  }
+
+  disk {
+    interface    = "scsi0"
+    datastore_id = var.storage_id        # ex: "local"
+    size         = var.master_sizing.disk_gb
+    file_format  = "raw"
+  }
+
+  network_device {
+    bridge = var.bridge_core             # ex: "vmbr5"
+    model  = "virtio"
+  }
+
+  operating_system { type = "l26" }
+
+  initialization {
+    datastore_id = var.storage_id
+    user_account {
+      username = var.ssh_user
+      keys     = [chomp(file(var.ssh_public_key_path))]
+    }
+    ip_config {
+      ipv4 {
+        address = var.master_ip_cidr
+        gateway = var.gateway_core
+      }
+    }
+  }
+
+  clone {
+    vm_id_or_name = var.template_name    # le nom/VMID de ton template
+  }
+
+  started = true
 }
+resource "proxmox_virtual_environment_vm" "k8s_worker" {
+  name      = "k8s-worker"
+  node_name = var.node_name
+  pool_id   = var.pool_id
+  tags      = var.vm_tags
 
-# --- MASTER ---
-resource "proxmox_vm_qemu" "k8s_master" {
-  name        = "k8s-master"
-  target_node = var.node_name
-  clone       = var.template_name
-  description = "Kubernetes Master Node"
+  cpu {
+    type  = var.worker_sizing.cpu_type   # "host"
+    cores = var.worker_sizing.cores
+  }
 
-  pool        = var.pool_id
-  tags        = join(",", var.vm_tags)
+  memory {
+    dedicated = var.worker_sizing.memory_mb
+  }
 
-  # Sizing
-  sockets = 1
-  cores   = var.master_sizing.cores
-  memory  = var.master_sizing.memory_mb
-  cpu     = var.master_sizing.cpu_type
+  disk {
+    interface    = "scsi0"
+    datastore_id = var.storage_id        # ex: "local"
+    size         = var.worker_sizing.disk_gb
+    file_format  = "raw"
+  }
 
-  balloon = var.ballooning ? 1 : 0
-  agent   = var.enable_qemu_agent ? 1 : 0
+  network_device {
+    bridge = var.bridge_core             # ex: "vmbr5"
+    model  = "virtio"
+  }
 
-  # Disque (telmate: pas de bloc disk{} ; on déclare scsi0 directement)
-  scsihw = "virtio-scsi-pci"
-  scsi0  = "${var.storage_id}:${var.master_sizing.disk_gb}"
+  operating_system { type = "l26" }
 
-  # Réseau (telmate: pas de bloc network{} ; on déclare net0 directement)
-  net0   = "virtio,bridge=${var.bridge_core}"
+  initialization {
+    datastore_id = var.storage_id
+    user_account {
+      username = var.ssh_user
+      keys     = [chomp(file(var.ssh_public_key_path))]
+    }
+    ip_config {
+      ipv4 {
+        address = var.worker_ip_cidr
+        gateway = var.gateway_core
+      }
+    }
+  }
 
-  # Cloud-init
-  ipconfig0 = "ip=${var.master_ip_cidr},gw=${var.gateway_core}"
-  sshkeys   = local.ssh_key
-  cicustom  = var.cloudinit_snippet
+  clone {
+    vm_id_or_name = var.template_name    # le nom/VMID de ton template
+  }
 
-  # Évite les provisioners ici (préférence: Ansible après)
-}
-
-# --- WORKERS ---
-resource "proxmox_vm_qemu" "k8s_worker" {
-  for_each    = toset(var.worker_ips_cidr)
-
-  name        = "k8s-worker-${index(var.worker_ips_cidr, each.value)+1}"
-  target_node = var.node_name
-  clone       = var.template_name
-  description = "Kubernetes Worker Node"
-
-  pool        = var.pool_id
-  tags        = join(",", var.vm_tags)
-
-  sockets = 1
-  cores   = var.worker_sizing.cores
-  memory  = var.worker_sizing.memory_mb
-  cpu     = var.worker_sizing.cpu_type
-
-  balloon = var.ballooning ? 1 : 0
-  agent   = var.enable_qemu_agent ? 1 : 0
-
-  scsihw = "virtio-scsi-pci"
-  scsi0  = "${var.storage_id}:${var.worker_sizing.disk_gb}"
-
-  net0   = "virtio,bridge=${var.bridge_core}"
-
-  ipconfig0 = "ip=${each.value},gw=${var.gateway_core}"
-  sshkeys   = local.ssh_key
-  cicustom  = var.cloudinit_snippet
+  started = true
 }
