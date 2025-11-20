@@ -45,6 +45,12 @@ variable "template_name" {
   default     = "ubuntu-24.04-ci"
 }
 
+variable "template_vmid" {
+  type        = number
+  description = "VMID du template cloud-init Proxmox (ex: 9000)"
+  default     = 9000
+}
+
 variable "enable_qemu_agent" {
   type        = bool
   description = "Activer l'agent QEMU côté VM"
