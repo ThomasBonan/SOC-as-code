@@ -7,44 +7,33 @@ resource "proxmox_vm_qemu" "k8s_master" {
   name        = "k8s-master"
   target_node = var.node_name
   clone       = var.template_name
-  description  = "Kubernetes Master Node"
+  description = "Kubernetes Master Node"
 
   pool        = var.pool_id
   tags        = join(",", var.vm_tags)
 
-  agent  = var.enable_qemu_agent ? 1 : 0
-  cores  = var.master_sizing.cores
-  memory = var.master_sizing.memory_mb
-  cpu_type  = var.master_sizing.cpu_type
+  # Sizing
   sockets = 1
+  cores   = var.master_sizing.cores
+  memory  = var.master_sizing.memory_mb
+  cpu     = var.master_sizing.cpu_type
 
-  scsi_hardware = "virtio-scsi-single"
-  disk {
-    interface    = "scsi0"
-    datastore_id = 0
-    size    = var.master_sizing.disk_gb
-    storage = var.storage_id
-    discard      = "ignore"
-    emulatessd = true
-  }
+  balloon = var.ballooning ? 1 : 0
+  agent   = var.enable_qemu_agent ? 1 : 0
 
-  network {
-    id = 0
-    model  = "virtio"
-    bridge = var.bridge_core
-  }
+  # Disque (telmate: pas de bloc disk{} ; on déclare scsi0 directement)
+  scsihw = "virtio-scsi-pci"
+  scsi0  = "${var.storage_id}:${var.master_sizing.disk_gb}"
 
+  # Réseau (telmate: pas de bloc network{} ; on déclare net0 directement)
+  net0   = "virtio,bridge=${var.bridge_core}"
+
+  # Cloud-init
   ipconfig0 = "ip=${var.master_ip_cidr},gw=${var.gateway_core}"
   sshkeys   = local.ssh_key
-
   cicustom  = var.cloudinit_snippet
-  balloon   = var.ballooning ? 1 : 0
 
-  provisioner "remote-exec" {
-    inline = [
-      "ip a"
-    ]
-  }
+  # Évite les provisioners ici (préférence: Ansible après)
 }
 
 # --- WORKERS ---
@@ -54,42 +43,25 @@ resource "proxmox_vm_qemu" "k8s_worker" {
   name        = "k8s-worker-${index(var.worker_ips_cidr, each.value)+1}"
   target_node = var.node_name
   clone       = var.template_name
-  description  = "Kubernetes Worker Node"
+  description = "Kubernetes Worker Node"
 
   pool        = var.pool_id
   tags        = join(",", var.vm_tags)
 
-  agent  = var.enable_qemu_agent ? 1 : 0
-  cores  = var.worker_sizing.cores
-  memory = var.worker_sizing.memory_mb
-  cpu_type    = var.worker_sizing.cpu_type
   sockets = 1
+  cores   = var.worker_sizing.cores
+  memory  = var.worker_sizing.memory_mb
+  cpu     = var.worker_sizing.cpu_type
 
-  scsi_hardware = "virtio-scsi-single"
-  disk {
-    interface    = "scsi0"
-    datastore_id = 0
-    size    = var.worker_sizing.disk_gb
-    storage = var.storage_id
-    discard      = "ignore"
-    emulatessd = true
-  }
+  balloon = var.ballooning ? 1 : 0
+  agent   = var.enable_qemu_agent ? 1 : 0
 
-  network {
-    id = 0
-    model  = "virtio"
-    bridge = var.bridge_core
-  }
+  scsihw = "virtio-scsi-pci"
+  scsi0  = "${var.storage_id}:${var.worker_sizing.disk_gb}"
+
+  net0   = "virtio,bridge=${var.bridge_core}"
 
   ipconfig0 = "ip=${each.value},gw=${var.gateway_core}"
   sshkeys   = local.ssh_key
-
   cicustom  = var.cloudinit_snippet
-  balloon   = var.ballooning ? 1 : 0
-
-  provisioner "remote-exec" {
-    inline = [
-      "ip a"
-    ]
-  }
 }
