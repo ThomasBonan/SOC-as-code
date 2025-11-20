@@ -15,23 +15,17 @@ resource "proxmox_vm_qemu" "k8s_master" {
   agent  = var.enable_qemu_agent ? 1 : 0
   cores  = var.master_sizing.cores
   memory = var.master_sizing.memory_mb
-  cpu_type    = var.master_sizing.cpu_type
+  cpu_type  = var.master_sizing.cpu_type
   sockets = 1
 
-  scsihw = "virtio-scsi-pci"
+  scsi_hardware = "virtio-scsi-single"
   disk {
-    scsi{
-      scsi0{
-        disk{
-          id = 0
-          slot = "scsi0"
-          size    = "${var.master_sizing.disk_gb}G"
-          storage = var.storage_id
-          type    = "disk"
-          emulatessd = true
-        }
-      }
-    }
+    interface    = "scsi0"
+    datastore_id = 0
+    size    = var.master_sizing.disk_gb
+    storage = var.storage_id
+    discard      = "ignore"
+    emulatessd = true
   }
 
   network {
@@ -71,20 +65,14 @@ resource "proxmox_vm_qemu" "k8s_worker" {
   cpu_type    = var.worker_sizing.cpu_type
   sockets = 1
 
-  scsihw = "virtio-scsi-pci"
-  disks {
-    scsi{
-      scsi0{
-        disk{
-          id = 0
-          slot = "scsi0"
-          size    = "${var.worker_sizing.disk_gb}G"
-          storage = var.storage_id
-          type    = "disk"
-          emulatessd = true
-        }
-      }
-    }
+  scsi_hardware = "virtio-scsi-single"
+  disk {
+    interface    = "scsi0"
+    datastore_id = 0
+    size    = var.worker_sizing.disk_gb
+    storage = var.storage_id
+    discard      = "ignore"
+    emulatessd = true
   }
 
   network {
