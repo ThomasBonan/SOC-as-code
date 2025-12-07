@@ -1,3 +1,4 @@
+---
 # Adresse du control-plane (MVP: IP unique du master)
 control_plane_endpoint: "10.0.20.10:6443"   # IP:port stable pour les joins
 

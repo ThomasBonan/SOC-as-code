@@ -1,3 +1,4 @@
+---
 # --- Versions & cluster ---
 cluster_name: soc-k8s
 kubernetes_version: "v1.30.4"        # version pinning kubeadm/kubelet/kubectl
