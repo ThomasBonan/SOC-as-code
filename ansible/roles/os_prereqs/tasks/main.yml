@@ -1,0 +1,35 @@
+- name: Disable swap now
+  ansible.builtin.command: swapoff -a
+  changed_when: false
+
+- name: Remove swap from fstab
+  ansible.builtin.replace:
+    path: /etc/fstab
+    regexp: '^\s*([^#]\S+\s+\S+\s+swap\s+\S+\s+\S+\s+\S+)'
+    replace: '# \1'
+
+- name: Ensure kernel modules present
+  ansible.builtin.copy:
+    dest: /etc/modules-load.d/k8s.conf
+    content: |
+      br_netfilter
+  notify: reload-sysctl
+
+- name: Sysctl for Kubernetes networking
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/99-k8s.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables = 1
+      net.ipv4.ip_forward = 1
+  notify: reload-sysctl
+
+- name: Ensure chrony installed and enabled
+  ansible.builtin.package:
+    name: chrony
+    state: present
+
+- name: Enable & start chrony
+  ansible.builtin.service:
+    name: chrony
+    state: started
+    enabled: true

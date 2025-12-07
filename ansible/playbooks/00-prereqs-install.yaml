@@ -1,0 +1,5 @@
+- hosts: all
+  become: true
+  roles:
+    - os_prereqs
+    - cri_containerd

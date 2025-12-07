@@ -5,7 +5,7 @@ kubernetes_version: "v1.30.4"        # version pinning kubeadm/kubelet/kubectl
 cri: containerd
 kubelet_cgroup_driver: systemd
 
-# --- Réseaux Kubernetes (ne doivent pas chevaucher tes réseaux Proxmox/OPNsense) ---
+# --- Réseaux Kubernetes ---
 pod_cidr: "10.244.0.0/16"            # Calico par défaut
 service_cidr: "10.96.0.0/12"
 
