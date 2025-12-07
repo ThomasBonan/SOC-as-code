@@ -1,3 +1,4 @@
+---
 - name: Add Kubernetes apt repo key
   ansible.builtin.apt_key:
     url: https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key

@@ -1,3 +1,4 @@
+---
 - name: Disable swap now
   ansible.builtin.command: swapoff -a
   changed_when: false
