@@ -1,0 +1,11 @@
+# Adresse du control-plane (MVP: IP unique du master)
+control_plane_endpoint: "10.0.20.10:6443"   # IP:port stable pour les joins
+
+# SANs (certificats API server) : mets IP/FQDN nécessaires
+apiserver_sans:
+  - "10.0.20.10"                 # IP master
+  - "k8s-master"                 # hostname local si résolu
+  - "kubernetes"                 # service DNS par défaut
+  - "kubernetes.default"
+  - "kubernetes.default.svc"
+  - "kubernetes.default.svc.cluster.local"

@@ -1,0 +1,42 @@
+# kubeadm config v1beta4 (K8s 1.30)
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: {{ kubernetes_version }}
+clusterName: {{ cluster_name }}
+
+controlPlaneEndpoint: "{{ control_plane_endpoint }}"
+networking:
+  podSubnet: "{{ pod_cidr }}"
+  serviceSubnet: "{{ service_cidr }}"
+  dnsDomain: "{{ cluster_domain }}"
+
+apiServer:
+  certSANs:
+{% for san in apiserver_sans %}
+    - "{{ san }}"
+{% endfor %}
+
+controllerManager: {}
+scheduler: {}
+
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: "{{ cri_socket }}"
+  kubeletExtraArgs:
+    cgroup-driver: "{{ kubelet_cgroup_driver }}"
+    node-ip: "{{ ansible_host }}"        # force IP si multi-NIC
+
+---
+apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+# mode: "iptables"                       # laisse par défaut; change si Cilium sans kube-proxy
+
+---
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+cgroupDriver: "{{ kubelet_cgroup_driver }}"
+clusterDNS:
+  - "{{ cluster_dns }}"
+clusterDomain: "{{ cluster_domain }}"

@@ -1,0 +1,39 @@
+# --- Versions & cluster ---
+cluster_name: soc-k8s
+kubernetes_version: "v1.30.4"        # version pinning kubeadm/kubelet/kubectl
+cri: containerd
+kubelet_cgroup_driver: systemd
+
+# --- Réseaux Kubernetes (ne doivent pas chevaucher tes réseaux Proxmox/OPNsense) ---
+pod_cidr: "10.244.0.0/16"            # Calico par défaut
+service_cidr: "10.96.0.0/12"
+
+# --- Containerd (socket kubeadm) ---
+cri_socket: "unix:///run/containerd/containerd.sock"
+
+# --- CNI (choix) ---
+cni: cilium
+
+# Cilium - MVP
+cilium_version: "1.15.6"         # par ex.
+cilium_kubeproxy_replacement: "disabled"  # MVP : on garde kube-proxy
+cilium_routing_mode: "tunnel"    # simple (VXLAN). Plus tard: "native"
+cilium_hubble_enabled: true
+cilium_hubble_ui: true
+cilium_prometheus_enabled: true   # métriques agent + operator
+
+# --- DNS du cluster ---
+cluster_dns: "10.96.0.10"            # IP kube-dns dans le service CIDR
+cluster_domain: "cluster.local"
+
+# --- MetalLB (sera utilisé dans le rôle metallb) ---
+metallb_address_pool:
+  - "10.0.30.50-10.0.30.80"          # range DMZ interne (à adapter)
+
+# --- Ingress ---
+ingress_class: "nginx"
+
+# --- Bastion (pour copier le kubeconfig si tu veux) ---
+bastion_copy_kubeconfig: true
+bastion_user: "mgmt-user"
+bastion_host: "10.0.10.10"           # mgmt-soc

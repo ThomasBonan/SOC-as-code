@@ -1,0 +1,60 @@
+name: Validate Ansible
+
+on:
+  push:
+    paths:
+      - "ansible/**"
+      - ".github/workflows/validate-ansible.yml"
+  pull_request:
+    paths:
+      - "ansible/**"
+      - ".github/workflows/validate-ansible.yml"
+
+jobs:
+  lint-and-syntax:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ansible
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('ansible/requirements.txt') }}
+          restore-keys: ${{ runner.os }}-pip-
+
+      - name: Install Ansible toolchain
+        run: |
+          python -m pip install --upgrade pip
+          pip install ansible-core ansible-lint yamllint
+
+      - name: Install Ansible Galaxy deps (if any)
+        run: |
+          test -f requirements.yml && ansible-galaxy install -r requirements.yml || echo "No requirements.yml"
+
+      - name: YAML lint
+        run: |
+          yamllint -s .
+        # Ajoute un .yamllint à la racine d'ansible/ pour contrôler les règles
+
+      - name: Ansible Lint
+        run: |
+          ansible-lint .
+        # Ajoute un .ansible-lint si tu veux ignorer/adapter certaines règles
+
+      - name: Syntax-check des playbooks
+        run: |
+          for f in playbooks/*.yml; do
+            echo "== SYNTAX CHECK $f =="
+            ansible-playbook -i inventories/k8s.ini "$f" --syntax-check
+          done
