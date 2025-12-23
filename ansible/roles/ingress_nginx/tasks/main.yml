@@ -1,20 +1,32 @@
 ---
-- name: Add ingress-nginx repo
-  community.kubernetes.helm_repository:
+- name: Add ingress-nginx repo (once)
+  kubernetes.core.helm_repository:
     name: ingress-nginx
     repo_url: https://kubernetes.github.io/ingress-nginx
   delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Update helm repos (once)
+  ansible.builtin.command: helm repo update
+  delegate_to: localhost
+  run_once: true
+  become: false
 
 - name: Install/upgrade ingress-nginx
-  community.kubernetes.helm:
+  kubernetes.core.helm:
     name: ingress-nginx
     chart_ref: ingress-nginx/ingress-nginx
     chart_version: "{{ ingress_nginx_chart_version }}"
     release_namespace: "{{ ingress_nginx_namespace }}"
     create_namespace: true
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf }}"
+    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    wait: true
+    timeout: 600
     values:
       controller:
         service:
           type: LoadBalancer
   delegate_to: localhost
+  run_once: true
+  become: false

@@ -28,12 +28,15 @@ cilium_prometheus_enabled: true   # métriques agent + operator
 cluster_dns: "10.96.0.10"            # IP kube-dns dans le service CIDR
 cluster_domain: "cluster.local"
 
-# --- MetalLB (sera utilisé dans le rôle metallb) ---
-metallb_address_pool:
-  - "10.0.30.50-10.0.30.80"          # range DMZ interne (à adapter)
+# MetalLB
+metallb_namespace: metallb-system
+metallb_version: "0.14.9"          # exemple stable
+metallb_pool_name: default-pool
+metallb_ip_range: "10.0.30.50-10.0.30.80"   # adapte à TON réseau L2
 
-# --- Ingress ---
-ingress_class: "nginx"
+# Ingress NGINX
+ingress_nginx_namespace: ingress-nginx
+ingress_nginx_chart_version: "4.11.3"       # exemple stable
 
 # --- Bastion (pour copier le kubeconfig si tu veux) ---
 bastion_copy_kubeconfig: true

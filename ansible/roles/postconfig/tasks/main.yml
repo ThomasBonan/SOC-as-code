@@ -1,16 +1,20 @@
 ---
 - name: Create smoke namespace
   kubernetes.core.k8s:
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf }}"
+    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
-      metadata: { name: smoke }
+      metadata:
+        name: smoke
+  delegate_to: localhost
+  run_once: true
+  become: false
 
 - name: Deploy echo-server + LB service
   kubernetes.core.k8s:
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf }}"
+    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
     state: present
     definition: |
       apiVersion: apps/v1
@@ -34,3 +38,6 @@
         type: LoadBalancer
         selector: { app: echo }
         ports: [{ port: 80, targetPort: 80 }]
+  delegate_to: localhost
+  run_once: true
+  become: false
