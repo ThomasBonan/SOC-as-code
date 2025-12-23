@@ -1,0 +1,6 @@
+---
+- name: Install CNI (Cilium)
+  hosts: master
+  become: false
+  roles:
+    - kube_cni

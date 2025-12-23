@@ -1,0 +1,12 @@
+---
+- name: Fail fast if join command missing
+  ansible.builtin.fail:
+    msg: "Join command not found. Run 20-control-plane.yml first."
+  when: hostvars[groups['master'][0]].kube_join_cmd is not defined
+
+- name: Join cluster (idempotent)
+  ansible.builtin.shell: >
+    {{ hostvars[groups['master'][0]].kube_join_cmd }}
+    --cri-socket {{ cri_socket }}
+  args:
+    creates: /etc/kubernetes/kubelet.conf

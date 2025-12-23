@@ -5,21 +5,6 @@ package_update: true
 packages:
   - qemu-guest-agent
 
-ssh_pwauth: false
-
-users:
-  - name: ubuntu
-    sudo: ALL=(ALL) NOPASSWD:ALL
-    shell: /bin/bash
-    lock_passwd: true
-    # Les clés SSH seront injectées par Proxmox/OpenTofu (ne rien mettre ici)
-
-growpart:
-  mode: auto
-  devices: ['/']
-
-resize_rootfs: true
-
 runcmd:
   - systemctl enable --now qemu-guest-agent
   - sed -i '/ swap / s/^/#/' /etc/fstab || true

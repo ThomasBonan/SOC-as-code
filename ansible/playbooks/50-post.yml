@@ -1,0 +1,8 @@
+---
+- name: Post-install (MetalLB + Ingress + smoke)
+  hosts: master
+  become: false
+  roles:
+    - metallb
+    - ingress_nginx
+    - postconfig

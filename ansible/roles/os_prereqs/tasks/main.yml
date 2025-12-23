@@ -1,29 +1,62 @@
 ---
+# 1) Désactiver le swap (nécessaire à kubelet)
 - name: Disable swap now
   ansible.builtin.command: swapoff -a
   changed_when: false
 
-- name: Remove swap from fstab
+- name: Ensure swap is absent in fstab
   ansible.builtin.replace:
     path: /etc/fstab
-    regexp: '^\s*([^#]\S+\s+\S+\s+swap\s+\S+\s+\S+\s+\S+)'
+    regexp: '^\s*([^#]\S+\s+\S+\s+swap\s+.*)$'
     replace: '# \1'
+  register: fstab_swap
 
-- name: Ensure kernel modules present
+# 2) Modules noyau réseau
+- name: Ensure br_netfilter and overlay are loaded
   ansible.builtin.copy:
     dest: /etc/modules-load.d/k8s.conf
+    mode: "0644"
     content: |
+      overlay
       br_netfilter
-  notify: reload-sysctl
 
-- name: Sysctl for Kubernetes networking
-  ansible.builtin.copy:
-    dest: /etc/sysctl.d/99-k8s.conf
-    content: |
-      net.bridge.bridge-nf-call-iptables = 1
-      net.ipv4.ip_forward = 1
-  notify: reload-sysctl
+- name: Modprobe required modules
+  ansible.builtin.shell: |
+    modprobe overlay || true
+    modprobe br_netfilter || true
+  changed_when: false
 
+# 3) Sysctl K8s
+- name: Kernel params for Kubernetes
+  ansible.posix.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/99-kubernetes-cri.conf
+    reload: yes
+  loop:
+    - { name: 'net.bridge.bridge-nf-call-iptables',  value: '1' }
+    - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+    - { name: 'net.ipv4.ip_forward',                  value: '1' }
+
+# 4) Paquets de base
+- name: Install base packages
+  ansible.builtin.apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+      - socat
+      - ebtables
+      - ethtool
+      - iproute2
+      - jq
+    state: present
+    update_cache: yes
+
+# 5) Chrony for time sync
 - name: Ensure chrony installed and enabled
   ansible.builtin.package:
     name: chrony

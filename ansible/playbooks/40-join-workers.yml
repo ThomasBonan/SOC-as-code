@@ -1,0 +1,6 @@
+---
+- name: Join workers to cluster
+  hosts: workers
+  become: true
+  roles:
+    - kubeadm_join_workers

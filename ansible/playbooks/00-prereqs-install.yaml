@@ -1,5 +1,6 @@
 ---
-- hosts: all
+- name: OS prereqs + containerd installation
+  hosts: all
   become: true
   roles:
     - os_prereqs

@@ -1,0 +1,37 @@
+---
+- name: Add metallb repo
+  community.kubernetes.helm_repository:
+    name: metallb
+    repo_url: https://metallb.github.io/metallb
+  delegate_to: localhost
+
+- name: Install/upgrade metallb
+  community.kubernetes.helm:
+    name: metallb
+    chart_ref: metallb/metallb
+    chart_version: "{{ metallb_version }}"
+    release_namespace: "{{ metallb_namespace }}"
+    create_namespace: true
+    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf }}"
+  delegate_to: localhost
+
+- name: Create IPAddressPool + L2Advertisement
+  kubernetes.core.k8s:
+    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf }}"
+    definition: |
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: {{ metallb_pool_name }}
+        namespace: {{ metallb_namespace }}
+      spec:
+        addresses: [ "{{ metallb_ip_range }}" ]
+      ---
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: l2adv
+        namespace: {{ metallb_namespace }}
+      spec:
+        ipAddressPools: [ "{{ metallb_pool_name }}" ]
+  delegate_to: localhost

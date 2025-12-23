@@ -3,5 +3,6 @@ collections:
   - name: ansible.posix          # sysctl, mount, etc.
   - name: community.general      # modules réseau/outil divers
   - name: community.crypto       # si tu gènes des clés/certificats
+  - name: community.kubernetes   # k8s modules si besoin plus tard
   - name: kubernetes.core        # kubectl/k8s modules si besoin plus tard
 roles: []

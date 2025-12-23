@@ -1,0 +1,6 @@
+---
+- name: Init control-plane
+  hosts: master
+  become: true
+  roles:
+    - kubeadm_control_plane
