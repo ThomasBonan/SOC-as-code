@@ -19,6 +19,7 @@
     --set kubeProxyReplacement={{ cilium_kubeproxy_replacement }}
     --set routingMode={{ cilium_routing_mode }}
     --set hubble.enabled={{ cilium_hubble_enabled | bool | lower }}
+    --set hubble.relay.enabled={{ (cilium_hubble_ui or cilium_hubble_enabled) | bool | lower }}
     --set hubble.ui.enabled={{ cilium_hubble_ui | bool | lower }}
     --set prometheus.enabled={{ cilium_prometheus_enabled | bool | lower }}
     --set ipam.mode=kubernetes
@@ -27,14 +28,21 @@
   delegate_to: localhost
   become: false
 
-- name: Wait for cilium daemonset rollout
+- name: Wait for cilium rollout
   ansible.builtin.command: kubectl -n kube-system rollout status ds/cilium --timeout=300s
   environment:
     KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
   delegate_to: localhost
   become: false
 
-- name: Wait for CoreDNS
+- name: Wait for hubble relay rollout
+  ansible.builtin.command: kubectl -n kube-system rollout status deploy/hubble-relay --timeout=300s
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+  delegate_to: localhost
+  become: false
+
+- name: Wait for coredns rollout
   ansible.builtin.command: kubectl -n kube-system rollout status deploy/coredns --timeout=300s
   environment:
     KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
