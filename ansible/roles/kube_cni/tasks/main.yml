@@ -23,6 +23,13 @@
     --set hubble.ui.enabled={{ cilium_hubble_ui | bool | lower }}
     --set prometheus.enabled={{ cilium_prometheus_enabled | bool | lower }}
     --set ipam.mode=kubernetes
+    --set hubble.relay.tolerations[0].key=node-role.kubernetes.io/control-plane
+    --set hubble.relay.tolerations[0].operator=Exists
+    --set hubble.relay.tolerations[0].effect=NoSchedule
+    --set hubble.ui.tolerations[0].key=node-role.kubernetes.io/control-plane
+    --set hubble.ui.tolerations[0].operator=Exists
+    --set hubble.ui.tolerations[0].effect=NoSchedule
+    --set operator.replicas=1
   environment:
     KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
   delegate_to: localhost
