@@ -22,7 +22,7 @@
     create_namespace: true
     kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
     wait: true
-    timeout: 600
+    timeout: "10m0s"
   delegate_to: localhost
   run_once: true
   become: false
