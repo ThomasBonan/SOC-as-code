@@ -50,3 +50,11 @@
   ansible.builtin.set_fact:
     kube_join_cmd: "{{ join_cmd.stdout }}"
   run_once: true
+
+- name: Save join command to bastion artifact
+  ansible.builtin.copy:
+    dest: "{{ playbook_dir }}/artifacts/join-command.sh"
+    content: "{{ join_cmd.stdout }}\n"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
