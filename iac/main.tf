@@ -33,6 +33,9 @@ resource "proxmox_virtual_environment_vm" "k8s_master" {
       username = var.ssh_user
       keys     = [chomp(file(var.ssh_public_key_path))]
     }
+
+    vendor_data_file_id = var.cloudinit_snippet
+
     ip_config {
       ipv4 {
         address = var.master_ip_cidr     # "10.0.20.10/24"
@@ -85,6 +88,9 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
       username = var.ssh_user
       keys     = [chomp(file(var.ssh_public_key_path))]
     }
+
+    vendor_data_file_id = var.cloudinit_snippet
+
     ip_config {
       ipv4 {
         address = each.value              # <- corrige le var.worker_ip_cidr

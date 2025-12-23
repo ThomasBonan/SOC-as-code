@@ -24,7 +24,7 @@ variable "pm_api_token_secret" {
 variable "node_name" {
   type        = string
   description = "Nom du nœud Proxmox cible (pve, pve01, …)"
-  default     = "pve"
+  default     = "ns517129"
 }
 
 variable "storage_id" {
@@ -116,13 +116,13 @@ variable "ssh_user" {
 variable "ssh_public_key_path" {
   type        = string
   description = "Chemin local vers la clé publique à injecter"
-  default     = "~/.ssh/id_rsa.pub"
+  default     = "/root/.ssh/id_ed25519.pub"
 }
 
 variable "cloudinit_snippet" {
   type        = string
   description = "Référence Proxmox du user-data cloud-init (ex: local:snippets/ubuntu-24.04-userdata.yaml)"
-  default     = "local:snippets/ubuntu-24.04-userdata.yaml"
+  default     = "local:snippets/ubuntu-24.04-vendordata.yaml"
 }
 
 ############################################
