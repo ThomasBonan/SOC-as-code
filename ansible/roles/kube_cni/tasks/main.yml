@@ -1,4 +1,46 @@
 ---
+- name: Add cilium helm repo
+  ansible.builtin.command: helm repo add cilium https://helm.cilium.io/
+  args:
+    creates: /home/{{ bastion_user }}/.cache/helm/repository/cilium-index.yaml
+  delegate_to: localhost
+  become: false
+
+- name: Update helm repos
+  ansible.builtin.command: helm repo update
+  delegate_to: localhost
+  become: false
+
+- name: Install/Upgrade Cilium
+  ansible.builtin.command: >
+    helm upgrade --install cilium cilium/cilium
+    --namespace kube-system
+    --version {{ cilium_version }}
+    --set kubeProxyReplacement={{ cilium_kubeproxy_replacement }}
+    --set routingMode={{ cilium_routing_mode }}
+    --set hubble.enabled={{ cilium_hubble_enabled | bool | lower }}
+    --set hubble.ui.enabled={{ cilium_hubble_ui | bool | lower }}
+    --set prometheus.enabled={{ cilium_prometheus_enabled | bool | lower }}
+    --set ipam.mode=kubernetes
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+  delegate_to: localhost
+  become: false
+
+- name: Wait for cilium daemonset rollout
+  ansible.builtin.command: kubectl -n kube-system rollout status ds/cilium --timeout=300s
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+  delegate_to: localhost
+  become: false
+
+- name: Wait for CoreDNS
+  ansible.builtin.command: kubectl -n kube-system rollout status deploy/coredns --timeout=300s
+  environment:
+    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+  delegate_to: localhost
+  become: false
+
 - name: Fail fast if kubeconfig missing
   ansible.builtin.stat:
     path: /etc/kubernetes/admin.conf
