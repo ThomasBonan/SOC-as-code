@@ -3,6 +3,7 @@
   kubernetes.core.helm_repository:
     name: metallb
     repo_url: https://metallb.github.io/metallb
+    binary_path: "{{ helm_binary_path }}"
   delegate_to: localhost
   run_once: true
   become: false
@@ -23,6 +24,7 @@
     kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
     wait: true
     timeout: "10m0s"
+    binary_path: "{{ helm_binary_path }}"
   delegate_to: localhost
   run_once: true
   become: false
