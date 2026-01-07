@@ -1,0 +1,20 @@
+kubeconfig_path: "/home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf"
+helm_binary_path: "helm"
+
+soc_core_namespace: "soc-core"
+
+bitnami_repo_name: "bitnami"
+bitnami_repo_url: "https://charts.bitnami.com/bitnami"
+
+# Releases names
+thehive_pg_release: "thehive-postgresql"
+cortex_pg_release: "cortex-postgresql"
+misp_db_release: "misp-mariadb"
+
+# Chart refs
+postgres_chart_ref: "bitnami/postgresql"
+mariadb_chart_ref: "bitnami/mariadb"
+
+# Versions (pin = bonne pratique)
+postgres_chart_version: "15.5.38"
+mariadb_chart_version: "19.1.5"

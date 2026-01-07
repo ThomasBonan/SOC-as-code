@@ -1,0 +1,138 @@
+---
+- name: Add Bitnami repo (once)
+  kubernetes.core.helm_repository:
+    name: "{{ bitnami_repo_name }}"
+    repo_url: "{{ bitnami_repo_url }}"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Update helm repos (once)
+  ansible.builtin.command: "{{ helm_binary_path }} repo update"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Ensure namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ soc_core_namespace }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+# --- Secrets (passwords) ---
+# Ici je te mets une version "génère si absent" en restant simple.
+# Si tu veux 100% GitOps, on peut basculer sur SealedSecrets/SOPS ensuite.
+
+- name: Ensure TheHive PostgreSQL secret exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: thehive-postgresql-auth
+        namespace: "{{ soc_core_namespace }}"
+      type: Opaque
+      stringData:
+        postgres-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Ensure Cortex PostgreSQL secret exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: cortex-postgresql-auth
+        namespace: "{{ soc_core_namespace }}"
+      type: Opaque
+      stringData:
+        postgres-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Ensure MISP MariaDB secret exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: misp-mariadb-auth
+        namespace: "{{ soc_core_namespace }}"
+      type: Opaque
+      stringData:
+        mariadb-root-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        mariadb-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+# --- DB Deployments ---
+- name: Deploy TheHive PostgreSQL
+  kubernetes.core.helm:
+    name: "{{ thehive_pg_release }}"
+    chart_ref: "{{ postgres_chart_ref }}"
+    chart_version: "{{ postgres_chart_version }}"
+    release_namespace: "{{ soc_core_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "{{ role_path }}/files/values/thehive-postgresql.values.yml"
+    wait: true
+    timeout: "15m0s"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Deploy Cortex PostgreSQL
+  kubernetes.core.helm:
+    name: "{{ cortex_pg_release }}"
+    chart_ref: "{{ postgres_chart_ref }}"
+    chart_version: "{{ postgres_chart_version }}"
+    release_namespace: "{{ soc_core_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "{{ role_path }}/files/values/cortex-postgresql.values.yml"
+    wait: true
+    timeout: "15m0s"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Deploy MISP MariaDB
+  kubernetes.core.helm:
+    name: "{{ misp_db_release }}"
+    chart_ref: "{{ mariadb_chart_ref }}"
+    chart_version: "{{ mariadb_chart_version }}"
+    release_namespace: "{{ soc_core_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "{{ role_path }}/files/values/misp-mariadb.values.yml"
+    wait: true
+    timeout: "15m0s"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+  become: false

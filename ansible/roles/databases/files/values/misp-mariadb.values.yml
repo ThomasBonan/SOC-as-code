@@ -1,0 +1,22 @@
+auth:
+  username: misp
+  database: misp
+  existingSecret: misp-mariadb-auth
+  secretKeys:
+    mariadbRootPasswordKey: mariadb-root-password
+    mariadbPasswordKey: mariadb-password
+
+primary:
+  persistence:
+    enabled: true
+    size: 30Gi
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+metrics:
+  enabled: false

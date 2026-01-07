@@ -1,5 +1,5 @@
 ---
-- name: Join workers to cluster
+- name: Installation for Longhorn prerequisites (workers)
   hosts: workers
   become: true
   roles:
