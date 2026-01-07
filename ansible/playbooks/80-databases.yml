@@ -1,6 +1,6 @@
 ---
 - name: Deploy SOC core databases (TheHive/Cortex/MISP)
-  hosts: k8s_master
+  hosts: master
   gather_facts: true
   roles:
     - databases

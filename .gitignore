@@ -3,3 +3,4 @@
 **/.terraform/
 /terraform.tfstate
 **/.retry
+/ansible/playbooks/artifacts/admin.conf
