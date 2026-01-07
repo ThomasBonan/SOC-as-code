@@ -31,28 +31,28 @@
     --set hubble.ui.tolerations[0].effect=NoSchedule
     --set operator.replicas=1
   environment:
-    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+    KUBECONFIG: "{{ kubeconfig_path }}"
   delegate_to: localhost
   become: false
 
 - name: Wait for cilium rollout
   ansible.builtin.command: kubectl -n kube-system rollout status ds/cilium --timeout=300s
   environment:
-    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+    KUBECONFIG: "{{ kubeconfig_path }}"
   delegate_to: localhost
   become: false
 
 - name: Wait for hubble relay rollout
   ansible.builtin.command: kubectl -n kube-system rollout status deploy/hubble-relay --timeout=300s
   environment:
-    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+    KUBECONFIG: "{{ kubeconfig_path }}"
   delegate_to: localhost
   become: false
 
 - name: Wait for coredns rollout
   ansible.builtin.command: kubectl -n kube-system rollout status deploy/coredns --timeout=300s
   environment:
-    KUBECONFIG: "{{ playbook_dir }}/artifacts/admin.conf"
+    KUBECONFIG: "{{ kubeconfig_path }}"
   delegate_to: localhost
   become: false
 

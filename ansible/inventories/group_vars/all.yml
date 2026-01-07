@@ -6,6 +6,7 @@ cri: containerd
 kubelet_cgroup_driver: systemd
 kubeadm_api_version: "kubeadm.k8s.io/v1beta3"
 helm_binary_path: /usr/local/bin/helm
+kubeconfig_path: /home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf
 
 # --- Réseaux Kubernetes ---
 pod_cidr: "10.244.0.0/16"            # Calico par défaut
@@ -43,7 +44,3 @@ ingress_nginx_chart_version: "4.11.3"       # exemple stable
 bastion_copy_kubeconfig: true
 bastion_user: "mgmt-user"
 bastion_host: "10.0.10.10"           # mgmt-soc
-
-
-# --- Python interpreter ---
-ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python

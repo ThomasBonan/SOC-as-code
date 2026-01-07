@@ -51,7 +51,7 @@
     chart_version: "{{ metallb_version }}"
     release_namespace: "{{ metallb_namespace }}"
     create_namespace: true
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    kubeconfig: "{{ kubeconfig_path }}"
     wait: true
     timeout: "10m0s"
     binary_path: "{{ helm_binary_path }}"
@@ -61,7 +61,7 @@
 
 - name: Create IPAddressPool + L2Advertisement
   kubernetes.core.k8s:
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition:
       apiVersion: metallb.io/v1beta1
@@ -80,7 +80,7 @@
 
 - name: Create L2Advertisement
   kubernetes.core.k8s:
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition:
       apiVersion: metallb.io/v1beta1

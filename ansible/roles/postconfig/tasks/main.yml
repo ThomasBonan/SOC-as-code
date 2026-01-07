@@ -1,7 +1,7 @@
 ---
 - name: Create smoke namespace
   kubernetes.core.k8s:
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition:
       apiVersion: v1
@@ -11,10 +11,12 @@
   delegate_to: localhost
   run_once: true
   become: false
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
 
 - name: Deploy echo-server + LB service
   kubernetes.core.k8s:
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition: |
       apiVersion: apps/v1
@@ -41,3 +43,5 @@
   delegate_to: localhost
   run_once: true
   become: false
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python

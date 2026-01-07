@@ -20,9 +20,9 @@
     chart_version: "{{ ingress_nginx_chart_version }}"
     release_namespace: "{{ ingress_nginx_namespace }}"
     create_namespace: true
-    kubeconfig: "{{ playbook_dir }}/artifacts/admin.conf"
+    kubeconfig: "{{ kubeconfig_path }}"
     wait: true
-    timeout: 600
+    timeout: "10m0s"
     values:
       controller:
         service:
