@@ -36,6 +36,19 @@ metallb_version: "0.14.9"          # exemple stable
 metallb_pool_name: default-pool
 metallb_ip_range: "10.0.30.50-10.0.30.80"   # adapte à TON réseau L2
 
+# BGP
+metallb_my_asn: 65010          # ASN MetalLB (speakers)
+metallb_router_asn: 65000      # ASN OPNsense/FRR
+metallb_router_ip: "10.0.20.254"
+
+# Optionnel (souvent utile)
+metallb_bgp_peer_name: "opnsense"
+metallb_bgp_adv_name: "bgp-adv"
+metallb_peer_port: 179
+metallb_hold_time: "180s"
+metallb_keepalive_time: "60s"
+metallb_communities: []        # ex: ["65000:100"]
+
 # Ingress NGINX
 ingress_nginx_namespace: ingress-nginx
 ingress_nginx_chart_version: "4.11.3"       # exemple stable

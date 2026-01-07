@@ -44,6 +44,18 @@
   run_once: true
   become: false
 
+- name: Wait for MetalLB CRDs to be available
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    get crd bgppeers.metallb.io ipaddresspools.metallb.io bgpadvertisements.metallb.io
+  register: crd_check
+  retries: 30
+  delay: 2
+  until: crd_check.rc == 0
+  delegate_to: localhost
+  run_once: true
+  become: false
+
 - name: Install/upgrade metallb
   kubernetes.core.helm:
     name: metallb
@@ -59,7 +71,9 @@
   run_once: true
   become: false
 
-- name: Create IPAddressPool + L2Advertisement
+# --- BGP CONFIG ---
+
+- name: Create IPAddressPool (BGP)
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -78,21 +92,56 @@
   vars:
     ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
 
-- name: Create L2Advertisement
+- name: Create BGPPeer (OPNsense)
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition:
-      apiVersion: metallb.io/v1beta1
-      kind: L2Advertisement
+      apiVersion: metallb.io/v1beta2
+      kind: BGPPeer
       metadata:
-        name: l2adv
+        name: "{{ metallb_bgp_peer_name }}"
         namespace: "{{ metallb_namespace }}"
       spec:
-        ipAddressPools:
-          - "{{ metallb_pool_name }}"
+        myASN: "{{ metallb_my_asn | int }}"
+        peerASN: "{{ metallb_router_asn | int }}"
+        peerAddress: "{{ metallb_router_ip }}"
+        peerPort: "{{ metallb_peer_port | int }}"
+        holdTime: "{{ metallb_hold_time }}"
+        keepaliveTime: "{{ metallb_keepalive_time }}"
   delegate_to: localhost
   run_once: true
   become: false
   vars:
     ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+
+- name: Create BGPAdvertisement
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: BGPAdvertisement
+      metadata:
+        name: "{{ metallb_bgp_adv_name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        ipAddressPools:
+          - "{{ metallb_pool_name }}"
+        aggregationLength: 32
+        localPref: 100
+        communities: "{{ metallb_communities }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+
+- name: Check BGP sessions on speakers (quick)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ metallb_namespace }}
+    exec -it $(kubectl --kubeconfig {{ kubeconfig_path }} -n {{ metallb_namespace }} get pod -l component=speaker -o jsonpath='{.items[0].metadata.name}')
+    -c frr -- vtysh -c "show bgp ipv4 unicast summary"
+  delegate_to: localhost
+  run_once: true
+  become: false
