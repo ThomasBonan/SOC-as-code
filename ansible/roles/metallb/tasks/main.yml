@@ -1,4 +1,34 @@
 ---
+- name: Install python venv + pip (bastion)
+  ansible.builtin.apt:
+    name:
+      - python3-pip
+      - python3-venv
+    state: present
+    update_cache: true
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Create venv for ansible k8s modules (bastion)
+  ansible.builtin.command: python3 -m venv /opt/ansible-k8s-venv
+  args:
+    creates: /opt/ansible-k8s-venv/bin/python
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Install kubernetes python client in venv (bastion)
+  ansible.builtin.pip:
+    name:
+      - kubernetes>=26.1.0
+      - PyYAML
+      - requests
+    virtualenv: /opt/ansible-k8s-venv
+  delegate_to: localhost
+  run_once: true
+  become: true
+
 - name: Add metallb repo (once)
   kubernetes.core.helm_repository:
     name: metallb
@@ -9,7 +39,7 @@
   become: false
 
 - name: Update helm repos (once)
-  ansible.builtin.command: helm repo update
+  ansible.builtin.command: "{{ helm_binary_path }} repo update"
   delegate_to: localhost
   run_once: true
   become: false
@@ -45,6 +75,8 @@
   delegate_to: localhost
   run_once: true
   become: false
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
 
 - name: Create L2Advertisement
   kubernetes.core.k8s:
@@ -62,3 +94,5 @@
   delegate_to: localhost
   run_once: true
   become: false
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
