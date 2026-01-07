@@ -4,3 +4,4 @@
   become: false
   roles:
     - cert-manager
+    - longhorn

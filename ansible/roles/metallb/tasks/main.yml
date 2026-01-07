@@ -137,11 +137,61 @@
   vars:
     ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
 
-- name: Check BGP sessions on speakers (quick)
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ metallb_namespace }}
-    exec -it $(kubectl --kubeconfig {{ kubeconfig_path }} -n {{ metallb_namespace }} get pod -l component=speaker -o jsonpath='{.items[0].metadata.name}')
-    -c frr -- vtysh -c "show bgp ipv4 unicast summary"
+- name: List all pods in metallb namespace
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ metallb_namespace }}"
+  register: metallb_pods
   delegate_to: localhost
   run_once: true
-  become: false
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+
+- name: Select speaker pods by name prefix
+  ansible.builtin.set_fact:
+    metallb_speaker_pods: >-
+      {{
+        metallb_pods.resources
+        | selectattr('metadata.name', 'match', '^metallb-speaker-')
+        | list
+      }}
+  delegate_to: localhost
+  run_once: true
+
+- name: Fail if no speaker pod found
+  ansible.builtin.fail:
+    msg: "No MetalLB speaker pod found in {{ metallb_namespace }} (expected name prefix metallb-speaker-)."
+  when: (metallb_speaker_pods | length) == 0
+  delegate_to: localhost
+  run_once: true
+
+- name: Check BGP summary on one speaker (quick)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ kubeconfig_path }}"
+      - -n
+      - "{{ metallb_namespace }}"
+      - exec
+      - -i
+      - "{{ metallb_speaker_pods[0].metadata.name }}"
+      - -c
+      - frr
+      - --
+      - vtysh
+      - -c
+      - "show bgp ipv4 unicast summary"
+  register: bgp_summary
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Show BGP summary
+  ansible.builtin.debug:
+    var: bgp_summary.stdout_lines
+  changed_when: false
+  delegate_to: localhost
+  run_once: true

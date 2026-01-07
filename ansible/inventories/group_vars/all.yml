@@ -75,3 +75,9 @@ cert_manager_clusterissuer_name: "soc-lab-ca-issuer"
 # Domaine apps
 apps_domain: "apps.soc.lab"
 ingress_class: "nginx"
+
+# --- Longhorn (storage CNI) ---
+longhorn_namespace: longhorn-system
+longhorn_chart_version: ""   # optionnel (sinon latest)
+longhorn_release: longhorn
+longhorn_set_default_sc: true
