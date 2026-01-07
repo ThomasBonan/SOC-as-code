@@ -57,3 +57,21 @@ ingress_nginx_chart_version: "4.11.3"       # exemple stable
 bastion_copy_kubeconfig: true
 bastion_user: "mgmt-user"
 bastion_host: "10.0.10.10"           # mgmt-soc
+
+# --- cert-manager ---
+cert_manager_namespace: cert-manager
+cert_manager_version: "v1.14.7"          # adapte si tu pins ailleurs
+cert_manager_install_crds: true
+
+# PKI interne
+pki_dir: "/etc/pki/soc-lab"
+soc_lab_ca_name: "soc-lab-ca"
+soc_lab_ca_common_name: "SOC Lab Internal CA"
+soc_lab_ca_days: 3650
+
+# Issuer
+cert_manager_clusterissuer_name: "soc-lab-ca-issuer"
+
+# Domaine apps
+apps_domain: "apps.soc.lab"
+ingress_class: "nginx"

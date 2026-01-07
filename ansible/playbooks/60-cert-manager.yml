@@ -1,0 +1,6 @@
+---
+- name: Installation of cert-manager
+  hosts: master
+  become: false
+  roles:
+    - cert-manager

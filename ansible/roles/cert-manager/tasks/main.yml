@@ -1,0 +1,114 @@
+---
+- name: Add jetstack repo (once)
+  kubernetes.core.helm_repository:
+    name: jetstack
+    repo_url: https://charts.jetstack.io
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Update helm repos (once)
+  ansible.builtin.command: "{{ helm_binary_path }} repo update"
+  delegate_to: localhost
+  run_once: true
+
+- name: Install/upgrade cert-manager
+  kubernetes.core.helm:
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ cert_manager_version }}"
+    release_namespace: "{{ cert_manager_namespace }}"
+    create_namespace: true
+    kubeconfig: "{{ kubeconfig_path }}"
+    wait: true
+    timeout: "10m0s"
+    binary_path: "{{ helm_binary_path }}"
+    values:
+      installCRDs: "{{ cert_manager_install_crds }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Ensure PKI dir exists (bastion)
+  ansible.builtin.file:
+    path: "{{ pki_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Generate CA private key (bastion) if missing
+  ansible.builtin.command: >
+    openssl genrsa -out {{ pki_dir }}/{{ soc_lab_ca_name }}.key 4096
+  args:
+    creates: "{{ pki_dir }}/{{ soc_lab_ca_name }}.key"
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Generate CA certificate (bastion) if missing
+  ansible.builtin.command: >
+    openssl req -x509 -new -nodes
+    -key {{ pki_dir }}/{{ soc_lab_ca_name }}.key
+    -sha256 -days {{ soc_lab_ca_days }}
+    -out {{ pki_dir }}/{{ soc_lab_ca_name }}.crt
+    -subj "/CN={{ soc_lab_ca_common_name }}"
+  args:
+    creates: "{{ pki_dir }}/{{ soc_lab_ca_name }}.crt"
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Read CA key
+  ansible.builtin.slurp:
+    src: "{{ pki_dir }}/{{ soc_lab_ca_name }}.key"
+  register: ca_key_b64
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Read CA cert
+  ansible.builtin.slurp:
+    src: "{{ pki_dir }}/{{ soc_lab_ca_name }}.crt"
+  register: ca_crt_b64
+  delegate_to: localhost
+  run_once: true
+  become: true
+
+- name: Create CA secret in cert-manager namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_lab_ca_name }}"
+        namespace: "{{ cert_manager_namespace }}"
+      type: kubernetes.io/tls
+      data:
+        tls.key: "{{ ca_key_b64.content }}"
+        tls.crt: "{{ ca_crt_b64.content }}"
+  delegate_to: localhost
+  run_once: true
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+
+- name: Create ClusterIssuer (CA)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ cert_manager_clusterissuer_name }}"
+      spec:
+        ca:
+          secretName: "{{ soc_lab_ca_name }}"
+  delegate_to: localhost
+  run_once: true
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
