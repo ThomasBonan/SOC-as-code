@@ -1,0 +1,58 @@
+---
+# Access
+kubeconfig_path: "/home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf"
+helm_binary_path: "helm"
+
+# Namespace
+wazuh_namespace: "soc-wazuh"
+
+# DNS / Ingress / TLS
+wazuh_domain: "wazuh.apps.soc.lab"
+ingress_class_name: "nginx"
+cluster_issuer_name: "soc-lab-ca-issuer"
+tls_secret_name: "wazuh-dashboard-tls"
+
+# Helm repo / chart
+wazuh_helm_repo_name: "wazuh-helm"
+wazuh_helm_repo_url: "https://morgoved.github.io/wazuh-helm/"
+wazuh_chart_ref: "wazuh-helm/wazuh"
+wazuh_chart_version: "1.0.14"
+
+# Release (monolithique)
+wazuh_release_name: "wazuh"
+
+# Naming interne du chart (sert à construire les DNS/services)
+# Exemple vu dans la doc du chart: wazuh-<appId>-indexer-rest, wazuh-manager-master-0.wazuh-<appId>-cluster, etc.
+wazuh_app_name: "wazuh"
+wazuh_app_id: "core"
+
+# Storage (Longhorn)
+storage_class_name: "longhorn"
+indexer_storage_size: "20Gi"     # lab: 20Gi OK (tu peux monter à 50Gi)
+manager_master_storage_size: "20Gi"
+
+# Replicas (lab)
+indexer_replicas: 1
+manager_master_replicas: 1
+manager_worker_replicas: 0
+dashboard_replicas: 1
+
+# Resources (lab)
+indexer_requests_cpu: "500m"
+indexer_requests_mem: "1Gi"
+indexer_limits_cpu: "2"
+indexer_limits_mem: "4Gi"
+
+manager_requests_cpu: "200m"
+manager_requests_mem: "512Mi"
+manager_limits_cpu: "1"
+manager_limits_mem: "2Gi"
+
+dashboard_requests_cpu: "200m"
+dashboard_requests_mem: "512Mi"
+dashboard_limits_cpu: "1"
+dashboard_limits_mem: "1Gi"
+
+# Local secrets persistence (idempotence) : à gitignore côté repo
+# Stockés sur la machine "controller" (localhost) qui exécute Ansible
+secrets_dir: "{{ playbook_dir }}/../.secrets/wazuh"

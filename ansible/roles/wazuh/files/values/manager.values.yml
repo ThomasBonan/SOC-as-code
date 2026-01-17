@@ -1,0 +1,27 @@
+---
+# Wazuh Manager
+wazuh:
+  deployment:
+    enabled: true
+
+  master_replicas: 1
+  worker_replicas: 0
+
+  # Storage master (Longhorn)
+  storageClassNameMaster: "longhorn"
+  storageSizeMaster: "20Gi"
+
+  # Ne pas exposer publiquement
+  service:
+    type: ClusterIP
+    masterType: ClusterIP
+    workerType: ClusterIP
+
+  images:
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "2Gi"

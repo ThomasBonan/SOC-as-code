@@ -1,0 +1,35 @@
+---
+# Indexer (OpenSearch-based)
+indexer:
+  deployment:
+    enabled: true
+
+  replicas: 1
+  storageClassName: "longhorn"
+  storageSize: "20Gi"
+
+  # Ne pas exposer publiquement
+  service:
+    type: ClusterIP
+    httpPort: 9200
+    transport: 9300
+
+  env:
+    # Evite démo / auto-config insecure
+    ALLOW_DEMOCERTIFICATES: "false"
+    DISABLE_INSTALL_DEMO_CONFIG: "true"
+    NETWORK_HOST: "0.0.0.0"
+
+  images:
+    replicaCount: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+
+# On désactive l’ingress chart (on gère nous-mêmes)
+ingress:
+  enabled: false

@@ -1,0 +1,32 @@
+---
+# Wazuh Dashboard
+dashboard:
+  deployment:
+    enabled: true
+
+  replicas: 1
+  service:
+    type: ClusterIP
+    httpPort: 5601
+
+  # TLS sera terminé par l’Ingress, donc on reste simple en interne
+  enable_ssl: false
+
+  # URLs internes (DNS cluster)
+  env:
+    INDEXER_URL: "https://wazuh-core-indexer-rest"
+    WAZUH_API_HOST: "wazuh-manager-master-0.wazuh-core-cluster"
+    WAZUH_API_URL: "https://wazuh-manager-master-0.wazuh-core-cluster"
+
+  images:
+    resources:
+      requests:
+        cpu: "200m"
+        memory: "512Mi"
+      limits:
+        cpu: "1"
+        memory: "1Gi"
+
+# Ingress chart OFF (géré par template + cert-manager)
+ingress:
+  enabled: false

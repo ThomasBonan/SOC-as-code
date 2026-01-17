@@ -1,0 +1,8 @@
+---
+- name: Deploy Wazuh (Indexer + Manager + Dashboard) via Helm
+  hosts: all
+  gather_facts: false
+  become: false
+
+  roles:
+    - role: wazuh

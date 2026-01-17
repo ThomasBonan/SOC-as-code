@@ -1,0 +1,175 @@
+---
+- name: Ensure local secrets dir exists (controller)
+  ansible.builtin.file:
+    path: "{{ secrets_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  run_once: true
+
+- name: Add Wazuh Helm repo (once)
+  kubernetes.core.helm_repository:
+    name: "{{ wazuh_helm_repo_name }}"
+    repo_url: "{{ wazuh_helm_repo_url }}"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Update Helm repos (once)
+  ansible.builtin.command: "{{ helm_binary_path }} repo update"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  become: false
+
+- name: Ensure namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ wazuh_namespace }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+# --- Secrets (generated + persisted locally for idempotence) ---
+- name: Generate/Load indexer password
+  ansible.builtin.set_fact:
+    wazuh_indexer_password: >-
+      {{ lookup('password', secrets_dir ~ '/indexer.pass length=32 chars=ascii_letters,digits') }}
+  delegate_to: localhost
+  run_once: true
+
+- name: Generate/Load dashboard password
+  ansible.builtin.set_fact:
+    wazuh_dashboard_password: >-
+      {{ lookup('password', secrets_dir ~ '/dashboard.pass length=32 chars=ascii_letters,digits') }}
+  delegate_to: localhost
+  run_once: true
+
+# bcrypt cost=12 (chart demande passwordHash en bcrypt 12 rounds)
+- name: Compute bcrypt hashes (cost 12)
+  ansible.builtin.set_fact:
+    wazuh_indexer_password_hash: "{{ wazuh_indexer_password | password_hash('bcrypt') }}"
+    wazuh_dashboard_password_hash: "{{ wazuh_dashboard_password | password_hash('bcrypt') }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Create Wazuh credentials secret (for ops / audit)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: wazuh-credentials
+        namespace: "{{ wazuh_namespace }}"
+      type: Opaque
+      stringData:
+        indexer_password: "{{ wazuh_indexer_password }}"
+        indexer_password_hash: "{{ wazuh_indexer_password_hash }}"
+        dashboard_password: "{{ wazuh_dashboard_password }}"
+        dashboard_password_hash: "{{ wazuh_dashboard_password_hash }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+# --- Deploy (Helm) ---
+# On assemble les values propres par composant (mêmes patterns que ton rôle databases)
+- name: Deploy/Upgrade Wazuh Helm release (Indexer + Manager + Dashboard)
+  kubernetes.core.helm:
+    name: "{{ wazuh_release_name }}"
+    chart_ref: "{{ wazuh_chart_ref }}"
+    chart_version: "{{ wazuh_chart_version }}"
+    release_namespace: "{{ wazuh_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "{{ role_path }}/files/values/indexer.values.yml"
+      - "{{ role_path }}/files/values/manager.values.yml"
+      - "{{ role_path }}/files/values/dashboard.values.yml"
+    # inject secrets/hashes via --set (évite d’écrire du secret en clair dans le repo)
+    set_values:
+      - value: "identifier.appName={{ wazuh_app_name }}"
+      - value: "identifier.appId={{ wazuh_app_id }}"
+
+      - value: "indexer.cred.password={{ wazuh_indexer_password }}"
+      - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
+
+      - value: "dashboard.cred.password={{ wazuh_dashboard_password }}"
+      - value: "dashboard.cred.passwordHash={{ wazuh_dashboard_password_hash }}"
+    wait: true
+    atomic: true
+    timeout: "30m0s"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+# --- Post Helm: Ingress + Certificate (cert-manager) ---
+- name: Create Certificate (explicit, deterministic)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: wazuh-dashboard
+        namespace: "{{ wazuh_namespace }}"
+      spec:
+        secretName: "{{ tls_secret_name }}"
+        dnsNames:
+          - "{{ wazuh_domain }}"
+        issuerRef:
+          name: "{{ cluster_issuer_name }}"
+          kind: ClusterIssuer
+  delegate_to: localhost
+  run_once: true
+
+- name: Apply Ingress for Wazuh Dashboard (TLS)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition: "{{ lookup('template', role_path ~ '/templates/ingress-dashboard.yml.j2') | from_yaml }}"
+  delegate_to: localhost
+  run_once: true
+
+# --- Waits / Smoke gates (kubectl, pour éviter les soucis d'interpréteur python) ---
+- name: Wait for all Wazuh pods Ready (instance label)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    wait --for=condition=ready pod
+    -l app.kubernetes.io/instance={{ wazuh_release_name }}
+    --timeout=30m
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Wait for Certificate Ready
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    wait --for=condition=Ready certificate/wazuh-dashboard --timeout=10m
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Basic HTTPS check (expect 200/302)
+  ansible.builtin.command: >
+    curl -k -s -o /dev/null -w "%{http_code}\n" https://{{ wazuh_domain }}/
+  register: wazuh_http_code
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Fail if dashboard not reachable via ingress
+  ansible.builtin.fail:
+    msg: "Wazuh dashboard not reachable on https://{{ wazuh_domain }}/ (code={{ wazuh_http_code.stdout | default('') }})"
+  when: wazuh_http_code.stdout not in ["200", "302", "401"]
+  delegate_to: localhost
+  run_once: true
