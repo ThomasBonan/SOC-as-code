@@ -17,7 +17,7 @@ mariadb_chart_ref: "bitnami/mariadb"
 
 # Versions (pin = bonne pratique)
 postgres_chart_version: "15.5.38"
-mariadb_chart_version: "19.1.5"
+mariadb_chart_version: "24.0.3"
 bitnami_postgresql_chart_version: "15.5.38"
 
 

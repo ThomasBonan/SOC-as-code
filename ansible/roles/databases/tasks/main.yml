@@ -25,7 +25,21 @@
           metadata:
             name: "{{ soc_core_namespace }}"
 
-    - name: Ensure TheHive PostgreSQL secret exists
+    # -------------------------
+    # TheHive PostgreSQL secret
+    # -------------------------
+    - name: Check TheHive PostgreSQL secret exists
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: v1
+        kind: Secret
+        name: thehive-postgresql-auth
+        namespace: "{{ soc_core_namespace }}"
+      register: thehive_pg_secret
+      vars:
+        ansible_python_interpreter: "{{ k8s_ansible_python }}"
+
+    - name: Create TheHive PostgreSQL secret (create-once)
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
         state: present
@@ -39,8 +53,23 @@
           stringData:
             postgres-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
             password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      when: (thehive_pg_secret.resources | length) == 0
 
-    - name: Ensure Cortex PostgreSQL secret exists
+    # -------------------------
+    # Cortex PostgreSQL secret
+    # -------------------------
+    - name: Check Cortex PostgreSQL secret exists
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: v1
+        kind: Secret
+        name: cortex-postgresql-auth
+        namespace: "{{ soc_core_namespace }}"
+      register: cortex_pg_secret
+      vars:
+        ansible_python_interpreter: "{{ k8s_ansible_python }}"
+
+    - name: Create Cortex PostgreSQL secret (create-once)
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
         state: present
@@ -54,8 +83,23 @@
           stringData:
             postgres-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
             password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      when: (cortex_pg_secret.resources | length) == 0
 
-    - name: Ensure MISP MariaDB secret exists
+    # -------------------------
+    # MISP MariaDB secret
+    # -------------------------
+    - name: Check MISP MariaDB secret exists
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: v1
+        kind: Secret
+        name: misp-mariadb-auth
+        namespace: "{{ soc_core_namespace }}"
+      register: misp_mariadb_secret
+      vars:
+        ansible_python_interpreter: "{{ k8s_ansible_python }}"
+
+    - name: Create MISP MariaDB secret (create-once)
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
         state: present
@@ -69,6 +113,8 @@
           stringData:
             mariadb-root-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
             mariadb-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+      when: (misp_mariadb_secret.resources | length) == 0
+
   delegate_to: localhost
   run_once: true
   become: false
@@ -76,6 +122,21 @@
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
 
 # --- DB Deployments ---
+- name: Check Longhorn system is healthy before DBs
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n longhorn-system get pods
+  register: lh_pods
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Fail if Longhorn managers are not Running
+  ansible.builtin.fail:
+    msg: "Longhorn not healthy:\n{{ lh_pods.stdout }}"
+  when: "'longhorn-manager' in lh_pods.stdout and 'Running' not in lh_pods.stdout"
+  delegate_to: localhost
+  run_once: true
+
 - name: Deploy TheHive PostgreSQL
   kubernetes.core.helm:
     name: thehive-postgresql
@@ -93,6 +154,29 @@
   delegate_to: localhost
   run_once: true
 
+- name: Wait for TheHive PostgreSQL pod to be Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Pod
+    namespace: "{{ soc_core_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/instance=thehive-postgresql"
+  register: thehive_pg_pods
+  delegate_to: localhost
+  run_once: true
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+
+- name: Fail if TheHive PostgreSQL pod not Ready
+  ansible.builtin.fail:
+    msg: "TheHive PostgreSQL pods not ready: {{ thehive_pg_pods.resources | map(attribute='status.phase') | list }}"
+  when: >
+    (thehive_pg_pods.resources | length) == 0 or
+    (thehive_pg_pods.resources | selectattr('status.containerStatuses', 'defined') | list | length) == 0 or
+    (thehive_pg_pods.resources | selectattr('status.containerStatuses', 'defined')
+       | map(attribute='status.containerStatuses') | list | first
+       | selectattr('ready','equalto',true) | list | length) == 0
 
 - name: Deploy Cortex PostgreSQL
   kubernetes.core.helm:
@@ -105,7 +189,8 @@
     values_files:
       - "{{ role_path }}/files/values/cortex-postgresql.values.yml"
     wait: true
-    timeout: "15m0s"
+    atomic: true
+    timeout: "30m0s"
     binary_path: "{{ helm_binary_path }}"
   delegate_to: localhost
   run_once: true
@@ -122,8 +207,10 @@
     values_files:
       - "{{ role_path }}/files/values/misp-mariadb.values.yml"
     wait: true
-    timeout: "15m0s"
+    atomic: true
+    timeout: "30m0s"
     binary_path: "{{ helm_binary_path }}"
   delegate_to: localhost
   run_once: true
   become: false
+

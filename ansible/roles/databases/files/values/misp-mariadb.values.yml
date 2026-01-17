@@ -6,10 +6,15 @@ auth:
     mariadbRootPasswordKey: mariadb-root-password
     mariadbPasswordKey: mariadb-password
 
+image:
+  registry: docker.io
+  repository: bitnamilegacy/mariadb
+  tag: "12.0.2-debian-12-r0"
+
 primary:
   persistence:
     enabled: true
-    size: 30Gi
+    size: 10Gi
   resources:
     requests:
       cpu: 200m
@@ -20,3 +25,7 @@ primary:
 
 metrics:
   enabled: false
+
+global:
+  security:
+    allowInsecureImages: true
