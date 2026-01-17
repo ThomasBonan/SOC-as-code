@@ -18,3 +18,8 @@ mariadb_chart_ref: "bitnami/mariadb"
 # Versions (pin = bonne pratique)
 postgres_chart_version: "15.5.38"
 mariadb_chart_version: "19.1.5"
+bitnami_postgresql_chart_version: "15.5.38"
+
+
+k8s_ansible_venv: /opt/ansible-k8s-venv
+k8s_ansible_python: "{{ k8s_ansible_venv }}/bin/python"
