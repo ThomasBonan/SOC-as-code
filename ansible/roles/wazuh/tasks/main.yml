@@ -1,4 +1,11 @@
 ---
+# roles/wazuh/tasks/main.yml
+# Déploiement Wazuh en 3 phases (Indexer -> Manager -> Dashboard) pour isoler le composant qui bloque.
+# Stratégie:
+# - Helm sans wait/atomic (on garde les objets même si ça coince)
+# - Attente via kubectl rollout status sur tous les workloads (deploy/sts/ds) du namespace
+# - Diagnostics automatiques (pods/pvc/events/describe/logs) en cas d'échec
+
 - name: Ensure local secrets dir exists (controller)
   ansible.builtin.file:
     path: "{{ secrets_dir }}"
@@ -23,18 +30,38 @@
   changed_when: false
   become: false
 
-- name: Ensure namespace exists
-  kubernetes.core.k8s:
-    kubeconfig: "{{ kubeconfig_path }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ wazuh_namespace }}"
+# --- Preflight : API reachable (évite les timeouts “random”) ---
+- name: Preflight - wait for Kubernetes API to be reachable
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ kubeconfig_path }}"
+      - get
+      - --raw=/readyz
+  register: api_readyz
+  retries: 30
+  delay: 2
+  until: api_readyz.rc == 0
+  changed_when: false
   delegate_to: localhost
   run_once: true
-  become: false
+
+# --- Namespace (kubectl apply --validate=false pour éviter le fetch OpenAPI) ---
+- name: Ensure namespace exists (kubectl apply)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" apply --validate=false -f -
+    apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: "{{ wazuh_namespace }}"
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
 
 # --- Secrets (generated + persisted locally for idempotence) ---
 - name: Generate/Load indexer password
@@ -43,6 +70,7 @@
       {{ lookup('password', secrets_dir ~ '/indexer.pass length=32 chars=ascii_letters,digits') }}
   delegate_to: localhost
   run_once: true
+  no_log: true
 
 - name: Generate/Load dashboard password
   ansible.builtin.set_fact:
@@ -50,107 +78,466 @@
       {{ lookup('password', secrets_dir ~ '/dashboard.pass length=32 chars=ascii_letters,digits') }}
   delegate_to: localhost
   run_once: true
+  no_log: true
 
-# bcrypt cost=12 (chart demande passwordHash en bcrypt 12 rounds)
+# bcrypt cost=12 (chart: passwordHash en bcrypt 12 rounds)
 - name: Compute bcrypt hashes (cost 12)
   ansible.builtin.set_fact:
-    wazuh_indexer_password_hash: "{{ wazuh_indexer_password | password_hash('bcrypt') }}"
-    wazuh_dashboard_password_hash: "{{ wazuh_dashboard_password | password_hash('bcrypt') }}"
+    wazuh_indexer_password_hash: "{{ wazuh_indexer_password | password_hash('bcrypt', rounds=12) }}"
+    wazuh_dashboard_password_hash: "{{ wazuh_dashboard_password | password_hash('bcrypt', rounds=12) }}"
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+- name: Create/Update Wazuh credentials secret (kubectl apply)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: wazuh-credentials
+      namespace: "{{ wazuh_namespace }}"
+    type: Opaque
+    stringData:
+      indexer_password: "{{ wazuh_indexer_password }}"
+      indexer_password_hash: "{{ wazuh_indexer_password_hash }}"
+      dashboard_password: "{{ wazuh_dashboard_password }}"
+      dashboard_password_hash: "{{ wazuh_dashboard_password_hash }}"
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  no_log: true
+
+# -----------------------------
+# Helper: Wait workloads rollout (deploy/sts/ds) in namespace
+# -----------------------------
+- name: Wait workloads rollout (deploy/sts/ds) helper
+  ansible.builtin.set_fact:
+    _wazuh_rollout_helper: |
+      set -euo pipefail
+      NS="{{ wazuh_namespace }}"
+      K="kubectl --kubeconfig {{ kubeconfig_path }} -n ${NS}"
+
+      echo "==> Workloads in ${NS}:"
+      ${K} get deploy,sts,ds -o wide || true
+
+      wl="$(${K} get deploy,sts,ds -o name 2>/dev/null | tr '\n' ' ')"
+      if [ -z "${wl}" ]; then
+        echo "No Deployment/StatefulSet/DaemonSet found in namespace ${NS}."
+        ${K} get all -o wide || true
+        exit 1
+      fi
+
+      for w in ${wl}; do
+        echo "==> rollout ${w}"
+        ${K} rollout status "${w}" --timeout={{ wazuh_rollout_timeout | default('30m') }}
+      done
+
+      echo "==> Pod readiness snapshot:"
+      ${K} get pods -o wide || true
+
+      # Pods hors Running/Completed => KO
+      bad_phase="$(${K} get pods --no-headers 2>/dev/null | awk '$3!="Running" && $3!="Completed"{print $1" "$2" "$3}')"
+      if [ -n "${bad_phase}" ]; then
+        echo "Pods not Running/Completed:"
+        echo "${bad_phase}"
+        exit 1
+      fi
+
+      # Running mais Ready X/Y avec X!=Y => KO
+      not_ready="$(${K} get pods --no-headers 2>/dev/null | awk '$3=="Running"{split($2,a,"/"); if (a[1]!=a[2]) print $1" "$2" "$3}')"
+      if [ -n "${not_ready}" ]; then
+        echo "Running pods not Ready:"
+        echo "${not_ready}"
+        exit 1
+      fi
   delegate_to: localhost
   run_once: true
 
-- name: Create Wazuh credentials secret (for ops / audit)
-  kubernetes.core.k8s:
-    kubeconfig: "{{ kubeconfig_path }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: wazuh-credentials
-        namespace: "{{ wazuh_namespace }}"
-      type: Opaque
-      stringData:
-        indexer_password: "{{ wazuh_indexer_password }}"
-        indexer_password_hash: "{{ wazuh_indexer_password_hash }}"
-        dashboard_password: "{{ wazuh_dashboard_password }}"
-        dashboard_password_hash: "{{ wazuh_dashboard_password_hash }}"
-  delegate_to: localhost
-  run_once: true
-  become: false
+# -----------------------------
+# PHASE 1: Indexer uniquement
+# -----------------------------
+- name: Deploy Wazuh - Phase 1 (Indexer only)
+  block:
+    - name: Wait Helm release not pending (before Phase 1)
+      ansible.builtin.shell: |
+        set -e
+        out="$({{ helm_binary_path }} -n {{ wazuh_namespace }} status {{ wazuh_release_name }} -o json 2>/dev/null || true)"
+        if [ -z "$out" ]; then
+          echo "not-installed"
+          exit 0
+        fi
+        echo "$out" | grep -Eo '"status":"[^"]+"' | cut -d: -f2 | tr -d '"'
+      args:
+        executable: /bin/bash
+      register: helm_release_status
+      retries: 40
+      delay: 15
+      until: helm_release_status.stdout not in ["pending-install","pending-upgrade","pending-rollback"]
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
 
-# --- Deploy (Helm) ---
-# On assemble les values propres par composant (mêmes patterns que ton rôle databases)
-- name: Deploy/Upgrade Wazuh Helm release (Indexer + Manager + Dashboard)
-  kubernetes.core.helm:
-    name: "{{ wazuh_release_name }}"
-    chart_ref: "{{ wazuh_chart_ref }}"
-    chart_version: "{{ wazuh_chart_version }}"
-    release_namespace: "{{ wazuh_namespace }}"
-    create_namespace: false
-    kubeconfig: "{{ kubeconfig_path }}"
-    values_files:
-      - "{{ role_path }}/files/values/indexer.values.yml"
-      - "{{ role_path }}/files/values/manager.values.yml"
-      - "{{ role_path }}/files/values/dashboard.values.yml"
-    # inject secrets/hashes via --set (évite d’écrire du secret en clair dans le repo)
-    set_values:
-      - value: "identifier.appName={{ wazuh_app_name }}"
-      - value: "identifier.appId={{ wazuh_app_id }}"
+    - name: Helm upgrade/install (Phase 1) - Indexer only
+      kubernetes.core.helm:
+        name: "{{ wazuh_release_name }}"
+        chart_ref: "{{ wazuh_chart_ref }}"
+        chart_version: "{{ wazuh_chart_version }}"
+        release_namespace: "{{ wazuh_namespace }}"
+        create_namespace: false
+        kubeconfig: "{{ kubeconfig_path }}"
+        values_files:
+          - "{{ role_path }}/files/values/indexer.values.yml"
+        set_values:
+          - value: "identifier.appName={{ wazuh_app_name }}"
+          - value: "identifier.appId={{ wazuh_app_id }}"
+          - value: "indexer.deployment.enabled=true"
+          - value: "wazuh.deployment.enabled=false"
+          - value: "dashboard.deployment.enabled=false"
+          - value: "indexer.cred.password={{ wazuh_indexer_password }}"
+          - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
+        wait: false
+        atomic: false
+        timeout: "30m0s"
+        update_repo_cache: true
+        binary_path: "{{ helm_binary_path }}"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
 
-      - value: "indexer.cred.password={{ wazuh_indexer_password }}"
-      - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
+    - name: Snapshot - objects after Phase 1 install
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get deploy,sts,ds,svc,pods,pvc -o wide
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
 
-      - value: "dashboard.cred.password={{ wazuh_dashboard_password }}"
-      - value: "dashboard.cred.passwordHash={{ wazuh_dashboard_password_hash }}"
-    wait: true
-    atomic: true
-    timeout: "30m0s"
-    binary_path: "{{ helm_binary_path }}"
-  delegate_to: localhost
-  run_once: true
-  become: false
+    - name: Wait for workloads rollout (Phase 1)
+      ansible.builtin.shell: "{{ _wazuh_rollout_helper }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
 
-# --- Post Helm: Ingress + Certificate (cert-manager) ---
-- name: Create Certificate (explicit, deterministic)
-  kubernetes.core.k8s:
-    kubeconfig: "{{ kubeconfig_path }}"
-    state: present
-    definition:
-      apiVersion: cert-manager.io/v1
-      kind: Certificate
-      metadata:
-        name: wazuh-dashboard
-        namespace: "{{ wazuh_namespace }}"
-      spec:
-        secretName: "{{ tls_secret_name }}"
-        dnsNames:
-          - "{{ wazuh_domain }}"
-        issuerRef:
-          name: "{{ cluster_issuer_name }}"
-          kind: ClusterIssuer
-  delegate_to: localhost
-  run_once: true
+  rescue:
+    - name: Helm status (Phase 1)
+      ansible.builtin.command: >
+        {{ helm_binary_path }} -n {{ wazuh_namespace }} status {{ wazuh_release_name }}
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
 
-- name: Apply Ingress for Wazuh Dashboard (TLS)
-  kubernetes.core.k8s:
-    kubeconfig: "{{ kubeconfig_path }}"
-    state: present
-    definition: "{{ lookup('template', role_path ~ '/templates/ingress-dashboard.yml.j2') | from_yaml }}"
-  delegate_to: localhost
-  run_once: true
+    - name: Pods/PVC (Phase 1)
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get pods,pvc -o wide
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
 
-# --- Waits / Smoke gates (kubectl, pour éviter les soucis d'interpréteur python) ---
-- name: Wait for all Wazuh pods Ready (instance label)
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
-    wait --for=condition=ready pod
-    -l app.kubernetes.io/instance={{ wazuh_release_name }}
-    --timeout=30m
+    - name: Events (Phase 1)
+      ansible.builtin.shell: |
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }} \
+          get events --sort-by=.lastTimestamp | tail -n 200
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Describe + logs for non-ready pods (Phase 1)
+      ansible.builtin.shell: |
+        set +e
+        K="kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}"
+        pods="$($K get pods --no-headers 2>/dev/null | awk '($3!="Running" && $3!="Completed") || ($3=="Running" && $2 !~ /^([0-9]+)\/\1$/){print $1}')"
+        for p in $pods; do
+          echo "==== describe pod/$p ===="
+          $K describe pod "$p" | tail -n 200
+          echo "==== logs pod/$p (all containers) ===="
+          $K logs "$p" --all-containers --tail=200 2>/dev/null | tail -n 200
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail (Phase 1)
+      ansible.builtin.fail:
+        msg: "Phase 1 (Indexer) failed. Check pods/pvc/events/describe/logs above."
+  always:
+    - name: Snapshot - workloads after Phase 1
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get deploy,sts,ds,svc,pods,pvc -o wide
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+# -----------------------------
+# PHASE 2: Indexer + Manager
+# -----------------------------
+- name: Deploy Wazuh - Phase 2 (Enable Manager)
+  block:
+    - name: Helm upgrade (Phase 2) - enable Manager
+      kubernetes.core.helm:
+        name: "{{ wazuh_release_name }}"
+        chart_ref: "{{ wazuh_chart_ref }}"
+        chart_version: "{{ wazuh_chart_version }}"
+        release_namespace: "{{ wazuh_namespace }}"
+        create_namespace: false
+        kubeconfig: "{{ kubeconfig_path }}"
+        values_files:
+          - "{{ role_path }}/files/values/indexer.values.yml"
+          - "{{ role_path }}/files/values/manager.values.yml"
+        set_values:
+          - value: "identifier.appName={{ wazuh_app_name }}"
+          - value: "identifier.appId={{ wazuh_app_id }}"
+          - value: "indexer.deployment.enabled=true"
+          - value: "wazuh.deployment.enabled=true"
+          - value: "dashboard.deployment.enabled=false"
+          - value: "indexer.cred.password={{ wazuh_indexer_password }}"
+          - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
+        wait: false
+        atomic: false
+        timeout: "30m0s"
+        binary_path: "{{ helm_binary_path }}"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Snapshot - objects after Phase 2 upgrade
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get deploy,sts,ds,svc,pods,pvc -o wide
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Wait for workloads rollout (Phase 2)
+      ansible.builtin.shell: "{{ _wazuh_rollout_helper }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+  rescue:
+    - name: Helm status (Phase 2)
+      ansible.builtin.command: >
+        {{ helm_binary_path }} -n {{ wazuh_namespace }} status {{ wazuh_release_name }}
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Pods/PVC (Phase 2)
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get pods,pvc -o wide
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Events (Phase 2)
+      ansible.builtin.shell: |
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }} \
+          get events --sort-by=.lastTimestamp | tail -n 200
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Describe + logs for non-ready pods (Phase 2)
+      ansible.builtin.shell: |
+        set +e
+        K="kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}"
+        pods="$($K get pods --no-headers 2>/dev/null | awk '($3!="Running" && $3!="Completed") || ($3=="Running" && $2 !~ /^([0-9]+)\/\1$/){print $1}')"
+        for p in $pods; do
+          echo "==== describe pod/$p ===="
+          $K describe pod "$p" | tail -n 200
+          echo "==== logs pod/$p (all containers) ===="
+          $K logs "$p" --all-containers --tail=200 2>/dev/null | tail -n 200
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail (Phase 2)
+      ansible.builtin.fail:
+        msg: "Phase 2 (Manager) failed. Check pods/pvc/events/describe/logs above."
+  always:
+    - name: Snapshot - workloads after Phase 2
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get deploy,sts,ds,svc,pods,pvc -o wide
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+# -----------------------------
+# PHASE 3: Indexer + Manager + Dashboard
+# -----------------------------
+- name: Deploy Wazuh - Phase 3 (Enable Dashboard)
+  block:
+    - name: Helm upgrade (Phase 3) - enable Dashboard
+      kubernetes.core.helm:
+        name: "{{ wazuh_release_name }}"
+        chart_ref: "{{ wazuh_chart_ref }}"
+        chart_version: "{{ wazuh_chart_version }}"
+        release_namespace: "{{ wazuh_namespace }}"
+        create_namespace: false
+        kubeconfig: "{{ kubeconfig_path }}"
+        values_files:
+          - "{{ role_path }}/files/values/indexer.values.yml"
+          - "{{ role_path }}/files/values/manager.values.yml"
+          - "{{ role_path }}/files/values/dashboard.values.yml"
+        set_values:
+          - value: "identifier.appName={{ wazuh_app_name }}"
+          - value: "identifier.appId={{ wazuh_app_id }}"
+          - value: "indexer.deployment.enabled=true"
+          - value: "wazuh.deployment.enabled=true"
+          - value: "dashboard.deployment.enabled=true"
+          - value: "indexer.cred.password={{ wazuh_indexer_password }}"
+          - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
+          - value: "dashboard.cred.password={{ wazuh_dashboard_password }}"
+          - value: "dashboard.cred.passwordHash={{ wazuh_dashboard_password_hash }}"
+        wait: false
+        atomic: false
+        timeout: "30m0s"
+        binary_path: "{{ helm_binary_path }}"
+      delegate_to: localhost
+      run_once: true
+      no_log: true
+
+    - name: Snapshot - objects after Phase 3 upgrade
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get deploy,sts,ds,svc,pods,pvc -o wide
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Wait for workloads rollout (Phase 3)
+      ansible.builtin.shell: "{{ _wazuh_rollout_helper }}"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+  rescue:
+    - name: Helm status (Phase 3)
+      ansible.builtin.command: >
+        {{ helm_binary_path }} -n {{ wazuh_namespace }} status {{ wazuh_release_name }}
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Pods/PVC (Phase 3)
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get pods,pvc -o wide
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Events (Phase 3)
+      ansible.builtin.shell: |
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }} \
+          get events --sort-by=.lastTimestamp | tail -n 200
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Describe + logs for non-ready pods (Phase 3)
+      ansible.builtin.shell: |
+        set +e
+        K="kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}"
+        pods="$($K get pods --no-headers 2>/dev/null | awk '($3!="Running" && $3!="Completed") || ($3=="Running" && $2 !~ /^([0-9]+)\/\1$/){print $1}')"
+        for p in $pods; do
+          echo "==== describe pod/$p ===="
+          $K describe pod "$p" | tail -n 200
+          echo "==== logs pod/$p (all containers) ===="
+          $K logs "$p" --all-containers --tail=200 2>/dev/null | tail -n 200
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+      delegate_to: localhost
+      run_once: true
+
+    - name: Fail (Phase 3)
+      ansible.builtin.fail:
+        msg: "Phase 3 (Dashboard) failed. Check pods/pvc/events/describe/logs above."
+  always:
+    - name: Snapshot - workloads after Phase 3
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+        get deploy,sts,ds,svc,pods,pvc -o wide
+      changed_when: false
+      delegate_to: localhost
+      run_once: true
+
+# --- Post Helm: Certificate + Ingress (cert-manager) ---
+- name: Create Certificate (kubectl apply)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    apiVersion: cert-manager.io/v1
+    kind: Certificate
+    metadata:
+      name: wazuh-dashboard
+      namespace: "{{ wazuh_namespace }}"
+    spec:
+      secretName: "{{ tls_secret_name }}"
+      dnsNames:
+        - "{{ wazuh_domain }}"
+      issuerRef:
+        name: "{{ cluster_issuer_name }}"
+        kind: Issuer
+    YAML
+  args:
+    executable: /bin/bash
   delegate_to: localhost
   run_once: true
   changed_when: false
 
+- name: Apply Ingress for Wazuh Dashboard (TLS) (kubectl apply)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    {{ lookup('template', role_path ~ '/templates/ingress-dashboard.yml.j2') }}
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+# --- Waits / Smoke gates ---
 - name: Wait for Certificate Ready
   ansible.builtin.command: >
     kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
@@ -159,7 +546,7 @@
   run_once: true
   changed_when: false
 
-- name: Basic HTTPS check (expect 200/302)
+- name: Basic HTTPS check (expect 200/302/401)
   ansible.builtin.command: >
     curl -k -s -o /dev/null -w "%{http_code}\n" https://{{ wazuh_domain }}/
   register: wazuh_http_code

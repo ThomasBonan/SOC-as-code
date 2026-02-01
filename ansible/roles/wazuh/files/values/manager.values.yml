@@ -9,7 +9,7 @@ wazuh:
 
   # Storage master (Longhorn)
   storageClassNameMaster: "longhorn"
-  storageSizeMaster: "20Gi"
+  storageSizeMaster: "10Gi"
 
   # Ne pas exposer publiquement
   service:
@@ -25,3 +25,9 @@ wazuh:
       limits:
         cpu: "1"
         memory: "2Gi"
+
+persistence:
+  enabled: true
+  storageClass: longhorn
+  annotations:
+    longhorn.io/numberOfReplicas: "1"

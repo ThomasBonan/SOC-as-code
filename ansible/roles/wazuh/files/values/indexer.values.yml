@@ -33,3 +33,11 @@ indexer:
 # On désactive l’ingress chart (on gère nous-mêmes)
 ingress:
   enabled: false
+
+
+persistence:
+  enabled: true
+  storageClass: longhorn
+  size: 20Gi
+  annotations:
+    longhorn.io/numberOfReplicas: "1"

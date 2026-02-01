@@ -20,7 +20,7 @@ spec:
             pathType: Prefix
             backend:
               service:
-                # pattern attendu côté chart: <appName>-<appId>-dashboard
-                name: "{{ wazuh_app_name }}-{{ wazuh_app_id }}-dashboard"
+                # pattern attendu côté chart: <appName>-dashboard
+                name: "wazuh-dashboard"
                 port:
                   number: 5601

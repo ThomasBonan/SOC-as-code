@@ -36,25 +36,6 @@
     binary_path: "{{ helm_binary_path }}"
   delegate_to: localhost
   run_once: true
-  become: false
-
-- name: Update helm repos (once)
-  ansible.builtin.command: "{{ helm_binary_path }} repo update"
-  delegate_to: localhost
-  run_once: true
-  become: false
-
-- name: Wait for MetalLB CRDs to be available
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ kubeconfig_path }}
-    get crd bgppeers.metallb.io ipaddresspools.metallb.io bgpadvertisements.metallb.io
-  register: crd_check
-  retries: 30
-  delay: 2
-  until: crd_check.rc == 0
-  delegate_to: localhost
-  run_once: true
-  become: false
 
 - name: Install/upgrade metallb
   kubernetes.core.helm:
@@ -66,7 +47,24 @@
     kubeconfig: "{{ kubeconfig_path }}"
     wait: true
     timeout: "10m0s"
+    update_repo_cache: true
     binary_path: "{{ helm_binary_path }}"
+    # skip_crds: false  # (optionnel, mais explicite)
+  delegate_to: localhost
+  run_once: true
+  become: false
+
+- name: Wait for MetalLB CRDs to be established
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    wait --for=condition=Established --timeout=120s
+    crd/bgppeers.metallb.io
+    crd/ipaddresspools.metallb.io
+    crd/bgpadvertisements.metallb.io
+  register: crd_wait
+  retries: 10
+  delay: 3
+  until: crd_wait.rc == 0
   delegate_to: localhost
   run_once: true
   become: false

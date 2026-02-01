@@ -9,7 +9,7 @@ wazuh_namespace: "soc-wazuh"
 # DNS / Ingress / TLS
 wazuh_domain: "wazuh.apps.soc.lab"
 ingress_class_name: "nginx"
-cluster_issuer_name: "soc-lab-ca-issuer"
+cluster_issuer_name: "wazuh-ca-issuer"
 tls_secret_name: "wazuh-dashboard-tls"
 
 # Helm repo / chart
@@ -56,3 +56,7 @@ dashboard_limits_mem: "1Gi"
 # Local secrets persistence (idempotence) : à gitignore côté repo
 # Stockés sur la machine "controller" (localhost) qui exécute Ansible
 secrets_dir: "{{ playbook_dir }}/../.secrets/wazuh"
+
+# Ansible k8s python venv (controller)
+k8s_ansible_venv: /opt/ansible-k8s-venv
+k8s_ansible_python: "{{ k8s_ansible_venv }}/bin/python"
