@@ -1,0 +1,6 @@
+---
+- name: Deploy MISP (MariaDB + Redis + App + Ingress)
+  hosts: localhost
+  gather_facts: false
+  roles:
+    - misp

@@ -1,0 +1,11 @@
+auth:
+  enabled: false
+
+master:
+  persistence:
+    enabled: true
+    storageClass: longhorn
+    size: 5Gi
+
+replica:
+  replicaCount: 0

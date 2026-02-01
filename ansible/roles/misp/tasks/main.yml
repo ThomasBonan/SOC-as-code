@@ -1,0 +1,324 @@
+---
+- name: Add Bitnami repo (once)
+  kubernetes.core.helm_repository:
+    name: "{{ bitnami_repo_name }}"
+    repo_url: "{{ bitnami_repo_url }}"
+    binary_path: "{{ helm_binary_path }}"
+  run_once: true
+
+- name: Update helm repos (once)
+  ansible.builtin.command: "{{ helm_binary_path }} repo update"
+  changed_when: false
+  run_once: true
+
+- name: Ensure namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ soc_core_namespace }}"
+
+# -------------------------
+# Secrets (create-once)
+# -------------------------
+- name: Check MISP MariaDB secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    name: misp-mariadb-auth
+    namespace: "{{ soc_core_namespace }}"
+  register: misp_mariadb_secret
+
+- name: Create MISP MariaDB secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: misp-mariadb-auth
+        namespace: "{{ soc_core_namespace }}"
+      type: Opaque
+      stringData:
+        mariadb-root-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        mariadb-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  when: (misp_mariadb_secret.resources | length) == 0
+
+- name: Check MISP app secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    name: misp-app-secret
+    namespace: "{{ soc_core_namespace }}"
+  register: misp_app_secret
+
+- name: Create MISP app secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: misp-app-secret
+        namespace: "{{ soc_core_namespace }}"
+      type: Opaque
+      stringData:
+        admin_email: "{{ misp_admin_email }}"
+        admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+        salt: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        gpg_passphrase: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+  when: (misp_app_secret.resources | length) == 0
+
+# -------------------------
+# DB (MariaDB) via Helm
+# -------------------------
+- name: Deploy MISP MariaDB
+  kubernetes.core.helm:
+    name: "{{ misp_db_release }}"
+    chart_ref: "{{ mariadb_chart_ref }}"
+    chart_version: "{{ mariadb_chart_version }}"
+    release_namespace: "{{ soc_core_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "{{ role_path }}/files/values/misp-mariadb.values.yml"
+    wait: true
+    atomic: true
+    timeout: "30m0s"
+    binary_path: "{{ helm_binary_path }}"
+  run_once: true
+
+# -------------------------
+# Redis via Helm
+# -------------------------
+- name: Deploy MISP Redis
+  kubernetes.core.helm:
+    name: "{{ misp_redis_release }}"
+    chart_ref: "{{ redis_chart_ref }}"
+    chart_version: "{{ redis_chart_version }}"
+    release_namespace: "{{ soc_core_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "{{ role_path }}/files/values/misp-redis.values.yml"
+    wait: true
+    atomic: true
+    timeout: "30m0s"
+    binary_path: "{{ helm_binary_path }}"
+  run_once: true
+
+# -------------------------
+# MISP ConfigMap (env)
+# -------------------------
+- name: Apply MISP configmap
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: misp-config
+        namespace: "{{ soc_core_namespace }}"
+      data:
+        # endpoints internes k8s
+        DB_HOST: "{{ misp_db_host }}"
+        DB_NAME: "{{ misp_db_name }}"
+        DB_USER: "{{ misp_db_user }}"
+        REDIS_HOST: "{{ misp_redis_host }}"
+        REDIS_PORT: "6379"
+
+        # hostname externe MISP (ingress)
+        MISP_BASEURL: "https://{{ misp_fqdn }}"
+
+# -------------------------
+# MISP Deployment + Service
+# -------------------------
+- name: Apply MISP deployment/service
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: misp
+            namespace: "{{ soc_core_namespace }}"
+          spec:
+            type: ClusterIP
+            selector:
+              app: misp
+            ports:
+              - name: http
+                port: 80
+                targetPort: 8080
+
+        - apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: misp
+            namespace: "{{ soc_core_namespace }}"
+            labels:
+              app: misp
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: misp
+            template:
+              metadata:
+                labels:
+                  app: misp
+              spec:
+                securityContext:
+                  fsGroup: 2000
+                initContainers:
+                  - name: wait-db
+                    image: busybox:1.36
+                    command: ["sh","-lc","until nc -z {{ misp_db_host }} 3306; do echo waiting db; sleep 2; done"]
+                  - name: wait-redis
+                    image: busybox:1.36
+                    command: ["sh","-lc","until nc -z {{ misp_redis_host }} 6379; do echo waiting redis; sleep 2; done"]
+                containers:
+                  - name: misp
+                    image: "{{ misp_image }}"
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 8080
+                        name: http
+                    envFrom:
+                      - configMapRef:
+                          name: misp-config
+                    env:
+                      - name: DB_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: misp-mariadb-auth
+                            key: mariadb-password
+                      - name: ADMIN_EMAIL
+                        valueFrom:
+                          secretKeyRef:
+                            name: misp-app-secret
+                            key: admin_email
+                      - name: ADMIN_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: misp-app-secret
+                            key: admin_password
+                      - name: MISP_SALT
+                        valueFrom:
+                          secretKeyRef:
+                            name: misp-app-secret
+                            key: salt
+                      - name: GPG_PASSPHRASE
+                        valueFrom:
+                          secretKeyRef:
+                            name: misp-app-secret
+                            key: gpg_passphrase
+                    readinessProbe:
+                      httpGet:
+                        path: /
+                        port: 8080
+                      initialDelaySeconds: 20
+                      periodSeconds: 10
+                    livenessProbe:
+                      httpGet:
+                        path: /
+                        port: 8080
+                      initialDelaySeconds: 60
+                      periodSeconds: 20
+
+# -------------------------
+# Ingress
+# -------------------------
+- name: Apply MISP ingress
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: misp
+        namespace: "{{ soc_core_namespace }}"
+        annotations:
+          kubernetes.io/ingress.class: nginx
+          nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+          nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+          nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+          # si tu fais du TLS cert-manager plus tard :
+          # cert-manager.io/cluster-issuer: "{{ misp_cluster_issuer }}"
+      spec:
+        rules:
+          - host: "{{ misp_fqdn }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: misp
+                      port:
+                        number: 80
+        # tls:
+        #   - hosts: ["{{ misp_fqdn }}"]
+        #     secretName: misp-tls
+
+# -------------------------
+# (Option) NetworkPolicy basique
+# -------------------------
+- name: Apply minimal NetworkPolicies for MISP
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: misp-default
+        namespace: "{{ soc_core_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app: misp
+        policyTypes: ["Ingress","Egress"]
+        ingress:
+          - ports:
+              - protocol: TCP
+                port: 8080
+        egress:
+          - to:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mariadb
+            ports:
+              - protocol: TCP
+                port: 3306
+          - to:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: redis
+            ports:
+              - protocol: TCP
+                port: 6379
+          - to:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kube-system
+                podSelector:
+                  matchLabels:
+                    k8s-app: coredns
+            ports:
+              - protocol: UDP
+                port: 53

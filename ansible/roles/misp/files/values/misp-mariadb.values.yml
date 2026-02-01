@@ -1,0 +1,12 @@
+auth:
+  existingSecret: misp-mariadb-auth
+  username: misp
+  database: misp
+
+primary:
+  persistence:
+    enabled: true
+    storageClass: longhorn
+    size: 20Gi
+
+architecture: standalone
