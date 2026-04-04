@@ -1,0 +1,147 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_risk_engine role — defaults
+# Playbook 190 | SOC Risk Engine
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# These defaults work out-of-the-box for a dev environment.
+# Override per-environment in:
+#   ansible/playbooks/envs/prod.yml  (SOC_ENV=prod)
+#   ansible/playbooks/envs/staging.yml
+#
+# Source-of-truth for scoring weights and thresholds is in group_vars/all.yml:
+#   soc_risk_weights, soc_risk_thresholds, soc_risk_asset_weights
+# These role defaults are fallbacks only.
+#
+# Conventions:
+#   - All variables prefixed soc_risk_engine_
+#   - Scoring variables prefixed soc_risk_
+#   - Feature toggles: soc_risk_engine_enable_<feature>
+#   - SA secret refs mirror soc_foundations defaults (read-only, never overwrite)
+
+# ── Feature toggles ───────────────────────────────────────────────
+soc_risk_engine_enable_preflight:          true
+soc_risk_engine_enable_asset_criticality:  true
+soc_risk_engine_enable_scoring_model:      true
+soc_risk_engine_enable_drift_guard:        true
+soc_risk_engine_enable_risk_engine_service: true
+
+# ── Runtime settings ──────────────────────────────────────────────
+soc_risk_engine_kubeconfig_path: "{{ kubeconfig_path }}"
+soc_risk_engine_http_timeout:    "{{ soc_http.timeout | default(10) }}"
+soc_risk_engine_http_retries:    "{{ soc_http.retries | default(20) }}"
+soc_risk_engine_http_delay:      "{{ soc_http.delay   | default(3)  }}"
+soc_risk_engine_validate_certs:  false
+# Preflight probes use a short retry count — services must already be running
+soc_risk_engine_preflight_retries: 3
+soc_risk_engine_preflight_delay:   5
+
+# ── SA Secrets (created by 170-soc-foundations — DO NOT MODIFY) ──
+# These are read-only references. Never write to these secrets here.
+soc_risk_engine_thehive_sa_secret_name: "thehive-sa-foundations"
+soc_risk_engine_thehive_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
+soc_risk_engine_thehive_sa_key:         "api_key"
+
+soc_risk_engine_cortex_sa_secret_name:  "cortex-sa-foundations"
+soc_risk_engine_cortex_sa_secret_ns:    "{{ soc_namespaces.cortex }}"
+soc_risk_engine_cortex_sa_key:          "api_key"
+
+soc_risk_engine_misp_sa_secret_name:    "misp-sa-foundations"
+soc_risk_engine_misp_sa_secret_ns:      "{{ soc_namespaces.misp }}"
+soc_risk_engine_misp_sa_key:            "authkey"
+
+soc_risk_engine_wazuh_sa_secret_name:   "wazuh-sa-foundations"
+soc_risk_engine_wazuh_sa_secret_ns:     "{{ soc_namespaces.wazuh }}"
+soc_risk_engine_wazuh_sa_key_user:      "username"
+soc_risk_engine_wazuh_sa_key_pass:      "password"
+
+# ── TheHive bootstrap credentials (for org-admin operations) ──────
+# Required to create custom fields — the analyst SA profile returns 403 (not org-admin).
+# Reuses the same variables as soc_foundations (170) and soc_automation (180).
+soc_risk_engine_thehive_bootstrap_user:     "{{ thehive_bootstrap_user     | default('admin@thehive.local') }}"
+soc_risk_engine_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+
+# ── API base URLs ─────────────────────────────────────────────────
+soc_risk_engine_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"
+soc_risk_engine_cortex_api_base:  "{{ soc_endpoints.cortex.api_base  }}"
+soc_risk_engine_misp_api_base:    "{{ soc_endpoints.misp.api_base    }}"
+
+# ── Wazuh pod reference ───────────────────────────────────────────
+soc_risk_engine_wazuh_ns:          "{{ soc_namespaces.wazuh }}"
+soc_risk_engine_wazuh_manager_pod: "wazuh-manager-master-0"
+
+# ── Asset criticality weights ─────────────────────────────────────
+# Maps asset type tag (e.g. asset:server-prod on TheHive cases) to a weight (1-5).
+# Used as dimension 4 in the 5-dimension risk score.
+# Cases should be tagged with asset:<type> by the Wazuh integration or analysts.
+# Falls back to 'default' if no matching asset: tag is found.
+soc_risk_asset_weights:
+  server-prod:     5
+  server-internal: 3
+  workstation:     2
+  lab:             1
+  default:         1
+
+# ── Scoring model weights (unnormalized integers) ─────────────────
+# risk_score_v2 = sum(dim_score * weight) / sum(weights)  [0-100]
+# Dimensions:
+#   wazuh     : TheHive case severity (1-4)
+#   cortex    : Max Cortex analyzer taxonomy level (0-3)
+#   misp      : MISP IOC hit (binary: 0 or 100)
+#   asset     : Asset criticality weight from soc_risk_asset_weights (1-5)
+#   frequency : Similar alert count in last frequency_window_hours (1-10+)
+soc_risk_weights:
+  wazuh:     2
+  cortex:    3
+  misp:      4
+  asset:     2
+  frequency: 1
+
+# ── Decision thresholds (0-100 scale) ────────────────────────────
+# Evaluated top-down: first match wins.
+#   >= escalate     → Critical severity + priority:critical tag
+#   >= auto_contain → Wazuh AR firewall-drop + contained tag
+#   >= auto_promote → High severity + auto_promoted tag
+#   <  auto_close   → Close as FalsePositive + auto_closed tag
+#   otherwise       → reviewed (no automated action)
+soc_risk_thresholds:
+  auto_close:   15
+  auto_promote: 50
+  auto_contain: 75
+  escalate:     90
+
+# ── Alert frequency window ────────────────────────────────────────
+# Hours to look back when counting similar alerts (for frequency dimension).
+soc_risk_engine_frequency_window_hours: 24
+
+# ── Drift guard ───────────────────────────────────────────────────
+# Set to true to fail the play when threshold divergence is detected.
+# Useful in CI/CD pipelines where drift must be blocked.
+soc_risk_engine_drift_fail_on_divergence: false
+
+# ── HTTP Service (Flask Deployment + ClusterIP) ───────────────────
+# Replaces the old CronJob worker. Called by Shuffle via POST /score.
+# URL: http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}
+soc_risk_engine_service_namespace:        "{{ soc_namespaces.thehive }}"
+soc_risk_engine_service_name:             "risk-engine-svc"
+soc_risk_engine_service_port:             8080
+soc_risk_engine_service_replicas:         1
+soc_risk_engine_service_image:            "python:3.11-slim"
+soc_risk_engine_service_script_configmap: "soc-risk-engine-app-script"
+
+# ── ConfigMap names ───────────────────────────────────────────────
+soc_risk_engine_asset_configmap:       "soc-asset-criticality"
+soc_risk_engine_policy_configmap:      "soc-risk-policy"
+soc_risk_engine_drift_report_configmap: "soc-risk-drift-report"
+
+# ── K8s resource labels (applied to all resources created by this role) ─────
+soc_risk_engine_labels:
+  app.kubernetes.io/managed-by: soc-risk-engine
+  app.kubernetes.io/component:  soc-risk-engine
+  soc.lab/playbook:             "190-soc-risk-engine"
+  soc.lab/environment:          "{{ soc_environment | default('dev') }}"
+
+# ── Idempotence marker ConfigMap names ───────────────────────────
+soc_risk_engine_marker_asset:    "soc-risk-marker-asset-criticality"
+soc_risk_engine_marker_scoring:  "soc-risk-marker-scoring-model"
+soc_risk_engine_marker_service:  "soc-risk-marker-service"

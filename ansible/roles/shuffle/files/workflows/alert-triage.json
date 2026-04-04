@@ -1,0 +1,1408 @@
+{
+  "name": "SOC Alert Triage",
+  "description": "Wazuh -> TheHive alert -> Cortex -> MISP -> Risk Engine -> AR/Escalate | HTTP-only pipeline",
+  "start": "action_create_thehive_alert",
+  "tags": [
+    "soc",
+    "triage",
+    "wazuh",
+    "thehive",
+    "cortex",
+    "misp"
+  ],
+  "triggers": [
+    {
+      "trigger_type": "WEBHOOK",
+      "id": "trigger_wazuh_webhook",
+      "name": "Wazuh Alert Webhook",
+      "status": "running",
+      "parameters": [
+        {
+          "name": "info",
+          "value": "Webhook declenche par Wazuh via ossec.conf integration"
+        }
+      ],
+      "position": {
+        "x": -600,
+        "y": 0
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "action_create_thehive_alert",
+      "label": "action_create_thehive_alert",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/alert"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"title\":\"[Wazuh] $exec.all_fields.rule.description\",\"type\":\"External\",\"source\":\"wazuh\",\"sourceRef\":\"wazuh-$exec.all_fields.agent.id-$exec.all_fields.rule.id-$exec.all_fields.timestamp\",\"description\":\"Agent: $exec.all_fields.agent.name ($exec.all_fields.agent.ip) | Rule: $exec.all_fields.rule.id | Level: $exec.all_fields.rule.level\",\"severity\":2,\"tags\":[\"source:wazuh\",\"agent:$exec.all_fields.agent.name\",\"rule:$exec.all_fields.rule.id\"]}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": -400,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_run_cortex_analysis",
+      "label": "action_run_cortex_analysis",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_ANALYZER/run"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_CORTEX_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\":\"$exec.all_fields.data.srcip\",\"dataType\":\"ip\",\"message\":\"SOC Triage - Alert $action_create_thehive_alert.body._id\",\"tlp\":2,\"parameters\":{}}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": -200,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_get_cortex_result",
+      "label": "action_get_cortex_result",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "GET",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_analysis.body.id/waitreport?atMost=5minutes"
+        },
+        {
+          "name": "method",
+          "value": "GET"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_CORTEX_APIKEY\"}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_search_misp",
+      "label": "action_search_misp",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_MISP_URL/attributes/restSearch"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"$ENV_MISP_APIKEY\",\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"value\":\"$exec.all_fields.data.srcip\",\"type\":\"ip-src\",\"limit\":10,\"returnFormat\":\"json\"}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 200,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_call_risk_engine",
+      "label": "action_call_risk_engine",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_RISK_ENGINE_URL/score"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"wazuh_severity\":\"$exec.all_fields.rule.level\",\"cortex_max_level\":0,\"misp_hit\":false,\"asset_type\":\"default\",\"frequency\":1,\"case_id\":\"$action_create_thehive_alert.body._id\",\"environment\":\"$ENV_SOC_ENVIRONMENT\"}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 400,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_ignore_alert",
+      "label": "action_ignore_alert",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/alert/$action_create_thehive_alert.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"status\":\"Ignored\",\"tags\":[\"soc:auto_closed\",\"risk_score:$action_call_risk_engine.body.risk_score\"]}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 600,
+        "y": 300
+      }
+    },
+    {
+      "id": "action_promote_to_case",
+      "label": "action_promote_to_case",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/alert/$action_create_thehive_alert.body._id/case"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"observablerule\":\"all\",\"taskrule\":\"all\"}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 600,
+        "y": -150
+      }
+    },
+    {
+      "id": "action_add_case_observable",
+      "label": "action_add_case_observable",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id/observable"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\":\"$exec.all_fields.data.srcip\",\"dataType\":\"ip\",\"message\":\"Source IP from Wazuh alert\",\"tlp\":2,\"pap\":2,\"tags\":[\"source:wazuh\"]}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 800,
+        "y": -150
+      }
+    },
+    {
+      "id": "action_update_case_risk",
+      "label": "action_update_case_risk",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1000,
+        "y": -150
+      }
+    },
+    {
+      "id": "action_auto_promote",
+      "label": "action_auto_promote",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"severity\":3,\"tags\":[\"soc:auto_promoted\"]}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1200,
+        "y": -300
+      }
+    },
+    {
+      "id": "action_get_wazuh_jwt",
+      "label": "action_get_wazuh_jwt",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_WAZUH_API_URL/security/user/authenticate"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Basic $ENV_WAZUH_B64AUTH\"}"
+        },
+        {
+          "name": "body",
+          "value": ""
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1200,
+        "y": -100
+      }
+    },
+    {
+      "id": "action_active_response",
+      "label": "action_active_response",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PUT",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_WAZUH_API_URL/active-response?agents_list=$exec.all_fields.agent.id"
+        },
+        {
+          "name": "method",
+          "value": "PUT"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $action_get_wazuh_jwt.body.data.token\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"command\":\"firewall-drop\",\"arguments\":[\"-\",\"null\",\"$exec.all_fields.data.srcip\",\"600\"]}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1400,
+        "y": -100
+      }
+    },
+    {
+      "id": "action_escalate",
+      "label": "action_escalate",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"severity\":4,\"tags\":[\"soc:escalated\",\"priority:critical\"]}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1200,
+        "y": 50
+      }
+    },
+    {
+      "id": "action_misp_create_event",
+      "label": "action_misp_create_event",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_MISP_URL/events"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"$ENV_MISP_APIKEY\",\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"Event\":{\"info\":\"[SOC] $exec.all_fields.rule.description\",\"distribution\":0,\"threat_level_id\":2,\"analysis\":1,\"Attribute\":[{\"type\":\"ip-dst\",\"value\":\"$exec.all_fields.data.srcip\",\"category\":\"Network activity\",\"to_ids\":true,\"comment\":\"Case: $action_promote_to_case.body._id | Score: $action_call_risk_engine.body.risk_score\"}]}}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1600,
+        "y": -150
+      }
+    },
+    {
+      "id": "action_write_case_report",
+      "label": "action_write_case_report",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id/pages"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+        },
+        {
+          "name": "body",
+          "value": "{\"category\":\"SOC-Automation\",\"title\":\"Pipeline Report\",\"content\":\"Risk Score: $action_call_risk_engine.body.risk_score | Decision: $action_call_risk_engine.body.risk_decision | Cortex status: $action_get_cortex_result.body.status | MISP matches: $action_search_misp.body.response.Attribute\"}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 1800,
+        "y": -150
+      }
+    }
+  ],
+  "branches": [
+    {
+      "source_id": "trigger_wazuh_webhook",
+      "destination_id": "action_create_thehive_alert",
+      "conditions": []
+    },
+    {
+      "source_id": "action_create_thehive_alert",
+      "destination_id": "action_run_cortex_analysis",
+      "conditions": []
+    },
+    {
+      "source_id": "action_run_cortex_analysis",
+      "destination_id": "action_get_cortex_result",
+      "conditions": []
+    },
+    {
+      "source_id": "action_get_cortex_result",
+      "destination_id": "action_search_misp",
+      "conditions": []
+    },
+    {
+      "source_id": "action_search_misp",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_ignore_alert",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "auto_closed",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "reviewed",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "auto_promoted",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "contained",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_promote_to_case",
+      "destination_id": "action_add_case_observable",
+      "conditions": []
+    },
+    {
+      "source_id": "action_add_case_observable",
+      "destination_id": "action_update_case_risk",
+      "conditions": []
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_auto_promote",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "auto_promoted",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_get_wazuh_jwt",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "contained",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_get_wazuh_jwt",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_escalate",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_misp_create_event",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "reviewed",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_auto_promote",
+      "destination_id": "action_misp_create_event",
+      "conditions": []
+    },
+    {
+      "source_id": "action_get_wazuh_jwt",
+      "destination_id": "action_active_response",
+      "conditions": []
+    },
+    {
+      "source_id": "action_active_response",
+      "destination_id": "action_misp_create_event",
+      "conditions": []
+    },
+    {
+      "source_id": "action_misp_create_event",
+      "destination_id": "action_write_case_report",
+      "conditions": []
+    }
+  ],
+  "workflow_variables": [
+    {
+      "name": "ENV_THEHIVE_URL",
+      "value": "",
+      "description": "TheHive internal URL (.svc)"
+    },
+    {
+      "name": "ENV_THEHIVE_APIKEY",
+      "value": "",
+      "description": "TheHive write API key"
+    },
+    {
+      "name": "ENV_CORTEX_URL",
+      "value": "",
+      "description": "Cortex internal URL (.svc)"
+    },
+    {
+      "name": "ENV_CORTEX_APIKEY",
+      "value": "",
+      "description": "Cortex API key"
+    },
+    {
+      "name": "ENV_CORTEX_ANALYZER",
+      "value": "AbuseIPDB_1_0",
+      "description": "Cortex analyzer name for IP enrichment"
+    },
+    {
+      "name": "ENV_MISP_URL",
+      "value": "",
+      "description": "MISP internal URL (.svc)"
+    },
+    {
+      "name": "ENV_MISP_APIKEY",
+      "value": "",
+      "description": "MISP API key"
+    },
+    {
+      "name": "ENV_WAZUH_API_URL",
+      "value": "",
+      "description": "Wazuh API internal URL (port 55000)"
+    },
+    {
+      "name": "ENV_WAZUH_B64AUTH",
+      "value": "",
+      "description": "Base64 basic auth for Wazuh JWT (user:pass)"
+    },
+    {
+      "name": "ENV_RISK_ENGINE_URL",
+      "value": "http://risk-engine-svc.soc-thehive.svc:8080",
+      "description": "Risk Engine HTTP service"
+    },
+    {
+      "name": "ENV_SOC_ENVIRONMENT",
+      "value": "dev",
+      "description": "SOC environment"
+    }
+  ]
+}

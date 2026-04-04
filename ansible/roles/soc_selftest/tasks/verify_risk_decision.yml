@@ -1,0 +1,170 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# verify_risk_decision.yml — Verify risk scoring and decision by 190 risk engine
+# tag: verify
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Verifies that Shuffle called the 190 risk-engine HTTP service (POST /score)
+# and wrote the result back to the TheHive case custom fields:
+#   - risk_score_v2  (float)  — 5-dim normalized score [0-100]
+#   - risk_decision  (string) — auto_closed | reviewed | auto_promoted | contained | escalated
+#
+# Architecture change from CronJob to HTTP service:
+#   OLD: Poll every 5 min for "risk_engine:processed" tag (190 CronJob)
+#   NEW: Poll for risk_decision custom field (Shuffle calls POST /score synchronously)
+#        Timeout reduced from 360s to 120s (event-driven, not polling-based)
+#
+# Decision coherence logic (5-dim normalized 0-100 scale):
+#   score <  auto_close   → decision must be "auto_closed"
+#   score >= escalate     → decision must be "escalated"
+#   score >= auto_contain → decision in [contained, escalated]
+#   score >= auto_promote → decision in [auto_promoted, contained, escalated]
+#   otherwise             → any decision acceptable (reviewed)
+#
+# Facts set:
+#   _st_risk_score    — 5-dim normalized risk score (0-100, -1 if not set)
+#   _st_risk_decision — decision string from risk_decision custom field
+#   _st_risk_epoch    — Unix timestamp when risk processing was confirmed
+#   _st_risk_status   — "ok" | "fail"
+
+# ── Guard: skip if no case was promoted ──────────────────────────
+
+- name: "verify_risk_decision | Fail if no case ID (prerequisite check)"
+  ansible.builtin.fail:
+    msg: >-
+      verify_risk_decision requires a case ID from verify_thehive.
+      No case was promoted from the selftest alert. Check verify_thehive logs.
+  when: _st_case_id | default('') | length == 0
+
+# ── Poll case for risk_decision custom field ──────────────────────
+# Shuffle calls POST /score on the risk-engine service synchronously after Cortex
+# and writes risk_decision back to the TheHive case. Poll until the field is set.
+# Allow up to soc_selftest_risk_timeout_seconds (default: 120s).
+
+- name: "verify_risk_decision | Poll case for risk_decision custom field (risk engine via Shuffle)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/case/{{ _st_case_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvrk_case_detail
+  retries:      "{{ (soc_selftest_risk_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvrk_case_detail.status == 200 and
+    (
+      (
+        _stvrk_case_detail.json.customFields | default([])
+        | selectattr('name', 'equalto', 'risk_decision')
+        | map(attribute='value') | list | first | default('')
+      ) | length
+    ) > 0
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when: _st_case_id | default('') | length > 0
+
+- name: "verify_risk_decision | Assert risk_decision custom field is set"
+  ansible.builtin.assert:
+    that: >-
+      (
+        (
+          _stvrk_case_detail.json.customFields | default([])
+          | selectattr('name', 'equalto', 'risk_decision')
+          | map(attribute='value') | list | first | default('')
+        ) | length
+      ) > 0
+    fail_msg: >-
+      Custom field 'risk_decision' not set on case {{ _st_case_id }}
+      after {{ soc_selftest_risk_timeout_seconds }}s.
+      Shuffle did not call the risk-engine POST /score endpoint, or the risk engine
+      did not return a decision. Check:
+        - Shuffle workflow execution log in the Shuffle UI
+        - risk-engine pod logs: kubectl logs -n {{ soc_namespaces.thehive }} -l app=risk-engine
+        - risk-engine service: kubectl get svc risk-engine-svc -n {{ soc_namespaces.thehive }}
+  when: _st_case_id | default('') | length > 0
+
+# ── Extract risk_score_v2 and risk_decision custom fields ─────────
+
+- name: "verify_risk_decision | Extract risk_score_v2, risk_decision, and record timestamp"
+  ansible.builtin.set_fact:
+    _st_risk_score: >-
+      {{
+        _stvrk_case_detail.json.customFields | default([])
+        | selectattr('name', 'equalto', 'risk_score_v2')
+        | map(attribute='value') | list | first | default(-1)
+      }}
+    _st_risk_decision: >-
+      {{
+        _stvrk_case_detail.json.customFields | default([])
+        | selectattr('name', 'equalto', 'risk_decision')
+        | map(attribute='value') | list | first | default('unknown')
+      }}
+    _st_risk_epoch:    "{{ now(utc=True).strftime('%s') | int }}"
+  changed_when: false
+  when: _st_case_id | default('') | length > 0
+
+- name: "verify_risk_decision | Assert risk_score_v2 was set by risk engine"
+  ansible.builtin.assert:
+    that: _st_risk_score | float >= 0
+    fail_msg: >-
+      Custom field 'risk_score_v2' not found or not set on case {{ _st_case_id }}.
+      Shuffle called the risk engine (risk_decision is set) but risk_score_v2 is missing.
+      Check the Shuffle workflow update_case_risk action and the risk-engine response format.
+  when: _st_case_id | default('') | length > 0
+
+# ── Validate decision coherence with declared thresholds ──────────
+# Verifies that the risk engine's decision matches the deployed thresholds
+# from group_vars (soc_risk_thresholds). This catches threshold drift where
+# the engine was redeployed with different thresholds than declared.
+
+- name: "verify_risk_decision | Validate decision coherence with declared thresholds"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_st_risk_score | float < soc_risk_thresholds.auto_close and _st_risk_decision == 'auto_closed')
+        or (_st_risk_score | float >= soc_risk_thresholds.escalate and _st_risk_decision == 'escalated')
+        or (_st_risk_score | float >= soc_risk_thresholds.auto_contain
+            and _st_risk_score | float < soc_risk_thresholds.escalate
+            and _st_risk_decision in ['contained', 'escalated'])
+        or (_st_risk_score | float >= soc_risk_thresholds.auto_promote
+            and _st_risk_score | float < soc_risk_thresholds.auto_contain
+            and _st_risk_decision in ['auto_promoted', 'contained', 'escalated'])
+        or (_st_risk_score | float >= soc_risk_thresholds.auto_close
+            and _st_risk_score | float < soc_risk_thresholds.auto_promote)
+    fail_msg: >-
+      Risk decision '{{ _st_risk_decision }}' is INCOHERENT with score={{ _st_risk_score }}
+      and declared thresholds:
+        auto_close   : {{ soc_risk_thresholds.auto_close }}
+        auto_promote : {{ soc_risk_thresholds.auto_promote }}
+        auto_contain : {{ soc_risk_thresholds.auto_contain }}
+        escalate     : {{ soc_risk_thresholds.escalate }}
+      This indicates threshold drift between group_vars and the deployed risk engine.
+      Run 200-soc-compliance to detect configuration drift before re-running the selftest.
+  changed_when: false
+  when:
+    - _st_case_id | default('') | length > 0
+    - _st_risk_score | default(-1) | float >= 0
+
+# ── Mark risk status ok ───────────────────────────────────────────
+
+- name: "verify_risk_decision | Mark risk status ok"
+  ansible.builtin.set_fact:
+    _st_risk_status: "ok"
+  changed_when: false
+  when: _st_case_id | default('') | length > 0
+
+- name: "verify_risk_decision | Show risk engine result"
+  ansible.builtin.debug:
+    msg:
+      - "Risk engine processing confirmed (via Shuffle → POST /score)"
+      - "risk_score_v2  : {{ _st_risk_score }}"
+      - "risk_decision  : {{ _st_risk_decision }}"
+      - "Thresholds     : auto_close={{ soc_risk_thresholds.auto_close }}, auto_promote={{ soc_risk_thresholds.auto_promote }}, auto_contain={{ soc_risk_thresholds.auto_contain }}, escalate={{ soc_risk_thresholds.escalate }}"
+      - "Decision valid : YES"
+      - "Latency cortex→risk : {{ (_st_risk_epoch | int) - (_st_cortex_epoch | int | default(0)) }}s"
+  changed_when: false
+  when: _st_case_id | default('') | length > 0

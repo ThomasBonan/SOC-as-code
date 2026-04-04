@@ -20,7 +20,7 @@ cni: cilium
 
 # Cilium - MVP
 cilium_version: "1.15.6"         # par ex.
-cilium_kubeproxy_replacement: "disabled"  # MVP : on garde kube-proxy
+cilium_kubeproxy_replacement: "false"     # Cilium 1.15: "disabled" → "false" (kube-proxy retained)
 cilium_routing_mode: "tunnel"    # simple (VXLAN). Plus tard: "native"
 cilium_hubble_enabled: true
 cilium_hubble_ui: true
@@ -81,3 +81,193 @@ longhorn_namespace: longhorn-system
 longhorn_chart_version: ""   # optionnel (sinon latest)
 longhorn_release: longhorn
 longhorn_set_default_sc: true
+
+misp_admin_email: "admin@soc.lab"
+
+k8s_ansible_python: "/opt/ansible-k8s-venv/bin/python"
+
+# Namespaces
+soc_namespaces:
+  wazuh: soc-wazuh
+  thehive: soc-thehive
+  cortex: soc-cortex
+  misp: soc-core
+
+# Services
+soc_services:
+  thehive: thehive
+  cortex: cortex
+  misp: misp
+
+# Ports (Service ports)
+soc_ports:
+  thehive: 9000
+  cortex: 9001
+  misp: 443
+
+# SPIRE namespace (injecté par le chart Cilium lors du playbook 155-soc-mtls)
+cilium_spire_namespace: cilium-spire
+
+# Protocoles internes (prod-like: https si tu gères un CA interne, sinon http)
+soc_protocols:
+  thehive: http    # Plain HTTP at service level; TLS terminated at Nginx Ingress
+  cortex: http     # Plain HTTP at service level; TLS terminated at Nginx Ingress
+  misp: https      # MISP container natively serves TLS on port 443
+
+# Endpoints (SoT)
+soc_endpoints:
+  thehive:
+    host: "{{ soc_services.thehive }}.{{ soc_namespaces.thehive }}.svc"
+    url: "{{ soc_protocols.thehive }}://{{ soc_endpoints.thehive.host }}:{{ soc_ports.thehive }}"
+    api_base: "{{ soc_endpoints.thehive.url }}/api"
+  cortex:
+    host: "{{ soc_services.cortex }}.{{ soc_namespaces.cortex }}.svc"
+    url: "{{ soc_protocols.cortex }}://{{ soc_endpoints.cortex.host }}:{{ soc_ports.cortex }}"
+    api_base: "{{ soc_endpoints.cortex.url }}/api"
+  misp:
+    host: "{{ soc_services.misp }}.{{ soc_namespaces.misp }}.svc"
+    url: "{{ soc_protocols.misp }}://{{ soc_endpoints.misp.host }}:{{ soc_ports.misp }}"
+    api_base: "{{ soc_endpoints.misp.url }}/"
+
+soc_http:
+  timeout: 10
+  retries: 20
+  delay: 3
+
+# ============================================================
+# SOC Foundations - variables globales (rôle soc_foundations)
+# ============================================================
+
+# Environnement courant (dev / staging / prod)
+# Peut être surchargé via la variable d'env SOC_ENV dans le pipeline CI/CD
+soc_environment: "dev"
+
+# Backend de secrets actuel (pour traçabilité et migration future)
+# Valeurs : kubernetes-secrets | vault | eso (External Secrets Operator)
+soc_vault_backend: "kubernetes-secrets"
+
+# CIDRs autorisés à accéder aux APIs SOC (TheHive:9000, Cortex:9001, MISP:443, Wazuh:55000)
+# Appliqués via NetworkPolicy Kubernetes (ingress ipBlock) par le rôle soc_foundations.
+# En production, restreindre aux seuls CIDR des runners CI/CD et du controller Ansible.
+soc_allowed_api_sources:
+  - "10.0.0.0/8"       # Réseau interne lab (adapter au CIDR de gestion réel)
+  - "172.16.0.0/12"    # RFC1918 lab — à restreindre en production
+  # - "192.168.0.0/16"  # Décommenter si nécessaire
+
+# Comptes de service créés par soc_foundations (un par plateforme SOC)
+# Principe du moindre privilège : rôles/profils non-admin, API-only, non-interactifs
+soc_service_accounts:
+  thehive:
+    login: "svc-foundations@thehive.local"
+    name: "SOC Foundations Service Account"
+    profile: "analyst"      # Non-admin, accès lecture/écriture d'alertes
+    organisation: "SOC"     # Même org que svc-selftest et Cortex SA
+  cortex:
+    login: "svc-foundations"
+    name: "SOC Foundations Service Account"
+    organisation: "SOC"
+    role: "read"            # Lecture seule des résultats d'analyse
+  misp:
+    email: "svc-foundations@soc.lab"
+    org_id: 1
+    role_id: 3              # Sync User = partage de threat intel, pas d'admin
+  wazuh:
+    username: "svc-foundations"
+    role_id: 1              # wazuh-readonly built-in role (id=1)
+
+# ============================================================
+# SOC Risk Engine — variables globales (rôle soc_risk_engine)
+# Playbook 190 | Source-of-truth pour les poids et seuils.
+# Surchargeable via -e ou envs/prod.yml (SOC_ENV=prod).
+# ============================================================
+
+# Poids non-normalisés pour le scoring 5-dimensions.
+# La normalisation est faite au runtime : score = sum(dim * w) / sum(w)
+# Augmenter misp/cortex pour pencher vers threat intel.
+# Augmenter wazuh pour un SOC orienté SIEM pur.
+soc_risk_weights:
+  wazuh:     2   # Sévérité Wazuh (1-4) — poids modéré
+  cortex:    3   # Score analyzers Cortex (0-3) — poids fort
+  misp:      4   # Hit MISP IOC (binaire) — poids le plus fort
+  asset:     2   # Criticité asset (1-5) — poids modéré
+  frequency: 1   # Fréquence alertes similaires — poids faible
+
+# Seuils de décision (échelle 0-100).
+# Évaluation top-down, premier match gagne.
+#   >= escalate     → Critical + priority:critical
+#   >= auto_contain → Wazuh AR firewall-drop
+#   >= auto_promote → High severity
+#   <  auto_close   → Résolution FalsePositive
+#   sinon           → reviewed (aucune action automatique)
+soc_risk_thresholds:
+  auto_close:   15
+  auto_promote: 50
+  auto_contain: 75
+  escalate:     90
+
+# Mapping criticité asset (valeur du tag asset:<type> sur les cases TheHive).
+# Poids 1-5 : 1=lab (le moins critique), 5=serveur de production.
+# Ajouter d'autres types selon l'inventaire de l'organisation.
+soc_risk_asset_weights:
+  server-prod:     5
+  server-internal: 3
+  workstation:     2
+  lab:             1
+  default:         1   # Fallback si aucun tag asset: trouvé
+
+# ============================================================
+# SOC Compliance — variables globales (rôle soc_compliance)
+# Playbook 200 | Drift detection & compliance validation.
+# Surchargeable via -e ou envs/prod.yml (SOC_ENV=prod).
+# ============================================================
+
+# Mode d'exécution du scan de conformité.
+#   audit   : lecture seule, détecte et rapporte les dérives (défaut)
+#   enforce : (futur) ré-applique les configurations en dérive
+soc_compliance_mode: "audit"
+
+# Arrêter le playbook (exit code 1) si une dérive est détectée.
+# Utile en CI/CD pour bloquer un pipeline sur non-conformité.
+# Passer à false pour downgrader en simple avertissement.
+soc_compliance_fail_on_drift: true
+
+# Générer un fichier JSON exploitable par le pipeline CI/CD.
+# Chemin : ansible/playbooks/artifacts/soc-compliance-report.json
+soc_compliance_generate_artifact: true
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SOC Self-Test (210) — Continuous E2E pipeline validation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Playbook 210 injects a synthetic alert with a dedicated test IOC and validates
+# its propagation through the full SOC pipeline (TheHive→Cortex→RiskEngine→MISP).
+# Complements 200-soc-compliance (static config audit) with runtime behavior tests.
+#
+# Test IOC: 203.0.113.250 (RFC 5737 TEST-NET-3 — never routable, safe for lab use)
+
+# Active Response safe mode: evaluates conditions but never executes real AR.
+# Set to false only when explicitly validating actual Wazuh firewall-drop execution.
+soc_selftest_safe_mode: true
+
+# Fail the Ansible run (exit code 1) if global_status != healthy.
+# Useful as a CI/CD deployment gate.
+soc_selftest_fail_on_error: true
+
+# Delete all test artifacts (alert, case, MISP event) after verification.
+# Set to false for post-mortem investigation if the selftest fails.
+soc_selftest_cleanup: true
+
+# inject_via_wazuh=true  : full E2E via kubectl exec logger on Wazuh manager (default).
+#   Wazuh → Shuffle webhook → TheHive → Cortex → Risk Engine. Requires rule 999999.
+# inject_via_wazuh=false : inject directly via TheHive API. Shuffle is NOT triggered.
+#   Only inject+verify_thehive phases are meaningful; other verify_* will fail.
+soc_selftest_inject_via_wazuh:  true
+soc_selftest_injection_rule_id: 999999
+
+# Timeouts tuned to Shuffle (event-driven, synchronous within workflow):
+#   Shuffle alert-triage workflow handles TheHive promotion + Cortex + risk scoring.
+#   No CronJob involved since 185.
+soc_selftest_timeout_seconds:            90    # verify_thehive (Wazuh→Shuffle→TheHive latency)
+soc_selftest_automation_timeout_seconds: 120   # verify_cortex  (Shuffle triggers Cortex synchronously)
+soc_selftest_risk_timeout_seconds:       120   # verify_risk    (Shuffle calls risk engine via HTTP POST)
+soc_selftest_poll_interval:              5     # seconds between polling retries
