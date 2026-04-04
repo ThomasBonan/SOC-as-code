@@ -1,0 +1,39 @@
+---
+# 170-soc-foundations.yml
+# SOC Foundations : comptes de service RBAC, registre de secrets compatible Vault,
+# NetworkPolicies d'ingress API par source IP, et stubs d'intégrations futures.
+#
+# Tags disponibles :
+#   bootstrap     - preflight : vérification de la disponibilité des 4 services
+#   rbac          - création des comptes de service par plateforme
+#   secrets       - ConfigMap vault-config + Secret registre SA
+#   network       - NetworkPolicies ingress API (ipBlock depuis soc_allowed_api_sources)
+#   preparation   - ConfigMaps stubs pour les futures intégrations
+#   soc_foundations - toutes les tâches du rôle
+#
+# Override d'environnement via variable SOC_ENV (dev/staging/prod) :
+#   SOC_ENV=prod ansible-playbook 170-soc-foundations.yml -e @envs/prod.yml
+#
+# Exemples d'utilisation :
+#   ansible-playbook 170-soc-foundations.yml                         # run complet
+#   ansible-playbook 170-soc-foundations.yml --tags bootstrap        # preflight seul
+#   ansible-playbook 170-soc-foundations.yml --tags rbac             # RBAC seul
+#   ansible-playbook 170-soc-foundations.yml --tags network          # netpol seul
+#   ansible-playbook 170-soc-foundations.yml --tags secrets          # vault-compat seul
+#   ansible-playbook 170-soc-foundations.yml --tags preparation      # stubs seul
+#   SOC_ENV=prod ansible-playbook 170-soc-foundations.yml -e soc_allowed_api_sources='["10.100.0.0/16"]'
+
+- name: SOC Foundations (RBAC, vault registry, API netpols, integration stubs)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+  pre_tasks:
+    # SOC_ENV peut surcharger soc_environment depuis group_vars (sans auto-référence récursive)
+    - name: Override soc_environment depuis la variable d'environnement SOC_ENV
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+      tags: always
+  roles:
+    - soc_foundations

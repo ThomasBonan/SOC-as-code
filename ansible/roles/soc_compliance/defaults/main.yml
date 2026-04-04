@@ -1,0 +1,99 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_compliance — Role defaults
+# Playbook 200 | Drift detection & compliance validation for the full SOC stack.
+# All variables prefixed soc_compliance_ per project convention.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Feature toggles ───────────────────────────────────────────────
+soc_compliance_enable_preflight:          true
+soc_compliance_enable_audit_rbac:         true
+soc_compliance_enable_audit_integrations: true
+soc_compliance_enable_audit_risk_model:   true
+soc_compliance_enable_audit_network:      true
+soc_compliance_enable_audit_secrets:      true
+soc_compliance_enable_report:             true
+
+# ── Compliance mode ───────────────────────────────────────────────
+# audit  : read-only scan, report findings (default, always safe)
+# enforce: re-apply drifted configurations (future extension, requires explicit opt-in)
+soc_compliance_mode:              "audit"
+soc_compliance_enforce:           false
+soc_compliance_fail_on_drift:     true   # fail ansible run if drift detected
+soc_compliance_generate_artifact: true   # write JSON report to artifacts/
+
+# ── Runtime settings ──────────────────────────────────────────────
+soc_compliance_kubeconfig_path:   "{{ kubeconfig_path }}"
+soc_compliance_validate_certs:    false
+soc_compliance_http_timeout:      "{{ soc_http.timeout | default(10) }}"
+soc_compliance_http_retries:      3
+soc_compliance_http_delay:        5
+
+# ── SA Secrets (created by 170-soc-foundations) ───────────────────
+soc_compliance_thehive_sa_secret_name: "thehive-sa-foundations"
+soc_compliance_thehive_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
+soc_compliance_thehive_sa_key:         "api_key"
+
+soc_compliance_cortex_sa_secret_name:  "cortex-sa-foundations"
+soc_compliance_cortex_sa_secret_ns:    "{{ soc_namespaces.cortex }}"
+soc_compliance_cortex_sa_key:          "api_key"
+
+soc_compliance_misp_sa_secret_name:    "misp-sa-foundations"
+soc_compliance_misp_sa_secret_ns:      "{{ soc_namespaces.misp }}"
+soc_compliance_misp_sa_key:            "authkey"
+
+soc_compliance_wazuh_sa_secret_name:   "wazuh-sa-foundations"
+soc_compliance_wazuh_sa_secret_ns:     "{{ soc_namespaces.wazuh }}"
+soc_compliance_wazuh_sa_key_user:      "username"
+soc_compliance_wazuh_sa_key_pass:      "password"
+
+# ── API base URLs (resolved to Ingress URLs in preflight if .svc not reachable) ──
+soc_compliance_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"
+soc_compliance_cortex_api_base:  "{{ soc_endpoints.cortex.api_base  }}"
+soc_compliance_misp_api_base:    "{{ soc_endpoints.misp.api_base    }}"
+
+# ── Wazuh in-cluster probe ────────────────────────────────────────
+soc_compliance_wazuh_ns:          "{{ soc_namespaces.wazuh }}"
+soc_compliance_wazuh_manager_pod: "wazuh-manager-master-0"
+
+# ── Known ConfigMaps (audit targets from 170 / 180 / 185 / 190) ──
+# 170-soc-foundations
+soc_compliance_cm_170_vault:              "soc-vault-config"
+# 180-soc-automation (new post-Shuffle scope)
+soc_compliance_cm_180_misp_push_policy:   "soc-automation-misp-push-policy"
+# 185-shuffle (webhook config written by workflows.yml, stored in soc-thehive ns)
+soc_compliance_cm_185_webhook:            "soc-shuffle-webhook-config"
+# 190-soc-risk-engine
+soc_compliance_cm_190_risk_policy:        "soc-risk-policy"
+soc_compliance_cm_190_asset_criticality:  "soc-asset-criticality"
+soc_compliance_cm_190_drift_report:       "soc-risk-drift-report"
+soc_compliance_cm_190_service_marker:     "soc-risk-marker-service"
+
+# ── Known Secrets (audit targets) ────────────────────────────────
+soc_compliance_secret_worker_creds: "soc-automation-worker-creds"
+
+# ── Known Deployments (audit targets — replacing CronJobs) ───────
+# Shuffle backend (deployed by 165-shuffle)
+soc_compliance_shuffle_namespace:   "{{ soc_namespaces.shuffle | default('soc-shuffle') }}"
+soc_compliance_deploy_shuffle:      "shuffle-backend"
+# Risk engine HTTP service (deployed by 190-soc-risk-engine)
+soc_compliance_deploy_risk_engine:  "risk-engine"
+soc_compliance_svc_risk_engine:     "risk-engine-svc"
+
+# ── Known NetworkPolicy names (created by 170-soc-foundations) ───
+soc_compliance_netpol_thehive: "ingress-api-thehive"
+soc_compliance_netpol_cortex:  "ingress-api-cortex"
+soc_compliance_netpol_misp:    "ingress-api-misp"
+soc_compliance_netpol_wazuh:   "ingress-api-wazuh"
+
+# ── Report output ─────────────────────────────────────────────────
+soc_compliance_artifact_dir:  "{{ playbook_dir }}/artifacts"
+soc_compliance_artifact_file: "{{ soc_compliance_artifact_dir }}/soc-compliance-report.json"
+soc_compliance_report_configmap: "soc-compliance-report"
+
+# ── K8s resource labels ───────────────────────────────────────────
+soc_compliance_labels:
+  app.kubernetes.io/managed-by: soc-compliance
+  app.kubernetes.io/component:  soc-compliance
+  soc.lab/playbook:             "200-soc-compliance"
+  soc.lab/environment:          "{{ soc_environment | default('dev') }}"

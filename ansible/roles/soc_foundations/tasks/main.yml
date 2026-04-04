@@ -1,0 +1,122 @@
+---
+# soc_foundations/tasks/main.yml
+# Orchestrateur principal — importe les sous-tâches avec leurs tags.
+# Chaque section peut être exécutée indépendamment via --tags.
+#
+# NOTE : import_tasks (statique) est utilisé plutôt que include_tasks (dynamique)
+# pour que les tags définis ici se propagent aux tâches internes.
+# Cela permet d'utiliser --tags network, --tags rbac, etc. correctement.
+#
+# Ordre d'exécution :
+#   1. preflight   → vérifie que les 4 services SOC répondent
+#   2. rbac_*      → crée les comptes de service (idempotent via check-before-create sur K8s Secret)
+#   3. secrets     → registre vault-compat (ConfigMap + Secret non-sensible)
+#   4. network     → NetworkPolicies ingress API par source IP
+#   5. preparation → ConfigMaps stubs pour les intégrations futures
+
+- name: Preflight - vérifier la disponibilité des APIs SOC
+  ansible.builtin.import_tasks: preflight.yml
+  when: soc_foundations_enable_preflight | bool
+  tags:
+    - bootstrap
+    - soc_foundations
+
+- name: RBAC - créer le compte de service TheHive
+  ansible.builtin.import_tasks: rbac_thehive.yml
+  when:
+    - soc_foundations_enable_rbac | bool
+    - soc_foundations_enable_rbac_thehive | bool
+  tags:
+    - rbac
+    - soc_foundations
+
+- name: RBAC - créer le compte de service TheHive selftest (210-soc-selftest)
+  ansible.builtin.import_tasks: rbac_thehive_selftest.yml
+  when:
+    - soc_foundations_enable_rbac | bool
+    - soc_foundations_enable_rbac_thehive_selftest | bool
+  tags:
+    - rbac
+    - soc_foundations
+
+- name: RBAC - créer le compte de service Cortex
+  ansible.builtin.import_tasks: rbac_cortex.yml
+  when:
+    - soc_foundations_enable_rbac | bool
+    - soc_foundations_enable_rbac_cortex | bool
+  tags:
+    - rbac
+    - soc_foundations
+
+- name: RBAC - activer les analyzers Cortex pour l'organisation SOC
+  ansible.builtin.import_tasks: rbac_cortex_analyzers.yml
+  when:
+    - soc_foundations_enable_rbac | bool
+    - soc_foundations_enable_rbac_cortex | bool
+    - soc_foundations_enable_rbac_cortex_analyzers | default(true) | bool
+  tags:
+    - rbac
+    - rbac_cortex_analyzers
+    - soc_foundations
+
+- name: RBAC - créer le compte de service MISP
+  ansible.builtin.import_tasks: rbac_misp.yml
+  when:
+    - soc_foundations_enable_rbac | bool
+    - soc_foundations_enable_rbac_misp | bool
+  tags:
+    - rbac
+    - soc_foundations
+
+- name: RBAC - créer le compte de service Wazuh
+  ansible.builtin.import_tasks: rbac_wazuh.yml
+  when:
+    - soc_foundations_enable_rbac | bool
+    - soc_foundations_enable_rbac_wazuh | bool
+  tags:
+    - rbac
+    - soc_foundations
+
+- name: Secrets - créer le registre vault-compatible
+  ansible.builtin.import_tasks: secrets_vault_compat.yml
+  when: soc_foundations_enable_secrets_vault_compat | bool
+  tags:
+    - secrets
+    - soc_foundations
+
+- name: Network - appliquer les NetworkPolicies d'ingress API
+  ansible.builtin.import_tasks: netpol_api_ingress.yml
+  when: soc_foundations_enable_netpol_api_ingress | bool
+  tags:
+    - network
+    - soc_foundations
+
+- name: Preparation - créer les stubs de configuration d'intégrations
+  ansible.builtin.import_tasks: integration_placeholders.yml
+  when: soc_foundations_enable_integration_placeholders | bool
+  tags:
+    - preparation
+    - soc_foundations
+
+- name: Marker - créer le ConfigMap soc-foundations-marker (requis par 185-shuffle)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: soc-foundations-marker
+        namespace: "{{ soc_namespaces.thehive }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-foundations
+        annotations:
+          soc.lab/feature:     "soc-foundations"
+          soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+      data:
+        feature:     "soc-foundations"
+        status:      "complete"
+        environment: "{{ soc_environment | default('dev') }}"
+  tags:
+    - bootstrap
+    - soc_foundations

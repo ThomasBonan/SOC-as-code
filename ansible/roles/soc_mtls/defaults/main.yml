@@ -1,0 +1,32 @@
+---
+# ============================================================
+# SOC mTLS — defaults (rôle soc_mtls, playbook 155)
+# Ajoute une couche mTLS SPIFFE/SPIRE sur les flux SOC east-west
+# via Cilium Mutual Authentication (CiliumNetworkPolicy).
+# ============================================================
+
+# Namespace SPIRE (injecté par le chart Cilium)
+soc_mtls_spire_namespace: "{{ cilium_spire_namespace | default('cilium-spire') }}"
+
+# Idempotence marker
+soc_mtls_marker_name: soc-mtls-initialized
+soc_mtls_marker_namespace: "{{ soc_namespaces.thehive }}"
+
+# Feature toggles
+soc_mtls_enable_wazuh_to_thehive:  true
+soc_mtls_enable_thehive_to_cortex: true
+soc_mtls_enable_cortex_to_misp:    true
+
+# Labels primaires des pods SOC (correspondent aux Helm charts StrangeBee / Wazuh)
+# Servent de endpointSelector dans les CiliumNetworkPolicies.
+soc_mtls_wazuh_pod_label:
+  app: wazuh-manager
+
+soc_mtls_thehive_pod_label:
+  app.kubernetes.io/name: thehive
+
+soc_mtls_cortex_pod_label:
+  app.kubernetes.io/name: cortex
+
+soc_mtls_misp_pod_label:
+  app: misp

@@ -39,6 +39,12 @@
     wait: true
     timeout: "15m0s"
     binary_path: "{{ helm_binary_path }}"
+    values:
+      defaultSettings:
+        defaultReplicaCount: 1
+      persistence:
+        defaultClass: true
+        defaultClassReplicaCount: 1
   delegate_to: localhost
   run_once: true
 

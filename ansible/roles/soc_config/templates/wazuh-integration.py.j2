@@ -1,0 +1,460 @@
+#!/usr/bin/env python3
+"""
+SOC Automation — Wazuh → TheHive Integration Script
+Version: {{ soc_config_wazuh_script_version }}
+Managed by: soc_config Ansible role (playbook 130)
+
+Replaces the legacy shell script (v1.0).
+
+Features:
+  - Structured JSON logging with correlation ID
+  - Severity filtering (SOC_MIN_SEVERITY)
+  - Alert type group filtering (SOC_ALERT_TYPES)
+  - Automatic observable extraction (IP, hash, domain, URL)
+  - Deduplication via TheHive search (SOC_DEDUP_WINDOW)
+  - HTTP retry with exponential backoff
+  - Rich alert payload (custom fields, markdown description)
+
+Configuration (environment variables):
+  THEHIVE_URL         TheHive API base URL (required)
+  THEHIVE_API_KEY     TheHive API key (preferred)
+  THEHIVE_API_KEY_FILE Path to file containing API key (legacy fallback)
+  SOC_MIN_SEVERITY    Minimum Wazuh alert level to forward (default: {{ soc_config_wazuh_min_severity }})
+  SOC_DEDUP_WINDOW    Dedup window in seconds (default: {{ soc_config_wazuh_dedup_window_sec }})
+  SOC_ALERT_TYPES     Comma-separated list of Wazuh rule groups to forward (empty = all)
+  SOC_EXTRACT_OBS     Enable observable extraction (default: {{ soc_config_wazuh_extract_observables | lower }})
+  SOC_LOG_LEVEL       Log level: DEBUG|INFO|WARNING|ERROR (default: {{ soc_config_wazuh_log_level }})
+  SOC_VALIDATE_CERTS  Validate TLS certificates (default: false)
+  SOC_HTTP_TIMEOUT    HTTP timeout in seconds (default: {{ soc_config_wazuh_http_timeout }})
+  SOC_HTTP_RETRIES    Number of HTTP retry attempts (default: {{ soc_config_wazuh_http_retries }})
+  SOC_BACKOFF_BASE    Exponential backoff base in seconds (default: {{ soc_config_wazuh_http_backoff_base }})
+"""
+
+# ── Ansible-injected defaults ─────────────────────────────────────
+# These constants are rendered by Jinja2 at deploy time.
+# All Python code below the {% raw %} tag is protected from Jinja2 parsing.
+_D_SCRIPT_VERSION = "{{ soc_config_wazuh_script_version }}"
+_D_MIN_SEVERITY   = {{ soc_config_wazuh_min_severity }}
+_D_DEDUP_WINDOW   = {{ soc_config_wazuh_dedup_window_sec }}
+_D_EXTRACT_OBS    = "{{ soc_config_wazuh_extract_observables | lower }}"
+_D_LOG_LEVEL      = "{{ soc_config_wazuh_log_level }}"
+_D_HTTP_TIMEOUT   = {{ soc_config_wazuh_http_timeout }}
+_D_HTTP_RETRIES   = {{ soc_config_wazuh_http_retries }}
+_D_BACKOFF_BASE   = {{ soc_config_wazuh_http_backoff_base }}
+_D_ALERT_TYPES    = "{{ soc_config_wazuh_alert_types | join(',') }}"
+
+{% raw %}
+import json
+import sys
+import os
+import re
+import hashlib
+import time
+import logging
+import ssl
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+
+# ── Version ──────────────────────────────────────────────────────
+__version__ = _D_SCRIPT_VERSION
+
+if len(sys.argv) > 1 and sys.argv[1] == '--version':
+    print(__version__)
+    sys.exit(0)
+
+# ── Configuration from environment variables ──────────────────────
+THEHIVE_URL = os.environ.get('THEHIVE_URL', '').rstrip('/')
+if not THEHIVE_URL:
+    sys.stderr.write('{"level":"ERROR","msg":"THEHIVE_URL not set"}\n')
+    sys.exit(1)
+
+# API key: prefer env var, fall back to file (legacy)
+THEHIVE_API_KEY = os.environ.get('THEHIVE_API_KEY', '')
+if not THEHIVE_API_KEY:
+    key_file = os.environ.get('THEHIVE_API_KEY_FILE', '')
+    if key_file and os.path.isfile(key_file):
+        try:
+            with open(key_file) as _kf:
+                THEHIVE_API_KEY = _kf.read().strip()
+        except OSError as _e:
+            sys.stderr.write('{"level":"ERROR","msg":"Cannot read key file: ' + str(_e) + '"}\n')
+            sys.exit(1)
+
+if not THEHIVE_API_KEY:
+    sys.stderr.write('{"level":"ERROR","msg":"No TheHive API key available (THEHIVE_API_KEY or THEHIVE_API_KEY_FILE)"}\n')
+    sys.exit(1)
+
+MIN_SEVERITY   = int(os.environ.get('SOC_MIN_SEVERITY',   str(_D_MIN_SEVERITY)))
+DEDUP_WINDOW   = int(os.environ.get('SOC_DEDUP_WINDOW',   str(_D_DEDUP_WINDOW)))
+EXTRACT_OBS    = os.environ.get('SOC_EXTRACT_OBS',        _D_EXTRACT_OBS).lower() == 'true'
+LOG_LEVEL      = os.environ.get('SOC_LOG_LEVEL',          _D_LOG_LEVEL).upper()
+VALIDATE_CERTS = os.environ.get('SOC_VALIDATE_CERTS',     'false').lower() == 'true'
+HTTP_TIMEOUT   = int(os.environ.get('SOC_HTTP_TIMEOUT',   str(_D_HTTP_TIMEOUT)))
+HTTP_RETRIES   = int(os.environ.get('SOC_HTTP_RETRIES',   str(_D_HTTP_RETRIES)))
+BACKOFF_BASE   = float(os.environ.get('SOC_BACKOFF_BASE', str(_D_BACKOFF_BASE)))
+
+_alert_types_raw = os.environ.get('SOC_ALERT_TYPES', _D_ALERT_TYPES)
+ALERT_TYPES = set(t.strip() for t in _alert_types_raw.split(',') if t.strip())
+
+# Unique correlation ID for this execution
+CORRELATION_ID = hashlib.sha256(
+    (datetime.now(timezone.utc).isoformat() + '-' + str(os.getpid())).encode()
+).hexdigest()[:12]
+
+# ── Structured JSON logging ───────────────────────────────────────
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        return json.dumps({
+            "ts":             datetime.now(timezone.utc).isoformat(),
+            "level":          record.levelname,
+            "correlation_id": CORRELATION_ID,
+            "script_version": __version__,
+            "msg":            record.getMessage(),
+        }, ensure_ascii=False)
+
+_logger = logging.getLogger("wazuh-integration")
+_handler = logging.StreamHandler(sys.stderr)
+_handler.setFormatter(_JsonFormatter())
+_logger.addHandler(_handler)
+_logger.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
+
+# ── SSL context ───────────────────────────────────────────────────
+_ssl_ctx = ssl.create_default_context()
+if not VALIDATE_CERTS:
+    _ssl_ctx.check_hostname = False
+    _ssl_ctx.verify_mode = ssl.CERT_NONE
+
+# ── HTTP helper with exponential backoff retry ────────────────────
+def _api_call(method, url, body=None, extra_headers=None, expected_statuses=(200, 201)):
+    """
+    Perform an authenticated HTTP call to TheHive with retry logic.
+    Returns (status_code, response_dict).
+    Raises RuntimeError after all retries exhausted.
+    """
+    headers = {
+        'Authorization':        'Bearer ' + THEHIVE_API_KEY,
+        'Content-Type':         'application/json',
+        'Accept':               'application/json',
+        'X-SOC-Correlation-ID': CORRELATION_ID,
+    }
+    if extra_headers:
+        headers.update(extra_headers)
+
+    data = json.dumps(body).encode('utf-8') if body is not None else None
+    last_error = None
+
+    for attempt in range(HTTP_RETRIES):
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method=method)
+            with urllib.request.urlopen(req, context=_ssl_ctx, timeout=HTTP_TIMEOUT) as resp:
+                resp_body = resp.read() or b'{}'
+                if resp.status in expected_statuses:
+                    return resp.status, json.loads(resp_body)
+                _logger.warning(
+                    "Unexpected status %s from %s %s (attempt %d/%d)",
+                    resp.status, method, url, attempt + 1, HTTP_RETRIES
+                )
+                last_error = 'HTTP ' + str(resp.status)
+        except urllib.error.HTTPError as exc:
+            # 409 Conflict = duplicate alert — treat as success to avoid retry storm
+            if exc.code == 409:
+                _logger.info("Duplicate alert (409) — skipping")
+                return 409, {}
+            _logger.warning(
+                "HTTP error %s on %s %s (attempt %d/%d): %s",
+                exc.code, method, url, attempt + 1, HTTP_RETRIES, exc.reason
+            )
+            last_error = 'HTTP ' + str(exc.code) + ': ' + str(exc.reason)
+        except OSError as exc:
+            _logger.warning(
+                "Connection error on %s %s (attempt %d/%d): %s",
+                method, url, attempt + 1, HTTP_RETRIES, exc
+            )
+            last_error = str(exc)
+
+        if attempt < HTTP_RETRIES - 1:
+            sleep_time = BACKOFF_BASE ** attempt
+            _logger.debug("Backing off %.1fs before retry", sleep_time)
+            time.sleep(sleep_time)
+
+    raise RuntimeError(
+        'API call failed after ' + str(HTTP_RETRIES) + ' attempts: '
+        + method + ' ' + url + ' — ' + str(last_error)
+    )
+
+# ── Observable extraction ─────────────────────────────────────────
+_RE_IPV4    = re.compile(r'\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b')
+_RE_MD5     = re.compile(r'\b[0-9a-fA-F]{32}\b')
+_RE_SHA1    = re.compile(r'\b[0-9a-fA-F]{40}\b')
+_RE_SHA256  = re.compile(r'\b[0-9a-fA-F]{64}\b')
+_RE_URL     = re.compile(r'https?://[^\s"\'<>]{4,}')
+_RE_DOMAIN  = re.compile(r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}\b')
+_RE_PRIVATE = re.compile(
+    r'^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|127\.|0\.0\.0\.0|::1|fe80:|fc|fd)'
+)
+
+# Known IP fields in Wazuh alert data
+_IP_FIELDS = [
+    'srcip', 'dstip', 'src_ip', 'dst_ip',
+    'win.eventdata.ipAddress', 'data.srcip', 'data.dstip',
+    'win.eventdata.sourceAddress', 'win.eventdata.destinationAddress',
+]
+_URL_FIELDS = ['data.url', 'url', 'data.win.eventdata.queryName', 'data.win.eventdata.commandLine']
+
+
+def _extract_observables(alert):
+    """
+    Extract actionable observables from a Wazuh alert.
+    Returns a list of TheHive observable dicts.
+    """
+    seen, obs = set(), []
+    data = alert.get('data', {})
+
+    def _add(dtype, value, msg=''):
+        key = dtype + ':' + value.lower()
+        if key not in seen and len(value) > 1:
+            seen.add(key)
+            obs.append({
+                'dataType': dtype,
+                'data':     value,
+                'message':  msg,
+                'tags':     ['source:wazuh', 'corr:' + CORRELATION_ID],
+                'ioc':      False,
+                'sighted':  True,
+            })
+
+    # IPs from known data fields
+    for field in _IP_FIELDS:
+        # Support nested keys like 'win.eventdata.ipAddress'
+        val = data
+        for part in field.split('.'):
+            if isinstance(val, dict):
+                val = val.get(part, '')
+            else:
+                val = ''
+                break
+        val = str(val).strip()
+        if val and _RE_IPV4.fullmatch(val) and not _RE_PRIVATE.match(val):
+            _add('ip', val, 'wazuh-field:' + field)
+
+    # Additional IPs from full alert text (catches less obvious locations)
+    alert_text = json.dumps(alert)
+    for m in _RE_IPV4.finditer(alert_text):
+        val = m.group()
+        if not _RE_PRIVATE.match(val):
+            _add('ip', val, 'alert-text-scan')
+
+    # Hashes (order matters: longest first to avoid SHA256 matching as MD5 prefix)
+    for m in _RE_SHA256.finditer(alert_text):
+        _add('hash', m.group().lower(), 'sha256')
+    for m in _RE_SHA1.finditer(alert_text):
+        _add('hash', m.group().lower(), 'sha1')
+    for m in _RE_MD5.finditer(alert_text):
+        _add('hash', m.group().lower(), 'md5')
+
+    # URLs and domains from known fields
+    for field in _URL_FIELDS:
+        val = data
+        for part in field.split('.'):
+            if isinstance(val, dict):
+                val = val.get(part, '')
+            else:
+                val = ''
+                break
+        val = str(val).strip()
+        if val.startswith('http'):
+            _add('url', val, 'wazuh-field:' + field)
+        elif val and '.' in val and len(val) > 4 and _RE_DOMAIN.fullmatch(val):
+            _add('domain', val, 'wazuh-field:' + field)
+
+    return obs
+
+# ── Deduplication ─────────────────────────────────────────────────
+def _dedup_key(alert):
+    """
+    Compute a short hash used as a dedup tag in TheHive.
+    Same rule + source IP within the time bucket => same key.
+    """
+    rule_id = str(alert.get('rule', {}).get('id', 'unknown'))
+    src_ip  = ''
+    data = alert.get('data', {})
+    for f in ('srcip', 'src_ip', 'data.srcip'):
+        parts = f.split('.')
+        v = data
+        for p in parts:
+            v = v.get(p, '') if isinstance(v, dict) else ''
+        if v:
+            src_ip = str(v)
+            break
+    bucket = str(int(time.time()) // max(DEDUP_WINDOW, 1))
+    raw = rule_id + ':' + src_ip + ':' + bucket
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _is_duplicate(dedup_tag):
+    """
+    Search TheHive for an existing alert with this dedup tag.
+    Returns True if a duplicate is found.
+    """
+    try:
+        _, result = _api_call(
+            'POST',
+            THEHIVE_URL + '/api/v1/alert/_search',
+            body={
+                "query": [
+                    {"_name": "listAlert"},
+                    {"_name": "filter",
+                     "_contains": {"_field": "tags", "_value": "dedup:" + dedup_tag}}
+                ],
+                "range": "0-1",
+            },
+            expected_statuses=(200,),
+        )
+        return isinstance(result, list) and len(result) > 0
+    except Exception as exc:
+        # On error, proceed (do not silently drop alerts)
+        _logger.warning("Dedup check failed — proceeding: %s", exc)
+        return False
+
+# ── Severity mapping ──────────────────────────────────────────────
+def _severity(level):
+    """Map Wazuh alert level (0-15) to TheHive severity (1-4)."""
+    if level >= 12:
+        return 4  # Critical
+    if level >= 8:
+        return 3  # High
+    if level >= 5:
+        return 2  # Medium
+    return 1      # Low
+
+# ── Alert creation ────────────────────────────────────────────────
+def _create_alert(alert, dedup_tag, observables):
+    """POST a new alert to TheHive with full metadata."""
+    rule   = alert.get('rule', {})
+    agent  = alert.get('agent', {})
+    level  = int(rule.get('level', 0))
+    groups = rule.get('groups', [])
+
+    rule_id_str  = str(rule.get('id', 'N/A'))
+    rule_desc    = str(rule.get('description', 'N/A'))
+    agent_name   = str(agent.get('name', 'N/A'))
+    agent_ip     = str(agent.get('ip', 'N/A'))
+    agent_id_str = str(agent.get('id', 'N/A'))
+    timestamp    = str(alert.get('timestamp', 'N/A'))
+
+    # Markdown description for analyst readability
+    description = (
+        "## Wazuh Alert\n\n"
+        "| Field | Value |\n"
+        "|-------|-------|\n"
+        "| **Rule ID** | `" + rule_id_str + "` |\n"
+        "| **Rule** | " + rule_desc + " |\n"
+        "| **Level** | " + str(level) + " |\n"
+        "| **Groups** | `" + ', '.join(groups) + "` |\n"
+        "| **Agent** | " + agent_name + " (`" + agent_ip + "`) |\n"
+        "| **Agent ID** | " + agent_id_str + " |\n"
+        "| **Timestamp** | " + timestamp + " |\n\n"
+        "<details><summary>Raw alert JSON</summary>\n\n"
+        "```json\n" + json.dumps(alert, indent=2, ensure_ascii=False) + "\n```\n\n</details>"
+    )
+
+    tags = [
+        "source:wazuh",
+        "rule:" + str(rule.get('id', 'unknown')),
+        "level:" + str(level),
+        "agent:" + str(agent.get('name', 'unknown')),
+        "dedup:" + dedup_tag,
+        "corr:" + CORRELATION_ID,
+    ] + ["group:" + g for g in groups]
+
+    payload = {
+        "type":      "wazuh",
+        "source":    "wazuh",
+        "sourceRef": "wazuh-" + str(alert.get('id', CORRELATION_ID)),
+        "title":     "[Wazuh] " + str(rule.get('description', 'Alert')),
+        "description": description,
+        "severity":  _severity(level),
+        "tlp":       2,   # TLP:AMBER — can be overridden per env
+        "pap":       2,
+        "tags":      tags,
+        "customFields": {
+            "wazuhLevel":      {"integer": level},
+            "wazuhRuleId":     {"string":  str(rule.get('id', ''))},
+            "wazuhAgent":      {"string":  str(agent.get('name', ''))},
+            "wazuhAgentId":    {"string":  str(agent.get('id', ''))},
+            "wazuhRuleGroups": {"string":  ','.join(groups)},
+            "wazuhTimestamp":  {"string":  str(alert.get('timestamp', ''))},
+        },
+        "observables": observables,
+    }
+
+    status, result = _api_call(
+        'POST',
+        THEHIVE_URL + '/api/v1/alert',
+        body=payload,
+        expected_statuses=(200, 201, 409),
+    )
+    return result
+
+# ── Main ──────────────────────────────────────────────────────────
+def main():
+    t_start = time.monotonic()
+
+    # Read alert from file argument or stdin
+    try:
+        alert_source = sys.argv[1] if len(sys.argv) > 1 else None
+        if alert_source and os.path.isfile(alert_source):
+            with open(alert_source, encoding='utf-8') as _f:
+                alert = json.load(_f)
+        else:
+            alert = json.load(sys.stdin)
+    except (json.JSONDecodeError, OSError) as exc:
+        _logger.error("Cannot parse alert input: %s", exc)
+        sys.exit(1)
+
+    rule    = alert.get('rule', {})
+    level   = int(rule.get('level', 0))
+    rule_id = rule.get('id', 'unknown')
+    _logger.info("Received alert rule=%s level=%s", rule_id, level)
+
+    # ── Filter: minimum severity ──
+    if level < MIN_SEVERITY:
+        _logger.info("Skipping: level %s < min_severity %s", level, MIN_SEVERITY)
+        sys.exit(0)
+
+    # ── Filter: alert type groups ──
+    if ALERT_TYPES:
+        alert_groups = set(rule.get('groups', []))
+        if not alert_groups.intersection(ALERT_TYPES):
+            _logger.info("Skipping: groups %r not in allowed types %r", alert_groups, ALERT_TYPES)
+            sys.exit(0)
+
+    # ── Deduplication ──
+    dedup_tag = _dedup_key(alert)
+    if _is_duplicate(dedup_tag):
+        _logger.info("Duplicate detected (dedup_tag=%s) — alert suppressed", dedup_tag)
+        sys.exit(0)
+
+    # ── Observable extraction ──
+    observables = []
+    if EXTRACT_OBS:
+        observables = _extract_observables(alert)
+        _logger.info("Extracted %d observables", len(observables))
+    else:
+        _logger.debug("Observable extraction disabled")
+
+    # ── Create TheHive alert ──
+    result    = _create_alert(alert, dedup_tag, observables)
+    alert_id  = result.get('_id', 'unknown')
+    duration_ms = int((time.monotonic() - t_start) * 1000)
+
+    _logger.info(
+        "Alert created: id=%s rule=%s level=%s observables=%d duration_ms=%d",
+        alert_id, rule_id, level, len(observables), duration_ms
+    )
+
+
+if __name__ == '__main__':
+    main()
+{% endraw %}

@@ -1,0 +1,168 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# drift_guard.yml — Detect divergence between deployed and configured risk policy
+# tag: compliance
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Compares the thresholds and weights in the deployed soc-risk-policy ConfigMap
+# against the current Ansible group_vars values (soc_risk_thresholds,
+# soc_risk_weights). Flags divergence when someone changed group_vars but
+# did not re-run 190 to update the deployed ConfigMap (or vice versa).
+#
+# Note: The old cross-schema comparison with 180's soc-automation-worker-script
+# ConfigMap has been removed — that ConfigMap no longer exists now that the
+# CronJob worker is replaced by Shuffle + the Flask risk engine service.
+#
+# Safety:
+#   - All tasks use changed_when: false (read-only except drift-report ConfigMap)
+#   - soc_risk_engine_drift_fail_on_divergence controls fail vs. warn behavior
+
+# ── Read 190 risk policy ConfigMap ───────────────────────────────
+
+- name: "drift_guard | Read soc-risk-policy ConfigMap (190)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_risk_engine_service_namespace }}"
+    name: "{{ soc_risk_engine_policy_configmap }}"
+  register: _dg_policy_cm
+  changed_when: false
+
+- name: "drift_guard | Skip — soc-risk-policy not yet deployed"
+  ansible.builtin.debug:
+    msg: "soc-risk-policy not found — skip drift check (run --tags model first)."
+  when: _dg_policy_cm.resources | length == 0
+  changed_when: false
+
+# ── Parse deployed thresholds ─────────────────────────────────────
+
+- name: "drift_guard | Parse deployed thresholds from soc-risk-policy"
+  ansible.builtin.set_fact:
+    _dg_deployed: >-
+      {{ (_dg_policy_cm.resources[0].data['risk-policy.json'] | from_json) }}
+    _dg_deployed_thresholds: >-
+      {{ (_dg_policy_cm.resources[0].data['risk-policy.json'] | from_json).thresholds }}
+    _dg_deployed_weights: >-
+      {{ (_dg_policy_cm.resources[0].data['risk-policy.json'] | from_json).weights }}
+  when: _dg_policy_cm.resources | length > 0
+  changed_when: false
+
+# ── Compare deployed vs. configured ──────────────────────────────
+
+- name: "drift_guard | Compute threshold drift (deployed vs. group_vars)"
+  ansible.builtin.set_fact:
+    _dg_threshold_drift: >-
+      {{
+        [
+          {
+            'field':    'auto_close',
+            'deployed': _dg_deployed_thresholds.auto_close   | default('?') | string,
+            'configured': soc_risk_thresholds.auto_close   | string,
+            'match':    (_dg_deployed_thresholds.auto_close   | default('') | string) == (soc_risk_thresholds.auto_close   | string)
+          },
+          {
+            'field':    'auto_promote',
+            'deployed': _dg_deployed_thresholds.auto_promote | default('?') | string,
+            'configured': soc_risk_thresholds.auto_promote | string,
+            'match':    (_dg_deployed_thresholds.auto_promote | default('') | string) == (soc_risk_thresholds.auto_promote | string)
+          },
+          {
+            'field':    'auto_contain',
+            'deployed': _dg_deployed_thresholds.auto_contain | default('?') | string,
+            'configured': soc_risk_thresholds.auto_contain | string,
+            'match':    (_dg_deployed_thresholds.auto_contain | default('') | string) == (soc_risk_thresholds.auto_contain | string)
+          },
+          {
+            'field':    'escalate',
+            'deployed': _dg_deployed_thresholds.escalate     | default('?') | string,
+            'configured': soc_risk_thresholds.escalate     | string,
+            'match':    (_dg_deployed_thresholds.escalate     | default('') | string) == (soc_risk_thresholds.escalate     | string)
+          }
+        ]
+      }}
+    _dg_has_drift: >-
+      {{
+        ((_dg_deployed_thresholds.auto_close   | default('') | string) != (soc_risk_thresholds.auto_close   | string))
+        or ((_dg_deployed_thresholds.auto_promote | default('') | string) != (soc_risk_thresholds.auto_promote | string))
+        or ((_dg_deployed_thresholds.auto_contain | default('') | string) != (soc_risk_thresholds.auto_contain | string))
+        or ((_dg_deployed_thresholds.escalate     | default('') | string) != (soc_risk_thresholds.escalate     | string))
+      }}
+  when: _dg_policy_cm.resources | length > 0
+  changed_when: false
+
+# ── Report ────────────────────────────────────────────────────────
+
+- name: "drift_guard | No drift — deployed policy matches group_vars"
+  ansible.builtin.debug:
+    msg:
+      - "=== SOC Risk Engine Drift Guard — OK ==="
+      - "Deployed soc-risk-policy thresholds match current group_vars."
+      - "auto_close=<{{ soc_risk_thresholds.auto_close }}   auto_promote={{ soc_risk_thresholds.auto_promote }}   auto_contain={{ soc_risk_thresholds.auto_contain }}   escalate={{ soc_risk_thresholds.escalate }}"
+  when:
+    - _dg_policy_cm.resources | length > 0
+    - not (_dg_has_drift | bool)
+  changed_when: false
+
+- name: "drift_guard | DRIFT — deployed policy diverges from group_vars"
+  ansible.builtin.debug:
+    msg:
+      - "=== SOC Risk Engine Drift Guard — DRIFT DETECTED ==="
+      - "soc-risk-policy does not match current group_vars/soc_risk_thresholds."
+      - "Re-run 190-soc-risk-engine (--tags model) to resync."
+      - "field={{ item.field }}  deployed={{ item.deployed }}  configured={{ item.configured }}  match={{ item.match }}"
+  loop: "{{ _dg_threshold_drift | default([]) }}"
+  when:
+    - _dg_policy_cm.resources | length > 0
+    - _dg_has_drift | bool
+    - not item.match
+  changed_when: false
+
+- name: "drift_guard | Fail on divergence (if soc_risk_engine_drift_fail_on_divergence=true)"
+  ansible.builtin.fail:
+    msg: >-
+      Drift detected: soc-risk-policy thresholds differ from group_vars.
+      Re-run 190-soc-risk-engine (--tags model) to redeploy soc-risk-policy.
+      Set soc_risk_engine_drift_fail_on_divergence=false to downgrade to a warning.
+  when:
+    - _dg_policy_cm.resources | length > 0
+    - _dg_has_drift | bool
+    - soc_risk_engine_drift_fail_on_divergence | bool
+
+# ── Deploy drift report ConfigMap (audit trail) ───────────────────
+
+- name: "drift_guard | Deploy drift report ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ soc_risk_engine_drift_report_configmap }}"
+        namespace: "{{ soc_risk_engine_service_namespace }}"
+        labels: "{{ soc_risk_engine_labels }}"
+        annotations:
+          soc.lab/managed-by:   "190-soc-risk-engine"
+          soc.lab/drift-status: "{{ 'DRIFT' if (_dg_has_drift | default(false) | bool) else 'OK' }}"
+          soc.lab/checked-at:   "{{ now(utc=True).isoformat() }}"
+      data:
+        report.json: |
+          {
+            "checked_at":        "{{ now(utc=True).isoformat() }}",
+            "environment":       "{{ soc_environment | default('dev') }}",
+            "drift_detected":    {{ _dg_has_drift | default(false) | bool | lower }},
+            "policy_deployed":   {{ (_dg_policy_cm.resources | length > 0) | bool | lower }},
+            "thresholds_deployed": {
+              "auto_close":   {{ _dg_deployed_thresholds.auto_close   | default('null') }},
+              "auto_promote": {{ _dg_deployed_thresholds.auto_promote  | default('null') }},
+              "auto_contain": {{ _dg_deployed_thresholds.auto_contain  | default('null') }},
+              "escalate":     {{ _dg_deployed_thresholds.escalate      | default('null') }}
+            },
+            "thresholds_configured": {
+              "auto_close":   {{ soc_risk_thresholds.auto_close }},
+              "auto_promote": {{ soc_risk_thresholds.auto_promote }},
+              "auto_contain": {{ soc_risk_thresholds.auto_contain }},
+              "escalate":     {{ soc_risk_thresholds.escalate }}
+            }
+          }
+  when: _dg_policy_cm.resources | length > 0

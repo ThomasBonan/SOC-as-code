@@ -1,0 +1,160 @@
+---
+- name: Add StrangeBee repo (once)
+  kubernetes.core.helm_repository:
+    name: "{{ strangebee_repo_name }}"
+    repo_url: "{{ strangebee_repo_url }}"
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+
+- name: Update helm repos (once)
+  ansible.builtin.command: "{{ helm_binary_path }} repo update"
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Ensure namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cortex_namespace }}"
+  delegate_to: localhost
+  run_once: true
+
+# ------------------------------------------------------------
+# Preflight: RWX storage class must be provided
+# ------------------------------------------------------------
+- name: Fail if RWX storageClass is not set
+  ansible.builtin.fail:
+    msg: >
+      cortex_rwx_storage_class is empty. Cortex requires RWX (ReadWriteMany) shared PVC.
+      Set cortex_rwx_storage_class to an RWX-capable StorageClass (NFS/EFS/CephFS/Longhorn-RWX).
+  when: cortex_rwx_storage_class | length == 0
+  delegate_to: localhost
+  run_once: true
+
+# ------------------------------------------------------------
+# Secrets (create-once): httpSecret (clé attendue par StrangeBee)
+# ------------------------------------------------------------
+- name: Check Cortex secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    name: "{{ cortex_secret_name }}"
+    namespace: "{{ cortex_namespace }}"
+  register: cortex_secret
+  delegate_to: localhost
+  run_once: true
+
+- name: Create Cortex secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ cortex_secret_name }}"
+        namespace: "{{ cortex_namespace }}"
+      type: Opaque
+      stringData:
+        httpSecret: "{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+  when: (cortex_secret.resources | length) == 0
+  delegate_to: localhost
+  run_once: true
+  no_log: true
+
+# ------------------------------------------------------------
+# Helm install/upgrade Cortex (StrangeBee)
+# ------------------------------------------------------------
+- name: Render Cortex values (copy template with placeholders)
+  ansible.builtin.copy:
+    dest: "/tmp/cortex.values.rendered.yml"
+    mode: "0600"
+    content: "{{ lookup('file', role_path ~ '/files/values/cortex.values.yml') }}"
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+# httpSecret est géré via k8sSecretName dans le values — seuls storageClass et size sont patchés
+- name: Patch rendered values placeholders (storageClass + size)
+  ansible.builtin.shell: |
+    set -euo pipefail
+    sed -i \
+      -e "s|storageClass: \"__SET_BY_ANSIBLE__\"|storageClass: \"{{ cortex_rwx_storage_class }}\"|g" \
+      -e "s|size: \"__SET_BY_ANSIBLE__\"|size: \"{{ cortex_rwx_size }}\"|g" \
+      /tmp/cortex.values.rendered.yml
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Deploy Cortex via Helm (StrangeBee)
+  kubernetes.core.helm:
+    name: "{{ cortex_release_name }}"
+    chart_ref: "{{ cortex_chart_ref }}"
+    chart_version: "{{ cortex_chart_version | default(omit) }}"
+    release_namespace: "{{ cortex_namespace }}"
+    create_namespace: false
+    kubeconfig: "{{ kubeconfig_path }}"
+    values_files:
+      - "/tmp/cortex.values.rendered.yml"
+    wait: true
+    atomic: false
+    timeout: "60m0s"
+    update_repo_cache: true
+    binary_path: "{{ helm_binary_path }}"
+  delegate_to: localhost
+  run_once: true
+
+# ------------------------------------------------------------
+# Wait / health
+# ------------------------------------------------------------
+- name: Wait for Cortex deployment rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ cortex_namespace }}
+    rollout status deploy/{{ cortex_release_name }} --timeout=20m
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Apply Cortex ingress
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: Ingress
+      metadata:
+        name: "{{ cortex_release_name }}"
+        namespace: "{{ cortex_namespace }}"
+        annotations:
+          kubernetes.io/ingress.class: nginx
+          nginx.ingress.kubernetes.io/ssl-redirect: "true"
+      spec:
+        rules:
+          - host: "{{ cortex_fqdn }}"
+            http:
+              paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                      name: cortex
+                      port:
+                        number: 9001
+
+
+- name: Show Cortex pods
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ cortex_namespace }}
+    get pods -o wide
+  changed_when: false
+  delegate_to: localhost
+  run_once: true

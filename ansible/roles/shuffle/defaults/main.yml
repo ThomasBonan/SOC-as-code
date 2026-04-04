@@ -1,0 +1,116 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# shuffle role — defaults
+# Playbook 165 | Shuffle SOAR — Orchestration engine
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# These defaults work out-of-the-box for a dev environment.
+# Override per-environment in envs/prod.yml (SOC_ENV=prod).
+#
+# Conventions:
+#   - All variables prefixed shuffle_
+#   - Feature toggles: shuffle_enable_<feature>
+
+# ── Feature toggles ───────────────────────────────────────────────
+shuffle_enable_preflight:  true
+shuffle_enable_deploy:     true
+shuffle_enable_configure:  true
+shuffle_enable_workflows:  true
+
+# ── Helm deployment ────────────────────────────────────────────────
+shuffle_namespace:       "soc-shuffle"
+shuffle_release_name:    "shuffle"
+# Helm chart cloned from the official Shuffle GitHub repo.
+# Correct OCI alternative (if GHCR is accessible):
+#   shuffle_helm_chart_ref: "oci://ghcr.io/shuffle/charts/shuffle"
+shuffle_helm_repo_url:        "https://github.com/Shuffle/Shuffle.git"
+shuffle_helm_repo_version:    "main"
+shuffle_helm_repo_local_path: "/tmp/shuffle-helm-repo"
+shuffle_helm_chart_ref:       "{{ shuffle_helm_repo_local_path }}/functions/kubernetes/charts/shuffle"
+shuffle_helm_chart_version:   ""   # empty = use Chart.yaml version; pin in prod
+shuffle_helm_wait_timeout:    "600s"  # OpenSearch JVM + image pull can take 5-8 min
+
+# ── Runtime settings ──────────────────────────────────────────────
+shuffle_kubeconfig_path:  "{{ kubeconfig_path }}"
+shuffle_validate_certs:   false
+shuffle_http_timeout:     "{{ soc_http.timeout | default(10) }}"
+shuffle_http_retries:     "{{ soc_http.retries | default(20) }}"
+shuffle_http_delay:       "{{ soc_http.delay   | default(3)  }}"
+# Short probe retries for preflight (services must already be up)
+shuffle_preflight_retries: 3
+shuffle_preflight_delay:   5
+
+# ── Shuffle service ────────────────────────────────────────────────
+shuffle_backend_port:   5001
+shuffle_frontend_port:  80
+# Internal K8s URL — used by Orborus (in-cluster) and stored in ConfigMap for Wazuh
+shuffle_internal_url:   "http://{{ shuffle_release_name }}-backend.{{ shuffle_namespace }}.svc:{{ shuffle_backend_port }}"
+# Ingress FQDN and URL — used by the Ansible controller (out-of-cluster) and analysts
+shuffle_ingress_host:   "shuffle.{{ apps_domain | default('apps.soc.lab') }}"
+shuffle_api_url:        "https://{{ shuffle_ingress_host }}"
+# Ingress settings — mirrors other SOC services (TheHive, Cortex, MISP)
+shuffle_ingress_class:  "{{ ingress_class | default('nginx') }}"
+shuffle_cluster_issuer: "{{ cert_manager_clusterissuer_name | default('soc-lab-ca-issuer') }}"
+shuffle_tls_secret:     "shuffle-tls"
+
+# ── Shuffle admin credentials ──────────────────────────────────────
+# Created by configure.yml on first run and stored in K8s Secret.
+# Override these in envs/prod.yml or vault for production.
+shuffle_admin_username:  "admin"
+shuffle_admin_password:  "Shuffle@SOCLab2025!"   # Change in prod
+shuffle_admin_org_name:  "SOC"
+# K8s Secret that stores Shuffle admin API key (written by configure.yml)
+shuffle_admin_secret_name: "soc-shuffle-admin-creds"
+shuffle_admin_secret_ns:   "{{ shuffle_namespace }}"
+
+# ── SOC credentials source (written by 180-soc-automation) ────────
+# Shuffle reads these to configure its app authentications.
+shuffle_worker_creds_secret: "soc-automation-worker-creds"
+shuffle_worker_creds_ns:     "{{ soc_namespaces.thehive }}"
+
+# ── SOC service endpoints (for Shuffle app configuration) ──────────
+shuffle_thehive_url:  "{{ soc_endpoints.thehive.url  | default('http://thehive.soc-thehive.svc:9000') }}"
+shuffle_cortex_url:   "{{ soc_endpoints.cortex.url   | default('http://cortex.soc-cortex.svc:9001')  }}"
+shuffle_misp_url:     "{{ soc_endpoints.misp.url     | default('https://misp.soc-core.svc:443')      }}"
+# Wazuh API — manager pod DNS behind the chart headless service (port 55000).
+# The simple service host `wazuh-manager-master.<ns>.svc` is not resolvable in this stack.
+shuffle_wazuh_api_url: >-
+  https://wazuh-manager-master-0.{{ wazuh_app_name | default('wazuh') }}-{{ wazuh_app_id | default('core') }}-cluster.{{ soc_namespaces.wazuh }}.svc:55000
+
+# ── Risk engine service (deployed by 190-soc-risk-engine) ─────────
+# Shuffle calls this HTTP service to compute the 5-dim risk score.
+shuffle_risk_engine_url: "http://risk-engine-svc.{{ soc_namespaces.thehive }}.svc:8080"
+
+# ── Webhook configuration ─────────────────────────────────────────
+# ConfigMap written by workflows.yml; read by 180-soc-automation (wazuh_webhook.yml)
+# to inject the correct hook URL into Wazuh's ossec.conf.
+shuffle_webhook_configmap_name: "soc-shuffle-webhook-config"
+shuffle_webhook_configmap_ns:   "{{ soc_namespaces.thehive }}"
+
+# ── MISP push policy (mirrors soc_automation thresholds) ─────────
+# Score above which observables are pushed to MISP after risk scoring.
+shuffle_misp_push_min_score: "{{ soc_risk_thresholds.auto_promote | default(50) }}"
+shuffle_misp_tlp:
+  dev:     1
+  staging: 2
+  prod:    2
+
+# ── Analyzer mapping (observable type → Cortex analyzer names) ─────
+# Used inside the alert-triage workflow to dispatch the right analyzers.
+shuffle_analyzer_map: "{{ soc_automation_analyzer_map | default({}) }}"
+
+# ── Analyzer timeout ──────────────────────────────────────────────
+shuffle_analyzer_timeout_seconds: 300
+
+# ── K8s resource labels ───────────────────────────────────────────
+shuffle_labels:
+  app.kubernetes.io/managed-by: shuffle
+  app.kubernetes.io/component:  soar
+  soc.lab/playbook:             "185-shuffle"
+  soc.lab/environment:          "{{ soc_environment | default('dev') }}"
+
+# ── Idempotence marker ConfigMap names ────────────────────────────
+shuffle_marker_deploy:     "soc-shuffle-marker-deploy"
+shuffle_marker_configure:  "soc-shuffle-marker-configure"
+shuffle_marker_workflows:  "soc-shuffle-marker-workflows"
+shuffle_marker_ns:         "{{ shuffle_namespace }}"

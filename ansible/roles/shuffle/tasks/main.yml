@@ -1,0 +1,34 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# shuffle — Task orchestrator
+# Shuffle SOAR : orchestrateur event-driven remplaçant les CronJobs Python 160/180.
+# Uses import_tasks (static) so tags on this file propagate to sub-tasks.
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "shuffle | Preflight — vérifier chaîne 170+180 et prérequis Helm"
+  import_tasks: preflight.yml
+  when: shuffle_enable_preflight | bool
+  tags:
+    - bootstrap
+    - shuffle
+
+- name: "shuffle | Deploy — Helm install + NetworkPolicy"
+  import_tasks: deploy.yml
+  when: shuffle_enable_deploy | bool
+  tags:
+    - deploy
+    - shuffle
+
+- name: "shuffle | Configure — enregistrer apps (TheHive/Cortex/MISP/Wazuh)"
+  import_tasks: configure.yml
+  when: shuffle_enable_configure | bool
+  tags:
+    - configure
+    - shuffle
+
+- name: "shuffle | Workflows — importer alert-triage + selftest, activer webhook"
+  import_tasks: workflows.yml
+  when: shuffle_enable_workflows | bool
+  tags:
+    - workflows
+    - shuffle

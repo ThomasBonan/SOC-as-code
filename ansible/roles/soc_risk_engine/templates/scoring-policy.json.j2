@@ -1,0 +1,22 @@
+{
+  "version": "2.0",
+  "playbook": "190-soc-risk-engine",
+  "environment": "{{ soc_environment | default('dev') }}",
+  "weights": {
+    "wazuh":     {{ soc_risk_weights.wazuh }},
+    "cortex":    {{ soc_risk_weights.cortex }},
+    "misp":      {{ soc_risk_weights.misp }},
+    "asset":     {{ soc_risk_weights.asset }},
+    "frequency": {{ soc_risk_weights.frequency }}
+  },
+  "thresholds": {
+    "auto_close":   {{ soc_risk_thresholds.auto_close }},
+    "auto_promote": {{ soc_risk_thresholds.auto_promote }},
+    "auto_contain": {{ soc_risk_thresholds.auto_contain }},
+    "escalate":     {{ soc_risk_thresholds.escalate }}
+  },
+  "asset_criticality_configmap": "{{ soc_risk_engine_asset_configmap }}",
+  "frequency_window_hours":      {{ soc_risk_engine_frequency_window_hours }},
+  "service_url":                 "http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}",
+  "deployed_at":                 "{{ now(utc=True).isoformat() }}"
+}

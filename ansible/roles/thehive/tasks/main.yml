@@ -1,0 +1,102 @@
+- name: Add StrangeBee repo (once)
+  ansible.builtin.command: "{{ helm_bin }} repo add {{ thehive_helm_repo_name }} {{ thehive_helm_repo_url }}"
+  register: repo_add
+  changed_when: "'has been added' in repo_add.stdout or 'updated' in repo_add.stdout"
+  failed_when: repo_add.rc != 0 and ('already exists' not in repo_add.stderr | default(''))
+  run_once: true
+
+- name: Update helm repos (once)
+  ansible.builtin.command: "{{ helm_bin }} repo update"
+  register: repo_update
+  changed_when: false
+  run_once: true
+
+- name: Ensure namespace exists
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ thehive_namespace }}"
+
+# -------------------------
+# Secrets (create-once)
+# -------------------------
+- name: Check TheHive secret exists
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ thehive_secret_name }}"
+    namespace: "{{ thehive_namespace }}"
+  register: thehive_secret_info
+
+- name: Create TheHive secret (create-once)
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      api_version: v1
+      kind: Secret
+      metadata:
+        name: "{{ thehive_secret_name }}"
+        namespace: "{{ thehive_namespace }}"
+      type: Opaque
+      stringData:
+        httpSecret: "{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+  when: (thehive_secret_info.resources | length) == 0
+  no_log: true
+
+- name: Read TheHive secret values
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    name: "{{ thehive_secret_name }}"
+    namespace: "{{ thehive_namespace }}"
+  register: thehive_secret_read
+  no_log: true
+
+- name: Set TheHive vars from secret
+  ansible.builtin.set_fact:
+    thehive_http_secret: "{{ (thehive_secret_read.resources[0].data.httpSecret) | b64decode }}"
+  no_log: true
+
+# -------------------------
+# Helm values rendering
+# -------------------------
+- name: Render TheHive values (inject secrets)
+  ansible.builtin.template:
+    src: thehive.values.yml.j2
+    dest: /tmp/thehive.values.rendered.yml
+    mode: "0600"
+  no_log: true
+
+- name: Patch rendered values placeholders
+  ansible.builtin.replace:
+    path: /tmp/thehive.values.rendered.yml
+    regexp: '__HTTP_SECRET__'
+    replace: "{{ thehive_http_secret }}"
+  no_log: true
+
+# -------------------------
+# Deploy via Helm
+# -------------------------
+- name: Deploy TheHive via Helm (StrangeBee)
+  kubernetes.core.helm:
+    binary_path: "{{ helm_bin }}"
+    name: "{{ thehive_release_name }}"
+    chart_ref: "{{ thehive_helm_chart }}"
+    release_namespace: "{{ thehive_namespace }}"
+    create_namespace: false
+    values_files:
+      - /tmp/thehive.values.rendered.yml
+    wait: true
+    timeout: 3600s
+    state: present
+
+# -------------------------
+# Ingress
+# -------------------------
+- name: Apply TheHive ingress
+  kubernetes.core.k8s:
+    state: present
+    template: ingress.thehive.yml.j2

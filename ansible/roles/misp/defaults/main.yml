@@ -1,30 +1,57 @@
 ---
+# Namespace
 soc_core_namespace: soc-core
 
-bitnami_repo_name: bitnami
-bitnami_repo_url: https://charts.bitnami.com/bitnami
+# Kubeconfig & Helm
+kubeconfig_path: "/etc/kubernetes/admin.conf"
+helm_binary_path: "helm"
 
-misp_db_release: misp-mariadb
-mariadb_chart_ref: bitnami/mariadb
-mariadb_chart_version: "20.5.3"   # exemple, pinne ta version
+# Ingress
+misp_fqdn: "{{ (soc_services.misp | default('misp')) ~ '.' ~ (apps_domain | default('apps.soc.lab')) }}"
 
-misp_redis_release: misp-redis
-redis_chart_ref: bitnami/redis
-redis_chart_version: "20.6.2"     # exemple, pinne ta version
+# Images (OFFICIELLES MISP - GHCR)
+misp_core_image: "ghcr.io/misp/misp-docker/misp-core:76d1263"
+misp_modules_image: "ghcr.io/misp/misp-docker/misp-modules:76d1263"
 
-# Services internes (DNS k8s)
-misp_db_host: "{{ misp_db_release }}-mariadb.{{ soc_core_namespace }}.svc.cluster.local"
-misp_db_name: misp
-misp_db_user: misp
+# Ports
+misp_container_port: 80          # MISP core écoute généralement sur 80 dans ces images
+misp_service_port: 80
 
-misp_redis_host: "{{ misp_redis_release }}-master.{{ soc_core_namespace }}.svc.cluster.local"
+misp_modules_container_port: 6666
+misp_modules_service_port: 6666
 
-# Exposition
-misp_fqdn: misp.apps.soc.lab
+# DB / Redis endpoints internes k8s
+misp_db_host: "misp-mariadb.soc-core.svc.cluster.local"
+misp_db_user: "misp"
+misp_db_name: "misp"
 
-# Compte admin
-misp_admin_email: admin@soc.lab
+misp_redis_host: "misp-redis-master.soc-core.svc.cluster.local"
+misp_redis_port: 6379
 
-# Image MISP (mets celle que tu utilises réellement)
-# -> tu peux la remplacer par ton image validée/packagée en interne.
-misp_image: "arintriyanto/misp-docker:latest"
+# Modules URL (service k8s)
+misp_modules_fqdn: "http://misp-modules"
+
+# Workers tuning (MISP docker official)
+misp_workers: "1"               # legacy
+misp_num_workers_default: "5"
+misp_num_workers_prio: "5"
+misp_num_workers_email: "5"
+misp_num_workers_update: "1"
+misp_num_workers_cache: "5"
+
+# SMTP
+misp_smtp_port: "25"
+
+# imagePullSecrets (laisser vide pour GHCR public)
+misp_image_pull_secrets: []
+
+# Redis via Helm (inchangé chez toi)
+bitnami_repo_name: "bitnami"
+bitnami_repo_url: "https://charts.bitnami.com/bitnami"
+misp_redis_release: "misp-redis"
+redis_chart_ref: "bitnami/redis"
+redis_chart_version: "20.6.2"
+
+misp_redis_image_registry: "docker.io"
+misp_redis_image_repository: "bitnami/redis"
+misp_redis_image_tag: "latest"   # ton values.yml peut override via digest/tag

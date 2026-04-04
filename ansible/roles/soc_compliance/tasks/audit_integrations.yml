@@ -1,0 +1,394 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# audit_integrations.yml — Audit SOC service integrations
+# tag: audit
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Checks (in order):
+#   1. soc-shuffle-webhook-config ConfigMap present (185) — Wazuh→Shuffle webhook
+#   2. soc-automation-misp-push-policy ConfigMap present and parseable (180)
+#   3. Worker credentials Secret present (180) — key count only, no values
+#   4. Shuffle backend Deployment present and available (165)
+#   5. Risk engine Deployment present and available (190)
+#   6. Risk engine ClusterIP Service present (190)
+#
+# CronJob checks removed: both 180 and 190 CronJobs replaced by Shuffle + Flask service.
+#
+# All tasks are read-only (changed_when: false).
+# Findings accumulate in _integ_findings[] and are exposed via _comp_integ_result.
+
+# ── Initialize audit state ────────────────────────────────────────
+
+- name: "audit_integrations | Initialize integration audit state"
+  ansible.builtin.set_fact:
+    _integ_findings:            []
+    _integ_status:              "ok"
+    _integ_shuffle_available:   false
+    _integ_risk_engine_available: false
+  changed_when: false
+
+# ── Shuffle webhook ConfigMap (185) ───────────────────────────────
+
+- name: "audit_integrations | Check Shuffle webhook ConfigMap (185)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_cm_185_webhook }}"
+  register: _integ_webhook_cm
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — Shuffle webhook ConfigMap missing"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'missing_configmap',
+          'component': 'shuffle_webhook',
+          'severity': 'critical',
+          'resource': soc_compliance_cm_185_webhook,
+          'namespace': soc_namespaces.thehive,
+          'message': 'Shuffle webhook ConfigMap missing — Wazuh→Shuffle alert pipeline not configured (run 185-shuffle --tags workflows, then 180-soc-automation)'
+        }
+      ] }}
+  when: _integ_webhook_cm.resources | length == 0
+  changed_when: false
+
+- name: "audit_integrations | OK — Shuffle webhook ConfigMap present"
+  ansible.builtin.debug:
+    msg: >-
+      OK: Shuffle webhook ConfigMap '{{ soc_compliance_cm_185_webhook }}'
+      found — webhook_url={{ _integ_webhook_cm.resources[0].data.webhook_url | default('?') }}
+  when: _integ_webhook_cm.resources | length > 0
+  changed_when: false
+
+# ── MISP push policy ConfigMap (180) ─────────────────────────────
+
+- name: "audit_integrations | Check MISP push policy ConfigMap (180)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_cm_180_misp_push_policy }}"
+  register: _integ_misp_cm
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — MISP push policy ConfigMap missing"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'missing_configmap',
+          'component': 'misp_push_policy',
+          'severity': 'high',
+          'resource': soc_compliance_cm_180_misp_push_policy,
+          'namespace': soc_namespaces.thehive,
+          'message': 'MISP push policy ConfigMap missing — Shuffle cannot read MISP IOC lookup config'
+        }
+      ] }}
+  when: _integ_misp_cm.resources | length == 0
+  changed_when: false
+
+- name: "audit_integrations | Verify MISP push policy JSON is parseable"
+  ansible.builtin.set_fact:
+    _integ_misp_policy_parseable: >-
+      {{
+        _integ_misp_cm.resources | length > 0
+        and 'policy.json' in (_integ_misp_cm.resources[0].data | default({}))
+        and (_integ_misp_cm.resources[0].data['policy.json'] | default('') | length) > 2
+      }}
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — MISP push policy JSON empty or missing key"
+  ansible.builtin.set_fact:
+    _integ_status: "{{ 'drift' if _integ_status == 'ok' else _integ_status }}"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'configmap_content_invalid',
+          'component': 'misp_push_policy',
+          'severity': 'medium',
+          'resource': soc_compliance_cm_180_misp_push_policy,
+          'message': 'MISP push policy ConfigMap exists but policy.json key is empty or missing'
+        }
+      ] }}
+  when:
+    - _integ_misp_cm.resources | length > 0
+    - not (_integ_misp_policy_parseable | bool)
+  changed_when: false
+
+- name: "audit_integrations | OK — MISP push policy present and parseable"
+  ansible.builtin.debug:
+    msg: "OK: MISP push policy ConfigMap '{{ soc_compliance_cm_180_misp_push_policy }}' present and parseable"
+  when: _integ_misp_policy_parseable | bool
+  changed_when: false
+
+# ── Worker credentials Secret (key count only — no values) ────────
+
+- name: "audit_integrations | Check worker creds Secret exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_secret_worker_creds }}"
+  register: _integ_worker_creds
+  no_log: true
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — worker creds Secret missing"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'missing_secret',
+          'component': 'worker_creds',
+          'severity': 'critical',
+          'resource': soc_compliance_secret_worker_creds,
+          'namespace': soc_namespaces.thehive,
+          'message': 'Worker credentials Secret missing — Shuffle and risk engine cannot authenticate to SOC APIs'
+        }
+      ] }}
+  when: _integ_worker_creds.resources | length == 0
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — worker creds Secret has fewer than 2 keys"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'secret_incomplete',
+          'component': 'worker_creds',
+          'severity': 'critical',
+          'resource': soc_compliance_secret_worker_creds,
+          'message': 'Worker credentials Secret has fewer than 2 keys — may be corrupt or truncated'
+        }
+      ] }}
+  when:
+    - _integ_worker_creds.resources | length > 0
+    - (_integ_worker_creds.resources[0].data | default({}) | length) < 2
+  changed_when: false
+
+- name: "audit_integrations | OK — worker creds Secret present"
+  ansible.builtin.debug:
+    msg: >-
+      OK: Worker credentials Secret '{{ soc_compliance_secret_worker_creds }}' present
+      ({{ _integ_worker_creds.resources[0].data | default({}) | length }} keys)
+  when: _integ_worker_creds.resources | length > 0
+  changed_when: false
+
+# ── Shuffle backend Deployment (165) ─────────────────────────────
+
+- name: "audit_integrations | Check Shuffle backend Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ soc_compliance_shuffle_namespace }}"
+    name: "{{ soc_compliance_deploy_shuffle }}"
+  register: _integ_shuffle_deploy
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — Shuffle backend Deployment missing"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'missing_deployment',
+          'component': 'shuffle_backend',
+          'severity': 'critical',
+          'resource': soc_compliance_deploy_shuffle,
+          'namespace': soc_compliance_shuffle_namespace,
+          'message': 'Shuffle backend Deployment missing — orchestration engine not running (run 165-shuffle)'
+        }
+      ] }}
+  when: _integ_shuffle_deploy.resources | length == 0
+  changed_when: false
+
+- name: "audit_integrations | Evaluate Shuffle Deployment availability"
+  ansible.builtin.set_fact:
+    _integ_shuffle_available: >-
+      {{
+        _integ_shuffle_deploy.resources | length > 0
+        and (
+          _integ_shuffle_deploy.resources[0].status.conditions | default([])
+          | selectattr('type', 'eq', 'Available')
+          | selectattr('status', 'eq', 'True')
+          | list | length
+        ) > 0
+      }}
+  when: _integ_shuffle_deploy.resources | length > 0
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — Shuffle backend Deployment not available"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'deployment_unavailable',
+          'component': 'shuffle_backend',
+          'severity': 'critical',
+          'resource': soc_compliance_deploy_shuffle,
+          'namespace': soc_compliance_shuffle_namespace,
+          'message': 'Shuffle backend Deployment exists but is not Available — check pod status in soc-shuffle namespace'
+        }
+      ] }}
+  when:
+    - _integ_shuffle_deploy.resources | length > 0
+    - not (_integ_shuffle_available | bool)
+  changed_when: false
+
+- name: "audit_integrations | OK — Shuffle backend Deployment available"
+  ansible.builtin.debug:
+    msg: >-
+      OK: Shuffle backend Deployment '{{ soc_compliance_deploy_shuffle }}'
+      available in namespace '{{ soc_compliance_shuffle_namespace }}'
+  when: _integ_shuffle_available | bool
+  changed_when: false
+
+# ── Risk engine Deployment (190) ──────────────────────────────────
+
+- name: "audit_integrations | Check risk-engine Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_deploy_risk_engine }}"
+  register: _integ_risk_deploy
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — risk-engine Deployment missing"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'missing_deployment',
+          'component': 'risk_engine',
+          'severity': 'critical',
+          'resource': soc_compliance_deploy_risk_engine,
+          'namespace': soc_namespaces.thehive,
+          'message': 'risk-engine Deployment missing — POST /score endpoint unavailable (run 190-soc-risk-engine --tags decision)'
+        }
+      ] }}
+  when: _integ_risk_deploy.resources | length == 0
+  changed_when: false
+
+- name: "audit_integrations | Evaluate risk-engine Deployment availability"
+  ansible.builtin.set_fact:
+    _integ_risk_engine_available: >-
+      {{
+        _integ_risk_deploy.resources | length > 0
+        and (
+          _integ_risk_deploy.resources[0].status.conditions | default([])
+          | selectattr('type', 'eq', 'Available')
+          | selectattr('status', 'eq', 'True')
+          | list | length
+        ) > 0
+      }}
+  when: _integ_risk_deploy.resources | length > 0
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — risk-engine Deployment not available"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'deployment_unavailable',
+          'component': 'risk_engine',
+          'severity': 'critical',
+          'resource': soc_compliance_deploy_risk_engine,
+          'namespace': soc_namespaces.thehive,
+          'message': 'risk-engine Deployment exists but is not Available — check pod status (init container installs Flask; needs internet access)'
+        }
+      ] }}
+  when:
+    - _integ_risk_deploy.resources | length > 0
+    - not (_integ_risk_engine_available | bool)
+  changed_when: false
+
+- name: "audit_integrations | OK — risk-engine Deployment available"
+  ansible.builtin.debug:
+    msg: "OK: risk-engine Deployment '{{ soc_compliance_deploy_risk_engine }}' available in '{{ soc_namespaces.thehive }}'"
+  when: _integ_risk_engine_available | bool
+  changed_when: false
+
+# ── Risk engine ClusterIP Service (190) ───────────────────────────
+
+- name: "audit_integrations | Check risk-engine Service exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: Service
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_svc_risk_engine }}"
+  register: _integ_risk_svc
+  changed_when: false
+
+- name: "audit_integrations | DRIFT — risk-engine Service missing"
+  ansible.builtin.set_fact:
+    _integ_status: "drift"
+    _integ_findings: >-
+      {{ _integ_findings + [
+        {
+          'type': 'missing_service',
+          'component': 'risk_engine_svc',
+          'severity': 'critical',
+          'resource': soc_compliance_svc_risk_engine,
+          'namespace': soc_namespaces.thehive,
+          'message': 'risk-engine ClusterIP Service missing — Shuffle cannot reach POST /score endpoint'
+        }
+      ] }}
+  when: _integ_risk_svc.resources | length == 0
+  changed_when: false
+
+- name: "audit_integrations | OK — risk-engine Service present"
+  ansible.builtin.debug:
+    msg: "OK: risk-engine Service '{{ soc_compliance_svc_risk_engine }}' present (ClusterIP)"
+  when: _integ_risk_svc.resources | length > 0
+  changed_when: false
+
+# ── Integration audit summary ─────────────────────────────────────
+
+- name: "audit_integrations | Integration audit summary"
+  ansible.builtin.debug:
+    msg:
+      - "=== Integration Audit Summary ==="
+      - "Status              : {{ _integ_status | upper }}"
+      - "Shuffle webhook CM  : {{ 'OK (webhook_url set)' if _integ_webhook_cm.resources | length > 0 else 'MISSING' }}"
+      - "MISP push policy    : {{ 'OK' if (_integ_misp_policy_parseable | bool) else 'MISSING/EMPTY' }}"
+      - "Worker creds Secret : {{ 'OK' if _integ_worker_creds.resources | length > 0 else 'MISSING' }}"
+      - "Shuffle Deployment  : {{ 'OK (Available)' if (_integ_shuffle_available | bool) else 'MISSING' if _integ_shuffle_deploy.resources | length == 0 else 'NOT AVAILABLE' }}"
+      - "Risk Engine Deploy  : {{ 'OK (Available)' if (_integ_risk_engine_available | bool) else 'MISSING' if _integ_risk_deploy.resources | length == 0 else 'NOT AVAILABLE' }}"
+      - "Risk Engine Service : {{ 'OK (ClusterIP)' if _integ_risk_svc.resources | length > 0 else 'MISSING' }}"
+      - "Total findings      : {{ _integ_findings | length }}"
+  changed_when: false
+
+# ── Expose results for report.yml ────────────────────────────────
+
+- name: "audit_integrations | Expose results for report"
+  ansible.builtin.set_fact:
+    _comp_integ_result:
+      status:               "{{ _integ_status }}"
+      shuffle_webhook_cm:   "{{ 'present' if _integ_webhook_cm.resources | length > 0 else 'missing' }}"
+      misp_push_policy_cm:  "{{ 'present' if (_integ_misp_policy_parseable | bool) else 'missing' }}"
+      worker_creds_secret:  "{{ 'present' if _integ_worker_creds.resources | length > 0 else 'missing' }}"
+      shuffle_deployment: >-
+        {{
+          'available' if (_integ_shuffle_available | bool)
+          else 'unavailable' if _integ_shuffle_deploy.resources | length > 0
+          else 'missing'
+        }}
+      risk_engine_deployment: >-
+        {{
+          'available' if (_integ_risk_engine_available | bool)
+          else 'unavailable' if _integ_risk_deploy.resources | length > 0
+          else 'missing'
+        }}
+      risk_engine_service: "{{ 'present' if _integ_risk_svc.resources | length > 0 else 'missing' }}"
+      findings:            "{{ _integ_findings }}"
+  changed_when: false

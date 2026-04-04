@@ -1,0 +1,427 @@
+---
+# soc_foundations/tasks/rbac_cortex.yml
+# Crée un compte de service Cortex avec le rôle "read" dans l'organisation SOC.
+#
+# Idempotence : si le K8s Secret cortex-sa-foundations existe déjà, skip.
+#
+# Gestion du premier démarrage Cortex :
+#   Cortex 3.x requiert une initialisation manuelle à la première installation.
+#   Ce rôle l'automatise entièrement :
+#   a) Détecter si Cortex est non initialisé (login probe → 401)
+#   b) Migrer la base de données (POST /api/maintenance/migrate, sans auth)
+#   c) Créer le compte admin initial (POST /api/user, sans auth en mode maintenance)
+#
+# Flux complet :
+#   1. Vérifier si le Secret K8s de destination existe → skip si oui
+#   2. Résoudre l'URL effective (ingress si .svc)
+#   3. Probe login → si 401 : init (migration DB + création admin)
+#   4. Authentification via POST /api/login → authToken
+#   5. Vérifier si le compte SA existe (GET /api/user/{login})
+#   6. Créer le compte si absent (POST /api/user)
+#   7. Générer l'API key SA (POST /api/user/{login}/key/renew)
+#   8. Stocker dans K8s Secret
+
+- name: Cortex RBAC - vérifier si le Secret SA existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.cortex }}"
+    name: "{{ soc_foundations_cortex_sa_secret_name }}"
+  register: _sf_cx_sa_secret_existing
+  no_log: true
+  changed_when: false
+
+- name: Cortex RBAC - résoudre l'API base effective
+  ansible.builtin.set_fact:
+    _sf_cortex_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_cortex_api_base)
+          and (soc_foundations_cortex_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_cortex_ingress_api_base, soc_foundations_cortex_api_base)
+      }}
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+
+# --- Initialisation Cortex (si première installation) ---
+# On sonde le login en premier. Si 401, Cortex n'est pas initialisé.
+
+- name: Cortex RBAC - sonde de login (détection mode maintenance)
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/login"
+    method: POST
+    body_format: json
+    body:
+      user: "{{ soc_foundations_cortex_bootstrap_login }}"
+      password: "{{ soc_foundations_cortex_bootstrap_password }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 401
+      - 403
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_login_probe
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: Cortex RBAC - migrer la base de données (mode maintenance, sans auth)
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/maintenance/migrate"
+    method: POST
+    headers:
+      X-Requested-With: "XMLHttpRequest"
+    body_format: json
+    body: {}
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 204
+    timeout: 120
+  register: _sf_cx_migrate
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - (_sf_cx_login_probe.status | default(401)) != 200
+  failed_when: false
+  changed_when: (_sf_cx_migrate.status | default(0)) in [200, 204]
+
+- name: Cortex RBAC - créer le compte admin initial (bootstrap, sans auth)
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/user"
+    method: POST
+    body_format: json
+    body:
+      login: "{{ soc_foundations_cortex_bootstrap_login }}"
+      name: "Administrator"
+      password: "{{ soc_foundations_cortex_bootstrap_password }}"
+      roles:
+        - superAdmin
+      organization: "cortex"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 201
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_admin_bootstrap
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - (_sf_cx_login_probe.status | default(401)) != 200
+  changed_when: _sf_cx_admin_bootstrap.status in [200, 201]
+  no_log: true
+
+# --- Authentification admin (Cortex initialisé ou venant d'être initialisé) ---
+
+- name: Cortex RBAC - authentification admin via /api/login
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/login"
+    method: POST
+    body_format: json
+    body:
+      user: "{{ soc_foundations_cortex_bootstrap_login }}"
+      password: "{{ soc_foundations_cortex_bootstrap_password }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_login_result
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_cx_login_result.status == 200
+  no_log: true
+
+# Cortex utilise des sessions basées sur cookies (Play Framework).
+# On extrait le cookie de session pour générer une API key admin,
+# puis on utilise cette API key comme Bearer pour toutes les opérations suivantes.
+
+- name: Cortex RBAC - extraire le cookie de session admin
+  ansible.builtin.set_fact:
+    _sf_cx_session_cookie: "{{ _sf_cx_login_result.cookies_string }}"
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+# Cortex (ScalliGraph) retourne le token CSRF dans le header X-CSRF-Token de la réponse login.
+# Ce token doit être renvoyé dans les requêtes POST suivantes pour bypasser la protection CSRF.
+
+# Le token CSRF n'est pas dans les headers de login (confirmé).
+# Deux pistes : (a) body JSON du login, (b) cookie non-HttpOnly déclenché par un GET post-login.
+# On fait un GET /api/user/current avec le cookie de session pour déclencher la génération du token CSRF.
+
+- name: Cortex RBAC - GET /api/user/current pour déclencher le token CSRF
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/user/current"
+    method: GET
+    headers:
+      Cookie: "{{ _sf_cx_session_cookie }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_get_current
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+# Cookie CSRF confirmé : CORTEX-XSRF-TOKEN (pattern double-submit cookie, déclenché par GET).
+# On extrait la valeur brute depuis set_cookie (plus fiable que .cookies dict pour l'encodage).
+
+- name: Cortex RBAC - extraire le token CSRF depuis set_cookie (valeur brute)
+  ansible.builtin.set_fact:
+    _sf_cx_csrf_token: >-
+      {{
+        _sf_cx_get_current.set_cookie
+        | default('')
+        | regex_search('CORTEX-XSRF-TOKEN=([^;,\s]+)', '\1')
+        | first
+        | default('')
+      }}
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Cortex RBAC - [diagnostic] vérifier l'extraction du token CSRF
+  ansible.builtin.debug:
+    msg:
+      csrf_token_found: "{{ _sf_cx_csrf_token | length > 0 }}"
+      csrf_token_length: "{{ _sf_cx_csrf_token | length }}"
+      set_cookie_raw: "{{ _sf_cx_get_current.set_cookie | default('(absent)') }}"
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+
+# Le double-submit pattern : le POST doit inclure CORTEX-XSRF-TOKEN en cookie ET en header (même valeur).
+
+- name: Cortex RBAC - construire la chaîne Cookie complète (session + XSRF)
+  ansible.builtin.set_fact:
+    _sf_cx_full_cookie: >-
+      {{
+        _sf_cx_session_cookie
+        + ('; CORTEX-XSRF-TOKEN=' + _sf_cx_csrf_token if _sf_cx_csrf_token | length > 0 else '')
+      }}
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+# Tentative avec X-XSRF-TOKEN (header standard pour XSRF double-submit).
+# status_code inclut 403 + failed_when: false pour capturer l'erreur sans planter.
+
+- name: Cortex RBAC - générer l'API key admin (form-urlencoded → chemin CSRF headers)
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/user/{{ soc_foundations_cortex_bootstrap_login }}/key/renew"
+    method: POST
+    headers:
+      Cookie: "{{ _sf_cx_full_cookie }}"
+      # Chemin CSRF headers (non-JSON) : le filtre vérifie X-XSRF-TOKEN et Csrf-Token: nocheck
+      X-XSRF-TOKEN: "{{ _sf_cx_csrf_token }}"
+      Csrf-Token: "nocheck"
+      X-Requested-With: "XMLHttpRequest"
+    # body_format: form-urlencoded → Content-Type non application/json
+    # → Play emprunte le chemin CSRF "headers" (pas "body")
+    body_format: form-urlencoded
+    body:
+      csrfToken: "{{ _sf_cx_csrf_token }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 403
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_admin_key_result
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  failed_when: false
+  no_log: true
+
+# Afficher la réponse UNIQUEMENT si échec (403) → pas de clé API exposée.
+- name: Cortex RBAC - [diagnostic] réponse key/renew si erreur
+  ansible.builtin.debug:
+    msg: "HTTP {{ _sf_cx_admin_key_result.status }}: {{ _sf_cx_admin_key_result.content | default('(pas de contenu)') }}"
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - (_sf_cx_admin_key_result.status | default(0)) != 200
+
+- name: Cortex RBAC - échouer si la clé admin n'a pas été générée
+  ansible.builtin.fail:
+    msg: >-
+      Cortex key/renew a retourné HTTP {{ _sf_cx_admin_key_result.status }}.
+      Consultez le diagnostic ci-dessus pour identifier le header CSRF manquant.
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - (_sf_cx_admin_key_result.status | default(0)) != 200
+
+- name: Cortex RBAC - extraire l'API key admin (Bearer pour la suite)
+  ansible.builtin.set_fact:
+    _sf_cx_admin_bearer: >-
+      {{
+        _sf_cx_admin_key_result.content
+        | trim
+        | regex_replace('^"', '')
+        | regex_replace('"$', '')
+      }}
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+# --- Créer l'organisation cible si elle n'est pas l'organisation par défaut ---
+# L'organisation "cortex" existe par défaut. "SOC" (ou toute autre org custom) doit être créée.
+
+- name: Cortex RBAC - vérifier si l'organisation cible existe
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/organization/{{ soc_foundations_cortex_sa_organisation }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sf_cx_admin_bearer }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 404
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_org_check
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - soc_foundations_cortex_sa_organisation | length > 0
+    - soc_foundations_cortex_sa_organisation != 'cortex'
+  changed_when: false
+
+- name: Cortex RBAC - créer l'organisation cible si absente
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/organization"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _sf_cx_admin_bearer }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "{{ soc_foundations_cortex_sa_organisation }}"
+      description: "SOC Platform Organization"
+      status: "Active"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 201
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_org_create
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - soc_foundations_cortex_sa_organisation | length > 0
+    - soc_foundations_cortex_sa_organisation != 'cortex'
+    - (_sf_cx_org_check.status | default(404)) == 404
+  changed_when: _sf_cx_org_create.status in [200, 201]
+
+# --- RBAC : créer le compte de service ---
+
+- name: Cortex RBAC - vérifier si le compte SA existe déjà via API
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/user/{{ soc_foundations_cortex_sa_login }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sf_cx_admin_bearer }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 404
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_sa_check
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Cortex RBAC - créer le compte de service via API
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/user"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _sf_cx_admin_bearer }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      login: "{{ soc_foundations_cortex_sa_login }}"
+      name: "{{ soc_foundations_cortex_sa_name }}"
+      roles:
+        - "{{ soc_foundations_cortex_sa_role }}"
+      organization: "{{ soc_foundations_cortex_sa_organisation }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 201
+      - 200
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_sa_create
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - (_sf_cx_sa_check.status | default(404)) == 404
+  no_log: true
+
+- name: Cortex RBAC - générer l'API key pour le compte de service
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/user/{{ soc_foundations_cortex_sa_login }}/key/renew"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _sf_cx_admin_bearer }}"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_cx_sa_key
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_cx_sa_key.status == 200
+  no_log: true
+
+- name: Cortex RBAC - extraire l'API key SA de la réponse
+  ansible.builtin.set_fact:
+    _sf_cx_sa_api_key: >-
+      {{
+        _sf_cx_sa_key.content
+        | trim
+        | regex_replace('^"', '')
+        | regex_replace('"$', '')
+      }}
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Cortex RBAC - assert que l'API key n'est pas vide
+  ansible.builtin.assert:
+    that:
+      - _sf_cx_sa_api_key | length > 0
+    fail_msg: >-
+      Cortex : la génération d'API key a retourné une valeur vide pour
+      login={{ soc_foundations_cortex_sa_login }}.
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+
+- name: Cortex RBAC - stocker l'API key dans un K8s Secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_foundations_cortex_sa_secret_name }}"
+        namespace: "{{ soc_namespaces.cortex }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-foundations
+          soc.lab/service: cortex
+          soc.lab/secret-type: service-account
+        annotations:
+          soc.lab/sa-login: "{{ soc_foundations_cortex_sa_login }}"
+          soc.lab/sa-role: "{{ soc_foundations_cortex_sa_role }}"
+          soc.lab/sa-organisation: "{{ soc_foundations_cortex_sa_organisation }}"
+          soc.lab/environment: "{{ soc_environment | default('dev') }}"
+      type: Opaque
+      stringData: >-
+        {{
+          {
+            soc_foundations_cortex_sa_secret_key_login: soc_foundations_cortex_sa_login,
+            soc_foundations_cortex_sa_secret_key_api: _sf_cx_sa_api_key
+          }
+        }}
+  when: _sf_cx_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Cortex RBAC - rapport de statut
+  ansible.builtin.debug:
+    msg: >-
+      Cortex SA '{{ soc_foundations_cortex_sa_login }}'
+      (org={{ soc_foundations_cortex_sa_organisation }}, rôle={{ soc_foundations_cortex_sa_role }}).
+      Secret : {{ soc_namespaces.cortex }}/{{ soc_foundations_cortex_sa_secret_name }}.
+      Action : {{ 'ignoré (déjà existant)' if _sf_cx_sa_secret_existing.resources | length > 0 else 'créé' }}.

@@ -1,0 +1,42 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_risk_engine — Task orchestrator
+# Le scoring 5-dim est exposé comme HTTP service (Deployment K8s) appelé par Shuffle.
+# Le CronJob de polling TheHive est supprimé — Shuffle orchestre à la place.
+# Uses import_tasks (static) so tags on this file propagate to sub-tasks.
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "soc_risk_engine | Preflight — verify 170+180 chain and SA credentials"
+  import_tasks: preflight.yml
+  when: soc_risk_engine_enable_preflight | bool
+  tags:
+    - bootstrap
+    - soc_risk_engine
+
+- name: "soc_risk_engine | Asset criticality — deploy asset weight model"
+  import_tasks: asset_criticality.yml
+  when: soc_risk_engine_enable_asset_criticality | bool
+  tags:
+    - model
+    - soc_risk_engine
+
+- name: "soc_risk_engine | Scoring model — deploy 5-dimension risk policy"
+  import_tasks: scoring_model.yml
+  when: soc_risk_engine_enable_scoring_model | bool
+  tags:
+    - model
+    - soc_risk_engine
+
+- name: "soc_risk_engine | Drift guard — detect divergence between 180 and 190 configs"
+  import_tasks: drift_guard.yml
+  when: soc_risk_engine_enable_drift_guard | bool
+  tags:
+    - compliance
+    - soc_risk_engine
+
+- name: "soc_risk_engine | Risk Engine service — deploy Flask HTTP service (Deployment + ClusterIP)"
+  import_tasks: risk_engine_service.yml
+  when: soc_risk_engine_enable_risk_engine_service | bool
+  tags:
+    - decision
+    - soc_risk_engine

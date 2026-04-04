@@ -1,0 +1,49 @@
+---
+# Namespace for ephemeral smoke test pods
+soc_smoke_namespace: "tools"
+soc_smoke_job_name: "soc-smoke"
+
+# Runtime
+soc_smoke_kubeconfig_path: "{{ kubeconfig_path }}"
+soc_smoke_image: "alpine:3.19"
+soc_smoke_image_pull_policy: "IfNotPresent"
+soc_smoke_timeout_seconds: 120
+soc_smoke_retries: 30
+soc_smoke_delay: 4
+
+# DNS checks (getent hosts)
+soc_smoke_dns_checks:
+  - "{{ soc_endpoints.thehive.host }}"
+  - "{{ soc_endpoints.cortex.host }}"
+  - "{{ soc_endpoints.misp.host }}"
+
+# TCP checks (nc -vz)
+soc_smoke_tcp_checks:
+  - name: thehive
+    host: "{{ soc_endpoints.thehive.host }}"
+    port: "{{ soc_ports.thehive }}"
+  - name: cortex
+    host: "{{ soc_endpoints.cortex.host }}"
+    port: "{{ soc_ports.cortex }}"
+  - name: misp
+    host: "{{ soc_endpoints.misp.host }}"
+    port: "{{ soc_ports.misp }}"
+
+# HTTP checks (curl -sf)
+soc_smoke_http_checks:
+  - name: thehive-ui
+    url: "{{ soc_endpoints.thehive.url }}/"
+    tls_verify: false
+    ok_statuses: [200, 301, 302]
+  - name: cortex-ui
+    url: "{{ soc_endpoints.cortex.url }}/"
+    tls_verify: false
+    ok_statuses: [200, 301, 302]
+  - name: misp-ui
+    url: "{{ soc_endpoints.misp.url }}/"
+    tls_verify: false
+    ok_statuses: [200, 301, 302]
+  - name: thehive-api
+    url: "{{ soc_endpoints.thehive.api_base }}/v1/status"
+    tls_verify: false
+    ok_statuses: [200, 401, 403]

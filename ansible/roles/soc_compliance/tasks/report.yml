@@ -1,0 +1,175 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# report.yml — Assemble and persist the SOC compliance report
+# tag: report
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Actions:
+#   1. Initialize default result facts (safe if audit modules were skipped)
+#   2. Compute global compliance status across all audit domains
+#   3. Assemble all findings into a unified list
+#   4. Ensure the artifacts directory exists
+#   5. Write JSON report artifact (local file, CI/CD consumable)
+#   6. Deploy report as K8s ConfigMap (audit trail)
+#   7. Print structured console summary
+#   8. Fail the play if drift detected AND soc_compliance_fail_on_drift=true
+#
+# The report and ConfigMap are always overwritten with fresh results (idempotent).
+# This task file is always safe to run even without prior audit modules.
+
+# ── Initialize default results (safe defaults if audits were skipped) ─
+
+- name: "report | Initialize default result facts (guard for --tags report standalone)"
+  ansible.builtin.set_fact:
+    _comp_rbac_result:   "{{ _comp_rbac_result   | default({'status': 'skipped', 'sa_counts': {}, 'privileged_crb_count': 0, 'admin_rolebinding_count': 0, 'groupvars_issues': [], 'findings': []}) }}"
+    _comp_integ_result:  "{{ _comp_integ_result  | default({'status': 'skipped', 'shuffle_webhook_cm': 'unknown', 'misp_push_policy_cm': 'unknown', 'worker_creds_secret': 'unknown', 'shuffle_deployment': 'unknown', 'risk_engine_deployment': 'unknown', 'risk_engine_service': 'unknown', 'findings': []}) }}"
+    _comp_risk_result:   "{{ _comp_risk_result   | default({'status': 'skipped', 'risk_policy_cm': 'unknown', 'asset_criticality_cm': 'unknown', 'threshold_drift': false, 'weight_drift': false, 'asset_drift': false, 'cross_schema_drift': false, 'findings': []}) }}"
+    _comp_net_result:    "{{ _comp_net_result    | default({'status': 'skipped', 'netpolicies_present': {}, 'ingress_cidrs': {}, 'wildcard_cidrs_detected': false, 'wildcard_services': [], 'undeclared_cidrs_detected': false, 'undeclared_cidrs': {}, 'empty_ingress_services': [], 'total_policies': {}, 'findings': []}) }}"
+    _comp_sec_result:    "{{ _comp_sec_result    | default({'status': 'skipped', 'thehive_sa': 'unknown', 'cortex_sa': 'unknown', 'misp_sa': 'unknown', 'wazuh_sa': 'unknown', 'worker_creds': 'unknown', 'findings': []}) }}"
+  changed_when: false
+
+# ── Compute global compliance status ──────────────────────────────
+
+- name: "report | Compute global compliance status"
+  ansible.builtin.set_fact:
+    _comp_global_status: >-
+      {{
+        'drift_detected'
+        if (
+          (_comp_rbac_result.status  | default('ok')) == 'drift'
+          or (_comp_integ_result.status | default('ok')) == 'drift'
+          or (_comp_risk_result.status  | default('ok')) == 'drift'
+          or (_comp_net_result.status   | default('ok')) == 'drift'
+          or (_comp_sec_result.status   | default('ok')) == 'drift'
+        )
+        else 'compliant'
+      }}
+    _comp_all_findings: >-
+      {{
+        (_comp_rbac_result.findings  | default([]))
+        + (_comp_integ_result.findings | default([]))
+        + (_comp_risk_result.findings  | default([]))
+        + (_comp_net_result.findings   | default([]))
+        + (_comp_sec_result.findings   | default([]))
+      }}
+    _comp_timestamp: "{{ now(utc=True).isoformat() }}"
+  changed_when: false
+
+- name: "report | Categorize findings by severity"
+  ansible.builtin.set_fact:
+    _comp_critical_count: "{{ _comp_all_findings | selectattr('severity', 'defined') | selectattr('severity', 'equalto', 'critical') | list | length }}"
+    _comp_high_count:     "{{ _comp_all_findings | selectattr('severity', 'defined') | selectattr('severity', 'equalto', 'high')     | list | length }}"
+    _comp_medium_count:   "{{ _comp_all_findings | selectattr('severity', 'defined') | selectattr('severity', 'equalto', 'medium')   | list | length }}"
+  changed_when: false
+
+# ── Ensure artifacts directory exists ────────────────────────────
+
+- name: "report | Ensure artifacts directory exists"
+  ansible.builtin.file:
+    path: "{{ soc_compliance_artifact_dir }}"
+    state: directory
+    mode: "0750"
+  when: soc_compliance_generate_artifact | bool
+
+# ── Write JSON report artifact ─────────────────────────────────────
+
+- name: "report | Write compliance report JSON artifact"
+  ansible.builtin.template:
+    src: compliance-report.json.j2
+    dest: "{{ soc_compliance_artifact_file }}"
+    mode: "0640"
+  when: soc_compliance_generate_artifact | bool
+
+- name: "report | Report artifact written"
+  ansible.builtin.debug:
+    msg: "Compliance report written to: {{ soc_compliance_artifact_file }}"
+  when: soc_compliance_generate_artifact | bool
+  changed_when: false
+
+# ── Deploy report ConfigMap (K8s audit trail) ─────────────────────
+
+- name: "report | Deploy compliance report ConfigMap (K8s audit trail)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ soc_compliance_report_configmap }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+        labels: "{{ soc_compliance_labels }}"
+        annotations:
+          soc.lab/managed-by:        "200-soc-compliance"
+          soc.lab/compliance-status: "{{ _comp_global_status }}"
+          soc.lab/checked-at:        "{{ _comp_timestamp }}"
+          soc.lab/environment:       "{{ soc_environment | default('dev') }}"
+          soc.lab/mode:              "{{ soc_compliance_mode }}"
+          soc.lab/findings-count:    "{{ _comp_all_findings | length | string }}"
+      data:
+        global_status:   "{{ _comp_global_status }}"
+        checked_at:      "{{ _comp_timestamp }}"
+        environment:     "{{ soc_environment | default('dev') }}"
+        mode:            "{{ soc_compliance_mode }}"
+        findings_count:  "{{ _comp_all_findings | length | string }}"
+        critical_count:  "{{ _comp_critical_count | string }}"
+        high_count:      "{{ _comp_high_count | string }}"
+        medium_count:    "{{ _comp_medium_count | string }}"
+        rbac_status:     "{{ _comp_rbac_result.status  | default('skipped') }}"
+        integ_status:    "{{ _comp_integ_result.status | default('skipped') }}"
+        risk_status:     "{{ _comp_risk_result.status  | default('skipped') }}"
+        net_status:      "{{ _comp_net_result.status   | default('skipped') }}"
+        sec_status:      "{{ _comp_sec_result.status   | default('skipped') }}"
+        report.json: "{{ lookup('template', 'compliance-report.json.j2') }}"
+
+# ── Console report ────────────────────────────────────────────────
+
+- name: "report | SOC compliance console report"
+  ansible.builtin.debug:
+    msg:
+      - "╔══════════════════════════════════════════════════════════════════╗"
+      - "║          SOC COMPLIANCE REPORT — 200-soc-compliance             ║"
+      - "╠══════════════════════════════════════════════════════════════════╣"
+      - "  Environment    : {{ soc_environment | default('dev') }}"
+      - "  Timestamp       : {{ _comp_timestamp }}"
+      - "  Mode            : {{ soc_compliance_mode | upper }}"
+      - "╠══════════════════════════════════════════════════════════════════╣"
+      - "  RBAC            : {{ (_comp_rbac_result.status  | default('skipped')) | upper }}"
+      - "  Integrations    : {{ (_comp_integ_result.status | default('skipped')) | upper }}"
+      - "  Risk Model      : {{ (_comp_risk_result.status  | default('skipped')) | upper }}"
+      - "  Network         : {{ (_comp_net_result.status   | default('skipped')) | upper }}"
+      - "  Secrets         : {{ (_comp_sec_result.status   | default('skipped')) | upper }}"
+      - "╠══════════════════════════════════════════════════════════════════╣"
+      - "  GLOBAL STATUS   : {{ _comp_global_status | upper }}"
+      - "  Total findings  : {{ _comp_all_findings | length }}"
+      - "    Critical       : {{ _comp_critical_count }}"
+      - "    High           : {{ _comp_high_count }}"
+      - "    Medium         : {{ _comp_medium_count }}"
+      - "╠══════════════════════════════════════════════════════════════════╣"
+      - "  Artifact        : {{ soc_compliance_artifact_file if soc_compliance_generate_artifact | bool else 'disabled' }}"
+      - "  ConfigMap       : {{ soc_compliance_report_configmap }} (ns: {{ soc_namespaces.thehive }})"
+      - "╚══════════════════════════════════════════════════════════════════╝"
+  changed_when: false
+
+# ── Fail on drift (CI/CD gate) ────────────────────────────────────
+
+- name: "report | Fail pipeline on drift detection"
+  ansible.builtin.fail:
+    msg: >-
+      SOC compliance audit detected drift.
+      Global status  : {{ _comp_global_status | upper }}
+      Total findings : {{ _comp_all_findings | length }}
+        Critical     : {{ _comp_critical_count }}
+        High         : {{ _comp_high_count }}
+        Medium       : {{ _comp_medium_count }}
+      Domain status  :
+        RBAC         : {{ _comp_rbac_result.status  | default('skipped') | upper }}
+        Integrations : {{ _comp_integ_result.status | default('skipped') | upper }}
+        Risk Model   : {{ _comp_risk_result.status  | default('skipped') | upper }}
+        Network      : {{ _comp_net_result.status   | default('skipped') | upper }}
+        Secrets      : {{ _comp_sec_result.status   | default('skipped') | upper }}
+      Review: {{ soc_compliance_artifact_file }}
+      Set soc_compliance_fail_on_drift=false to downgrade to a warning.
+  when:
+    - _comp_global_status == 'drift_detected'
+    - soc_compliance_fail_on_drift | bool

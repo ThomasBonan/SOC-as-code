@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: thehive
+  namespace: {{ thehive_namespace }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "{{ thehive_cluster_issuer }}"
+spec:
+  ingressClassName: {{ thehive_ingress_class }}
+  tls:
+    - hosts:
+        - {{ thehive_fqdn }}
+      secretName: {{ thehive_tls_secret }}
+  rules:
+    - host: {{ thehive_fqdn }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ thehive_release_name }}
+                port:
+                  number: 9000

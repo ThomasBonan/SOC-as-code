@@ -1,0 +1,35 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_automation — Task orchestrator
+# Orchestration déléguée à Shuffle SOAR (165-shuffle.yml).
+# Ce rôle crée les prérequis : credentials agrégés + politique MISP + webhook Wazuh.
+# Uses import_tasks (static) so tags on this file propagate to sub-tasks.
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "soc_automation | Preflight — verify SA credentials from 170"
+  import_tasks: preflight.yml
+  when: soc_automation_enable_preflight | bool
+  tags:
+    - bootstrap
+    - soc_automation
+
+- name: "soc_automation | Credentials — créer le Secret agrégé pour Shuffle"
+  import_tasks: credentials.yml
+  when: soc_automation_enable_credentials | bool
+  tags:
+    - integration
+    - soc_automation
+
+- name: "soc_automation | MISP push policy — stocker la politique IOC"
+  import_tasks: misp_push_policy.yml
+  when: soc_automation_enable_cortex_to_misp | bool
+  tags:
+    - integration
+    - soc_automation
+
+- name: "soc_automation | Wazuh webhook — injecter l'intégration Shuffle dans ossec.conf"
+  import_tasks: wazuh_webhook.yml
+  when: soc_automation_enable_wazuh_webhook | bool
+  tags:
+    - integration
+    - soc_automation

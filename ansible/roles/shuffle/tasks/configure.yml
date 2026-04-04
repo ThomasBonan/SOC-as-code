@@ -1,0 +1,572 @@
+---
+# shuffle/tasks/configure.yml
+# Initialize the Shuffle admin account and store its API key in a K8s Secret.
+# Idempotent via marker ConfigMap soc-shuffle-marker-configure.
+
+- name: "shuffle | Configure - verify idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ shuffle_marker_ns }}"
+    name: "{{ shuffle_marker_configure }}"
+  register: _sh_configure_marker
+  changed_when: false
+
+- name: "shuffle | Configure - admin initialization block"
+  when: _sh_configure_marker.resources | length == 0
+  block:
+    - name: "shuffle | Configure - wait for Shuffle API"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/apps"
+        method: GET
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 401]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_health
+      retries: "{{ shuffle_backend_startup_retries | default(60) | int }}"
+      delay: "{{ shuffle_backend_startup_delay | default(10) | int }}"
+      until: _sh_health.status in [200, 401]
+
+    # Shuffle exige un register avant le premier login (pas d'admin par défaut).
+    # L'endpoint /register n'est disponible que lorsqu'aucun user n'existe encore.
+    # On tente systématiquement : 200/201 = succès, 400/401/403 = déjà enregistré → OK.
+    - name: "shuffle | Configure - register initial admin (first-time only)"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/users/register"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ shuffle_admin_username }}"
+          password: "{{ shuffle_admin_password }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 201, 400, 401, 403]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_register
+      no_log: true
+
+    - name: "shuffle | Configure - authenticate and get session cookie"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/login"
+        method: POST
+        body_format: json
+        body:
+          username: "{{ shuffle_admin_username }}"
+          password: "{{ shuffle_admin_password }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_login
+      no_log: true
+
+    - name: "shuffle | Configure - build session cookie header"
+      ansible.builtin.set_fact:
+        _sh_session_cookie: "{{ _sh_login.cookies | dictsort | map('join', '=') | join('; ') }}"
+      no_log: true
+
+    - name: "shuffle | Configure - read users list"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/users"
+        method: GET
+        headers:
+          Cookie: "{{ _sh_session_cookie }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_users_list
+      no_log: true
+
+    - name: "shuffle | Configure - extract admin API key"
+      ansible.builtin.set_fact:
+        _sh_admin_apikey: >-
+          {{
+            ((_sh_users_list.json
+            | selectattr('username', 'equalto', shuffle_admin_username)
+            | list
+            | first).apikey) | trim
+          }}
+      no_log: true
+
+    - name: "shuffle | Configure - generate admin API key when missing"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/users/generateapikey"
+        method: GET
+        headers:
+          Cookie: "{{ _sh_session_cookie }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_genkey_result
+      when: _sh_admin_apikey | length == 0
+      no_log: true
+
+    - name: "shuffle | Configure - update admin API key from response"
+      ansible.builtin.set_fact:
+        _sh_admin_apikey: "{{ _sh_genkey_result.json.apikey | trim }}"
+      when: _sh_admin_apikey | length == 0
+      no_log: true
+
+    - name: "shuffle | Configure - store admin API key in K8s Secret"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          type: Opaque
+          metadata:
+            name: "{{ shuffle_admin_secret_name }}"
+            namespace: "{{ shuffle_admin_secret_ns }}"
+            labels: "{{ shuffle_labels }}"
+          stringData:
+            apikey: "{{ _sh_admin_apikey }}"
+            username: "{{ shuffle_admin_username }}"
+      no_log: true
+
+    - name: "shuffle | Configure - summary"
+      ansible.builtin.debug:
+        msg: "Shuffle admin API key stored in Secret {{ shuffle_admin_secret_name }} (ns: {{ shuffle_admin_secret_ns }})"
+
+    - name: "shuffle | Configure - create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ shuffle_marker_configure }}"
+            namespace: "{{ shuffle_marker_ns }}"
+            labels: "{{ shuffle_labels }}"
+            annotations:
+              soc.lab/feature: "shuffle-configure"
+              soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+          data:
+            feature: "shuffle-configure"
+            status: "active"
+            environment: "{{ soc_environment | default('dev') }}"
+
+- name: "shuffle | Configure - read admin API key secret for environment resolution"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ shuffle_admin_secret_ns }}"
+    name: "{{ shuffle_admin_secret_name }}"
+  register: _sh_env_admin_secret
+  no_log: true
+  changed_when: false
+
+- name: "shuffle | Configure - assert admin API key secret exists"
+  ansible.builtin.assert:
+    that:
+      - _sh_env_admin_secret.resources | length > 0
+      - (_sh_env_admin_secret.resources[0].data.apikey | default('')) | length > 0
+    fail_msg: >-
+      Missing Shuffle admin API key secret {{ shuffle_admin_secret_name }}
+      in namespace {{ shuffle_admin_secret_ns }}.
+
+- name: "shuffle | Configure - extract admin API key for environment resolution"
+  ansible.builtin.set_fact:
+    _sh_env_apikey: "{{ _sh_env_admin_secret.resources[0].data.apikey | b64decode }}"
+  no_log: true
+
+# ── App Authentication (native Shuffle apps) — runs every configure call ──────
+# PUT is idempotent; no marker guard needed. Requires _sh_env_apikey (set above)
+# and soc-automation-worker-creds Secret (written by 180-soc-automation).
+- name: "shuffle | Configure - read worker creds for app auth"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ shuffle_worker_creds_ns }}"
+    name: "{{ shuffle_worker_creds_secret }}"
+  register: _sh_worker_creds
+  no_log: true
+  failed_when: false
+  changed_when: false
+
+- name: "shuffle | Configure - decode worker creds for app auth"
+  ansible.builtin.set_fact:
+    _sh_thehive_write_key: "{{ _sh_worker_creds.resources[0].data.THEHIVE_WRITE_KEY | b64decode }}"
+    _sh_cortex_key:        "{{ _sh_worker_creds.resources[0].data.CORTEX_API_KEY    | b64decode }}"
+    _sh_misp_key:          "{{ _sh_worker_creds.resources[0].data.MISP_API_KEY       | b64decode }}"
+    _sh_wazuh_user:        "{{ _sh_worker_creds.resources[0].data.WAZUH_USER         | b64decode }}"
+    _sh_wazuh_pass:        "{{ _sh_worker_creds.resources[0].data.WAZUH_PASS         | b64decode }}"
+  when: _sh_worker_creds.resources | length > 0
+  no_log: true
+
+- name: "shuffle | Configure - register TheHive app authentication"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/apps/authentication"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    body_format: json
+    body:
+      label: "TheHive SOC Lab"
+      app:
+        name: "TheHive"
+        app_version: "1.1.0"
+      fields:
+        - key: "url"
+          value: "{{ shuffle_thehive_url }}"
+        - key: "apikey"
+          value: "{{ _sh_thehive_write_key | default('') }}"
+      active: true
+      auto_distribute: true
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  when:
+    - _sh_worker_creds.resources | length > 0
+    - (_sh_thehive_write_key | default('')) | length > 0
+  register: _sh_auth_thehive
+  failed_when: false
+  no_log: true
+
+- name: "shuffle | Configure - register Cortex app authentication"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/apps/authentication"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    body_format: json
+    body:
+      label: "Cortex SOC Lab"
+      app:
+        name: "cortex"
+        app_version: "1.0.0"
+      fields:
+        - key: "url"
+          value: "{{ shuffle_cortex_url }}"
+        - key: "apikey"
+          value: "{{ _sh_cortex_key | default('') }}"
+      active: true
+      auto_distribute: true
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  when:
+    - _sh_worker_creds.resources | length > 0
+    - (_sh_cortex_key | default('')) | length > 0
+  register: _sh_auth_cortex
+  failed_when: false
+  no_log: true
+
+- name: "shuffle | Configure - register MISP app authentication"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/apps/authentication"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    body_format: json
+    body:
+      label: "MISP SOC Lab"
+      app:
+        name: "MISP"
+        app_version: "1.0.0"
+      fields:
+        - key: "url"
+          value: "{{ shuffle_misp_url }}"
+        - key: "apikey"
+          value: "{{ _sh_misp_key | default('') }}"
+      active: true
+      auto_distribute: true
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  when:
+    - _sh_worker_creds.resources | length > 0
+    - (_sh_misp_key | default('')) | length > 0
+  register: _sh_auth_misp
+  failed_when: false
+  no_log: true
+
+- name: "shuffle | Configure - register Wazuh app authentication"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/apps/authentication"
+    method: PUT
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    body_format: json
+    body:
+      label: "Wazuh SOC Lab"
+      app:
+        name: "Wazuh"
+        app_version: "1.0.0"
+      fields:
+        - key: "url"
+          value: "{{ shuffle_wazuh_api_url }}"
+        - key: "username"
+          value: "{{ _sh_wazuh_user | default('') }}"
+        - key: "password"
+          value: "{{ _sh_wazuh_pass | default('') }}"
+      active: true
+      auto_distribute: true
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  when:
+    - _sh_worker_creds.resources | length > 0
+    - (_sh_wazuh_user | default('')) | length > 0
+  register: _sh_auth_wazuh
+  failed_when: false
+  no_log: true
+
+- name: "shuffle | Configure - wait for Shuffle API before environment queries"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/apps"
+    method: GET
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 401, 502]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_env_api_health
+  changed_when: false
+  retries: "{{ shuffle_backend_startup_retries | default(60) | int }}"
+  delay: "{{ shuffle_backend_startup_delay | default(10) | int }}"
+  until: _sh_env_api_health.status in [200, 401]
+
+- name: "shuffle | Configure - list Shuffle environments"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/environments"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 502]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_env_list
+  changed_when: false
+  retries: 18
+  delay: 5
+  until: _sh_env_list.status == 200
+
+- name: "shuffle | Configure - detect whether environment Shuffle exists"
+  ansible.builtin.set_fact:
+    _sh_env_exists: >-
+      {{
+        (_sh_env_list.json | selectattr('Name', 'equalto', 'Shuffle') | list | length) > 0
+      }}
+
+- name: "shuffle | Configure - create environment Shuffle when missing"
+  when: not (_sh_env_exists | bool)
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/environments"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    body_format: json
+    body:
+      name: "Shuffle"
+      type: "onprem"
+      active: true
+      archived: false
+      auth: ""
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201, 502]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_env_create
+  changed_when: true
+  retries: 12
+  delay: 5
+  until: _sh_env_create.status in [200, 201]
+
+# Cette étape capture uniquement l'ID de l'environnement — elle ne vérifie PAS
+# l'enregistrement d'Orborus. Orborus ne peut se connecter que si ENVIRONMENT_NAME
+# est correct, ce qui est corrigé dans les étapes suivantes. Le vrai wait runtime
+# (orborus_uuid, running_ip, checkin) se fait APRÈS le patch Orborus plus bas.
+- name: "shuffle | Configure - fetch environment ID (pre-Orborus alignment)"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/environments"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 502]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_env_list_final
+  changed_when: false
+  retries: 6
+  delay: 5
+  until: >-
+    _sh_env_list_final.status == 200
+    and (
+      _sh_env_list_final.json
+      | selectattr('Name', 'equalto', 'Shuffle')
+      | list
+      | length
+    ) > 0
+    and (
+      (
+        _sh_env_list_final.json
+        | selectattr('Name', 'equalto', 'Shuffle')
+        | list
+        | first
+      ).id | default('')
+    ) | length > 0
+
+- name: "shuffle | Configure - capture environment details"
+  ansible.builtin.set_fact:
+    _sh_environment_info: >-
+      {{
+        _sh_env_list_final.json
+        | selectattr('Name', 'equalto', 'Shuffle')
+        | list
+        | first
+      }}
+    _sh_environment_id: >-
+      {{
+        (
+          _sh_env_list_final.json
+          | selectattr('Name', 'equalto', 'Shuffle')
+          | list
+          | first
+        ).id
+      }}
+    _sh_environment_name: >-
+      {{
+        (
+          _sh_env_list_final.json
+          | selectattr('Name', 'equalto', 'Shuffle')
+          | list
+          | first
+        ).Name | default('Shuffle')
+      }}
+
+- name: "shuffle | Configure - read Orborus deployment for environment alignment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ shuffle_namespace }}"
+    name: "shuffle-orborus"
+  register: _sh_configure_orborus
+  changed_when: false
+
+- name: "shuffle | Configure - capture Orborus environment name"
+  ansible.builtin.set_fact:
+    _sh_orborus_environment_name: >-
+      {{
+        (
+          _sh_configure_orborus.resources[0].spec.template.spec.containers[0].env
+          | default([])
+          | selectattr('name', 'equalto', 'ENVIRONMENT_NAME')
+          | map(attribute='value')
+          | list
+          | first
+        ) | default('')
+      }}
+
+- name: "shuffle | Configure - set ENVIRONMENT_NAME on Orborus to environment name"
+  when: _sh_orborus_environment_name != _sh_environment_name
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    set env deployment/shuffle-orborus
+    ENVIRONMENT_NAME={{ _sh_environment_name }}
+    -n {{ shuffle_namespace }}
+  register: _sh_orborus_uuid_env_set
+  changed_when: "'updated' in (((_sh_orborus_uuid_env_set.stdout | default('')) ~ ' ' ~ (_sh_orborus_uuid_env_set.stderr | default(''))))"
+
+- name: "shuffle | Configure - restart Orborus after environment UUID patch"
+  when:
+    - _sh_orborus_environment_name != _sh_environment_name
+    - (_sh_orborus_uuid_env_set.rc | default(1)) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout restart deployment/shuffle-orborus -n {{ shuffle_namespace }}
+  changed_when: true
+
+- name: "shuffle | Configure - wait for Orborus rollout after environment UUID patch"
+  when:
+    - _sh_orborus_environment_name != _sh_environment_name
+    - (_sh_orborus_uuid_env_set.rc | default(1)) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout status deployment/shuffle-orborus -n {{ shuffle_namespace }}
+    --timeout=180s
+  changed_when: false
+
+- name: "shuffle | Configure - wait for Shuffle environment runtime readiness"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/environments"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sh_env_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 502]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_env_list_registered
+  changed_when: false
+  retries: 24
+  delay: 5
+  until: >-
+    (
+      _sh_env_list_registered.json
+      | selectattr('id', 'equalto', _sh_environment_id)
+      | list
+      | length
+    ) > 0
+    and
+    (
+      (
+        _sh_env_list_registered.json
+        | selectattr('id', 'equalto', _sh_environment_id)
+        | list
+        | first
+      ).orborus_uuid | default('')
+    ) | length > 0
+    and
+    (
+      (
+        _sh_env_list_registered.json
+        | selectattr('id', 'equalto', _sh_environment_id)
+        | list
+        | first
+      ).running_ip | default('')
+    ) | length > 0
+    and
+    (
+      (
+        _sh_env_list_registered.json
+        | selectattr('id', 'equalto', _sh_environment_id)
+        | list
+        | first
+      ).checkin | default(0) | int
+    ) > 0
+
+- name: "shuffle | Configure - refresh environment details after Orborus readiness"
+  ansible.builtin.set_fact:
+    _sh_environment_info: >-
+      {{
+        (
+          _sh_env_list_registered.json
+          | selectattr('id', 'equalto', _sh_environment_id)
+          | list
+          | first
+          | default({})
+        )
+      }}
+
+- name: "shuffle | Configure - assert environment UUID and runtime readiness"
+  ansible.builtin.assert:
+    that:
+      - _sh_environment_id is match('^[0-9a-fA-F-]{36}$')
+      - (_sh_environment_name | default('')) == 'Shuffle'
+      - (_sh_environment_info.orborus_uuid | default('') | length) > 0
+      - (_sh_environment_info.running_ip | default('') | length) > 0
+      - (_sh_environment_info.checkin | default(0) | int) > 0
+    fail_msg: >-
+      Environment Shuffle is not runtime-ready.
+      id={{ _sh_environment_id | default('missing') }}
+      Name={{ _sh_environment_name | default('missing') }}
+      Registered={{ _sh_environment_info.Registered | default(false) }}
+      orborus_uuid={{ _sh_environment_info.orborus_uuid | default('') }}
+      running_ip={{ _sh_environment_info.running_ip | default('') }}
+      checkin={{ _sh_environment_info.checkin | default(0) }}
+
+- name: "shuffle | Configure - environment summary"
+  ansible.builtin.debug:
+    msg: >-
+      Environment Shuffle:
+      Name={{ _sh_environment_info.Name | default('Shuffle') }}
+      id={{ _sh_environment_info.id | default('missing') }}
+      Registered={{ _sh_environment_info.Registered | default(false) }}
+      orborus_uuid={{ _sh_environment_info.orborus_uuid | default('') }}
+  changed_when: false

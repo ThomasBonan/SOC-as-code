@@ -1,0 +1,9 @@
+---
+- name: Deploy Cortex
+  hosts: localhost
+  connection: local
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+  gather_facts: false
+  roles:
+    - cortex

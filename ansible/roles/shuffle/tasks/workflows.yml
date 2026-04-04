@@ -1,0 +1,592 @@
+---
+# shuffle/tasks/workflows.yml
+# Import JSON workflows into Shuffle and publish the webhook URL for Wazuh.
+# Idempotent via marker ConfigMap soc-shuffle-marker-workflows.
+
+- name: "shuffle | Workflows - calculate alert-triage.json hash"
+  ansible.builtin.set_fact:
+    _sh_alert_triage_hash: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | hash('sha256') }}"
+    _sh_workflows_marker_version: "2026-03-30-env-name-fix-v4"
+
+- name: "shuffle | Workflows - read existing marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ shuffle_marker_ns }}"
+    name: "{{ shuffle_marker_workflows }}"
+  register: _sh_existing_marker_check
+  changed_when: false
+
+- name: "shuffle | Workflows - invalidate marker when workflow state changed"
+  when:
+    - _sh_existing_marker_check.resources | length > 0
+    - >-
+      (
+        _sh_existing_marker_check.resources[0].data.alert_triage_hash | default('')
+      ) != _sh_alert_triage_hash
+      or
+      (
+        _sh_existing_marker_check.resources[0].data.template_version | default('')
+      ) != _sh_workflows_marker_version
+      or
+      (
+        _sh_existing_marker_check.resources[0].data.selftest_workflow_id | default('')
+      ) != 'disabled'
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: absent
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ shuffle_marker_workflows }}"
+        namespace: "{{ shuffle_marker_ns }}"
+  changed_when: true
+
+- name: "shuffle | Workflows - verify idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ shuffle_marker_ns }}"
+    name: "{{ shuffle_marker_workflows }}"
+  register: _sh_workflows_marker
+  changed_when: false
+
+- name: "shuffle | Workflows - resolve environment UUID fallback"
+  when: _sh_environment_id is not defined or (_sh_environment_id | string | length == 0)
+  block:
+    - name: "shuffle | Workflows - read admin API key secret"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ shuffle_admin_secret_ns }}"
+        name: "{{ shuffle_admin_secret_name }}"
+      register: _sh_wf_admin_secret
+      no_log: true
+      changed_when: false
+
+    - name: "shuffle | Workflows - assert admin API key secret exists"
+      ansible.builtin.assert:
+        that:
+          - _sh_wf_admin_secret.resources | length > 0
+          - (_sh_wf_admin_secret.resources[0].data.apikey | default('')) | length > 0
+        fail_msg: >-
+          Missing Shuffle admin API key secret {{ shuffle_admin_secret_name }}
+          in namespace {{ shuffle_admin_secret_ns }}.
+
+    - name: "shuffle | Workflows - extract admin API key"
+      ansible.builtin.set_fact:
+        _sh_wf_admin_apikey: "{{ _sh_wf_admin_secret.resources[0].data.apikey | b64decode }}"
+      no_log: true
+
+    - name: "shuffle | Workflows - wait for Shuffle API before environment fallback"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/apps"
+        method: GET
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 401, 502]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_wf_api_health
+      changed_when: false
+      retries: "{{ shuffle_backend_startup_retries | default(60) | int }}"
+      delay: "{{ shuffle_backend_startup_delay | default(10) | int }}"
+      until: _sh_wf_api_health.status in [200, 401]
+
+    - name: "shuffle | Workflows - list environments"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/environments"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _sh_wf_admin_apikey }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 502]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_wf_env_list
+      changed_when: false
+      retries: 18
+      delay: 5
+      until: _sh_wf_env_list.status == 200
+
+    - name: "shuffle | Workflows - capture environment UUID"
+      ansible.builtin.set_fact:
+        _sh_environment_id: >-
+          {{
+            (
+              _sh_wf_env_list.json
+              | selectattr('Name', 'equalto', 'Shuffle')
+              | list
+              | first
+              | default({})
+            ).id | default('')
+          }}
+        _sh_environment_name: >-
+          {{
+            (
+              _sh_wf_env_list.json
+              | selectattr('Name', 'equalto', 'Shuffle')
+              | list
+              | first
+              | default({})
+            ).Name | default('Shuffle')
+          }}
+
+    - name: "shuffle | Workflows - assert environment identity exists"
+      ansible.builtin.assert:
+        that:
+          - _sh_environment_id is match('^[0-9a-fA-F-]{36}$')
+          - (_sh_environment_name | default('')) == 'Shuffle'
+        fail_msg: >-
+          Unable to resolve the expected environment identity for Shuffle.
+          id={{ _sh_environment_id | default('missing') }}
+          name={{ _sh_environment_name | default('missing') }}
+
+- name: "shuffle | Workflows - import and publish webhook"
+  when: _sh_workflows_marker.resources | length == 0
+  block:
+    - name: "shuffle | Workflows - read admin API key"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ shuffle_admin_secret_ns }}"
+        name: "{{ shuffle_admin_secret_name }}"
+      register: _sh_admin_secret
+      no_log: true
+
+    - name: "shuffle | Workflows - extract admin API key"
+      ansible.builtin.set_fact:
+        _sh_admin_apikey: "{{ _sh_admin_secret.resources[0].data.apikey | b64decode }}"
+      no_log: true
+
+    - name: "shuffle | Workflows - read soc-automation-worker-creds secret"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ shuffle_worker_creds_ns }}"
+        name: "{{ shuffle_worker_creds_secret }}"
+      register: _sh_creds_raw
+      no_log: true
+
+    - name: "shuffle | Workflows - decode SOC credentials"
+      ansible.builtin.set_fact:
+        _sh_thehive_write_key: "{{ _sh_creds_raw.resources[0].data.THEHIVE_WRITE_KEY | b64decode }}"
+        _sh_cortex_key: "{{ _sh_creds_raw.resources[0].data.CORTEX_API_KEY | b64decode }}"
+        _sh_misp_key: "{{ _sh_creds_raw.resources[0].data.MISP_API_KEY | b64decode }}"
+        _sh_wazuh_user: "{{ _sh_creds_raw.resources[0].data.WAZUH_USER | b64decode }}"
+        _sh_wazuh_pass: "{{ _sh_creds_raw.resources[0].data.WAZUH_PASS | b64decode }}"
+      no_log: true
+
+    - name: "shuffle | Workflows - compute Wazuh base64 auth"
+      ansible.builtin.set_fact:
+        _sh_wazuh_b64auth: "{{ (_sh_wazuh_user ~ ':' ~ _sh_wazuh_pass) | b64encode }}"
+      no_log: true
+
+    - name: "shuffle | Workflows - wait for Shuffle API"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/apps"
+        method: GET
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 401]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_health_wf
+      retries: "{{ shuffle_backend_startup_retries | default(60) | int }}"
+      delay: "{{ shuffle_backend_startup_delay | default(10) | int }}"
+      until: _sh_health_wf.status in [200, 401]
+
+    - name: "shuffle | Workflows - read alert-triage JSON"
+      ansible.builtin.set_fact:
+        _sh_alert_triage_json: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | from_json }}"
+
+    - name: "shuffle | Workflows - inject runtime variables into alert-triage"
+      ansible.builtin.set_fact:
+        _sh_alert_triage_patched: >-
+          {{
+            _sh_alert_triage_json | combine({
+              'start': 'action_create_thehive_alert',
+              'description': 'Wazuh -> TheHive -> Cortex -> Risk Engine (' ~ shuffle_risk_engine_url ~ ') -> MISP/AR | env=' ~ (soc_environment | default('dev')),
+              'execution_environment': _sh_environment_id,
+              'actions': (
+                _sh_alert_triage_json.actions
+                | default([])
+                | map('combine', {
+                    'environment': _sh_environment_name,
+                    'authentication_id': ''
+                  })
+                | list
+              ),
+              'triggers': (
+                _sh_alert_triage_json.triggers
+                | default([])
+                | map('combine', {
+                    'status': 'running',
+                    'environment': _sh_environment_name
+                  })
+                | list
+              ),
+              'workflow_variables': [
+                {'name': 'ENV_THEHIVE_URL',     'value': shuffle_thehive_url,              'description': 'TheHive internal URL (.svc)'},
+                {'name': 'ENV_THEHIVE_APIKEY',  'value': _sh_thehive_write_key,            'description': 'TheHive write API key from soc-automation-worker-creds'},
+                {'name': 'ENV_CORTEX_URL',      'value': shuffle_cortex_url,               'description': 'Cortex internal URL (.svc)'},
+                {'name': 'ENV_CORTEX_APIKEY',   'value': _sh_cortex_key,                   'description': 'Cortex API key from soc-automation-worker-creds'},
+                {'name': 'ENV_CORTEX_ANALYZER', 'value': 'AbuseIPDB_1_0',                 'description': 'Cortex analyzer name for IP enrichment'},
+                {'name': 'ENV_MISP_URL',        'value': shuffle_misp_url,                 'description': 'MISP internal URL (.svc)'},
+                {'name': 'ENV_MISP_APIKEY',     'value': _sh_misp_key,                     'description': 'MISP API key from soc-automation-worker-creds'},
+                {'name': 'ENV_WAZUH_API_URL',   'value': shuffle_wazuh_api_url,            'description': 'Wazuh API internal URL (port 55000)'},
+                {'name': 'ENV_WAZUH_B64AUTH',   'value': _sh_wazuh_b64auth,                'description': 'Base64 basic auth for Wazuh JWT (user:pass)'},
+                {'name': 'ENV_RISK_ENGINE_URL', 'value': shuffle_risk_engine_url,          'description': 'Risk Engine HTTP service'},
+                {'name': 'ENV_SOC_ENVIRONMENT', 'value': soc_environment | default('dev'), 'description': 'SOC environment'}
+              ]
+            }, recursive=True)
+          }}
+
+    - name: "shuffle | Workflows - import alert-triage workflow"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/workflows"
+        method: POST
+        body_format: json
+        headers:
+          Authorization: "Bearer {{ _sh_admin_apikey }}"
+        body: "{{ _sh_alert_triage_patched }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 201]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_import_triage
+      no_log: false
+
+    - name: "shuffle | Workflows - capture alert-triage workflow id"
+      ansible.builtin.set_fact:
+        _sh_triage_workflow_id: "{{ _sh_import_triage.json.id }}"
+        _sh_selftest_workflow_id: "disabled"
+
+    - name: "shuffle | Workflows - read imported workflow details"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/workflows/{{ _sh_triage_workflow_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _sh_admin_apikey }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_workflow_detail
+
+    - name: "shuffle | Workflows - capture webhook trigger details"
+      ansible.builtin.set_fact:
+        _sh_webhook_triggers: >-
+          {{
+            _sh_workflow_detail.json.triggers
+            | default([])
+            | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+            | list
+          }}
+        _sh_webhook_trigger_id: >-
+          {{
+            (
+              _sh_workflow_detail.json.triggers
+              | default([])
+              | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+              | list
+              | first
+            ).id | default('')
+          }}
+
+    - name: "shuffle | Workflows - force webhook trigger to running"
+      ansible.builtin.set_fact:
+        _sh_alert_triage_reactivated: >-
+          {{
+            _sh_workflow_detail.json | combine({
+              'execution_environment': _sh_environment_id,
+              'actions': (
+                _sh_workflow_detail.json.actions
+                | default([])
+                | map('combine', {
+                    'environment': _sh_environment_name,
+                    'authentication_id': ''
+                  })
+                | list
+              ),
+              'triggers': (
+                _sh_workflow_detail.json.triggers
+                | default([])
+                | map('combine', {
+                    'status': 'running',
+                    'environment': _sh_environment_name
+                  })
+                | list
+              )
+            }, recursive=True)
+          }}
+
+    - name: "shuffle | Workflows - update workflow with running webhook trigger"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/workflows"
+        method: POST
+        body_format: json
+        headers:
+          Authorization: "Bearer {{ _sh_admin_apikey }}"
+        body: "{{ _sh_alert_triage_reactivated }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 201]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_reimport_triage
+      no_log: false
+
+    - name: "shuffle | Workflows - read workflow details after trigger activation"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/workflows/{{ _sh_triage_workflow_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _sh_admin_apikey }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_workflow_detail
+
+    - name: "shuffle | Workflows - build indexed workflow repair payload"
+      ansible.builtin.set_fact:
+        _sh_alert_triage_indexed: >-
+          {{
+            _sh_workflow_detail.json | combine({
+              'execution_environment': _sh_environment_id,
+              'actions': (
+                _sh_workflow_detail.json.actions
+                | default([])
+                | map('combine', {
+                    'environment': _sh_environment_name,
+                    'authentication_id': ''
+                  })
+                | list
+              ),
+              'triggers': (
+                _sh_workflow_detail.json.triggers
+                | default([])
+                | map('combine', {
+                    'status': 'running',
+                    'environment': _sh_environment_name
+                  })
+                | list
+              )
+            }, recursive=True)
+          }}
+
+    - name: "shuffle | Workflows - repair indexed workflow document in OpenSearch"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ shuffle_kubeconfig_path }}"
+          - exec
+          - -i
+          - -n
+          - "{{ shuffle_namespace }}"
+          - shuffle-opensearch-master-0
+          - --
+          - curl
+          - -sf
+          - -X
+          - PUT
+          - "http://localhost:9200/workflow-000001/_doc/{{ _sh_triage_workflow_id }}"
+          - -H
+          - "Content-Type: application/json"
+          - --data-binary
+          - "@-"
+        stdin: "{{ _sh_alert_triage_indexed | to_json }}"
+      register: _sh_workflow_index_repair
+      changed_when: (_sh_workflow_index_repair.rc | default(1)) == 0
+
+    - name: "shuffle | Workflows - read indexed workflow document"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ shuffle_kubeconfig_path }}"
+          - exec
+          - -n
+          - "{{ shuffle_namespace }}"
+          - shuffle-opensearch-master-0
+          - --
+          - curl
+          - -sf
+          - "http://localhost:9200/workflow-000001/_doc/{{ _sh_triage_workflow_id }}"
+      register: _sh_workflow_index_raw
+      changed_when: false
+
+    - name: "shuffle | Workflows - parse indexed workflow document"
+      ansible.builtin.set_fact:
+        _sh_indexed_workflow_detail: >-
+          {{
+            ((_sh_workflow_index_raw.stdout | from_json)._source | default({}))
+          }}
+        _sh_indexed_webhook_triggers: >-
+          {{
+            (((_sh_workflow_index_raw.stdout | from_json)._source | default({})).triggers
+            | default([])
+            | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+            | list)
+          }}
+        _sh_indexed_action_environments: >-
+          {{
+            (((_sh_workflow_index_raw.stdout | from_json)._source | default({})).actions
+            | default([])
+            | map(attribute='environment')
+            | list
+            | unique)
+          }}
+
+    - name: "shuffle | Workflows - refresh webhook trigger details"
+      ansible.builtin.set_fact:
+        _sh_webhook_triggers: >-
+          {{
+            _sh_workflow_detail.json.triggers
+            | default([])
+            | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+            | list
+          }}
+        _sh_webhook_trigger_id: >-
+          {{
+            (
+              _sh_workflow_detail.json.triggers
+              | default([])
+              | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+              | list
+              | first
+            ).id | default('')
+          }}
+
+    - name: "shuffle | Workflows - capture workflow validation errors"
+      ansible.builtin.set_fact:
+        _sh_workflow_validation_errors: >-
+          {{
+            _sh_workflow_detail.json.errors
+            | default(((_sh_workflow_detail.json.validation | default({})).errors | default([])))
+          }}
+
+    - name: "shuffle | Workflows - validate imported workflow"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_sh_workflow_detail.json.execution_environment | default('')) == _sh_environment_name
+            or (_sh_workflow_detail.json.execution_environment | default('')) == _sh_environment_id
+          - _sh_webhook_triggers | length > 0
+          - _sh_webhook_trigger_id | length > 0
+          - >-
+            (
+              _sh_indexed_webhook_triggers
+              | map(attribute='environment')
+              | list
+              | unique
+            ) == [_sh_environment_name]
+            or (
+              _sh_indexed_webhook_triggers
+              | map(attribute='environment')
+              | list
+              | unique
+            ) == [_sh_environment_id]
+          - >-
+            _sh_indexed_action_environments == [_sh_environment_name]
+            or _sh_indexed_action_environments == [_sh_environment_id]
+          - >-
+            (
+              _sh_indexed_webhook_triggers
+              | map(attribute='status')
+              | list
+              | unique
+            ) == ['running']
+          - >-
+            (_sh_workflow_detail.json.is_valid | default(false) | bool)
+            or (
+              (_sh_workflow_validation_errors | length == 1)
+              and (
+                (
+                  _sh_workflow_validation_errors[0].error
+                  | default(_sh_workflow_validation_errors[0])
+                  | string
+                ) == 'Trigger Wazuh Alert Webhook needs to be started'
+              )
+            )
+        fail_msg: >-
+          Imported workflow is invalid or misconfigured.
+          execution_environment={{ _sh_workflow_detail.json.execution_environment | default('') }}
+          expected_environment={{ _sh_environment_name }}
+          api_trigger_status={{ _sh_webhook_triggers[0].status | default('missing') if (_sh_webhook_triggers | length > 0) else 'missing' }}
+          indexed_trigger_statuses={{ _sh_indexed_webhook_triggers | map(attribute='status') | list | unique | to_json }}
+          api_action_environments={{ _sh_workflow_detail.json.actions | default([]) | map(attribute='environment') | list | unique | to_json }}
+          indexed_action_environments={{ _sh_indexed_action_environments | to_json }}
+          errors={{ _sh_workflow_validation_errors | to_json }}
+
+    - name: "shuffle | Workflows - build Wazuh webhook URL"
+      ansible.builtin.set_fact:
+        _sh_webhook_url: >-
+          {{ shuffle_internal_url }}/api/v1/hooks/webhook_{{ _sh_webhook_trigger_id }}
+
+    - name: "shuffle | Workflows - register webhook hook in OpenSearch"
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+        exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+        curl -sf -X PUT "http://localhost:9200/hooks/_doc/{{ _sh_webhook_trigger_id }}"
+        -H "Content-Type: application/json"
+        -d '{"id":"{{ _sh_webhook_trigger_id }}","workflow_id":"{{ _sh_triage_workflow_id }}","info":{"name":"Wazuh Alert Webhook","url":"/api/v1/hooks/webhook_{{ _sh_webhook_trigger_id }}","type":"webhook"},"type":"webhook","status":"running","start":"action_create_thehive_alert","workflows":["{{ _sh_triage_workflow_id }}"],"running_environment":"{{ _sh_environment_name }}","environment":"{{ _sh_environment_name }}","org_id":"{{ _sh_import_triage.json.org_id | default('') }}"}'
+      register: _sh_hook_register
+      changed_when: _sh_hook_register.rc == 0
+      failed_when: false
+
+    - name: "shuffle | Workflows - verify hook registration"
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+        exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+        curl -sf "http://localhost:9200/hooks/_doc/{{ _sh_webhook_trigger_id }}"
+      register: _sh_hook_verify
+      changed_when: false
+      failed_when: >-
+        _sh_hook_verify.rc != 0
+        or '"found":true' not in _sh_hook_verify.stdout
+
+    - name: "shuffle | Workflows - store webhook URL in ConfigMap"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ shuffle_webhook_configmap_name }}"
+            namespace: "{{ shuffle_webhook_configmap_ns }}"
+            labels: "{{ shuffle_labels }}"
+            annotations:
+              soc.lab/feature: "shuffle-webhook"
+          data:
+            webhook_url: "{{ _sh_webhook_url }}"
+            trigger_id: "{{ _sh_webhook_trigger_id }}"
+            triage_workflow_id: "{{ _sh_triage_workflow_id }}"
+            selftest_workflow_id: "disabled"
+            shuffle_api_url: "{{ shuffle_internal_url }}"
+            environment: "{{ soc_environment | default('dev') }}"
+
+    - name: "shuffle | Workflows - summary"
+      ansible.builtin.debug:
+        msg: >-
+          Workflows imported.
+          alert-triage={{ _sh_triage_workflow_id }},
+          selftest=disabled,
+          webhook_url={{ _sh_webhook_url }}
+
+    - name: "shuffle | Workflows - create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ shuffle_marker_workflows }}"
+            namespace: "{{ shuffle_marker_ns }}"
+            labels: "{{ shuffle_labels }}"
+            annotations:
+              soc.lab/feature: "shuffle-workflows"
+              soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+          data:
+            feature: "shuffle-workflows"
+            status: "active"
+            environment: "{{ soc_environment | default('dev') }}"
+            template_version: "{{ _sh_workflows_marker_version }}"
+            triage_workflow_id: "{{ _sh_triage_workflow_id }}"
+            selftest_workflow_id: "disabled"
+            alert_triage_hash: "{{ _sh_alert_triage_hash }}"

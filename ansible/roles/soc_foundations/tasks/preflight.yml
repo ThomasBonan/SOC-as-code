@@ -1,0 +1,138 @@
+---
+# soc_foundations/tasks/preflight.yml
+# Vérifie que les 4 APIs SOC répondent avant toute opération RBAC.
+# Pattern : uri + retries/until, status 200/401/403 = "service disponible"
+# (une erreur d'auth signifie que le service répond, ce qui est suffisant pour continuer)
+
+- name: Preflight - résoudre l'API base effective de TheHive
+  ansible.builtin.set_fact:
+    _sf_thehive_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_thehive_api_base)
+          and (soc_foundations_thehive_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_thehive_ingress_api_base, soc_foundations_thehive_api_base)
+      }}
+
+- name: Preflight - résoudre l'API base effective de Cortex
+  ansible.builtin.set_fact:
+    _sf_cortex_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_cortex_api_base)
+          and (soc_foundations_cortex_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_cortex_ingress_api_base, soc_foundations_cortex_api_base)
+      }}
+
+- name: Preflight - attendre que TheHive API réponde
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/status"
+    method: GET
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 401
+      - 403
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_preflight_thehive
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_preflight_thehive.status in [200, 401, 403]
+
+- name: Preflight - assert TheHive accessible
+  ansible.builtin.assert:
+    that:
+      - _sf_preflight_thehive.status in [200, 401, 403]
+    fail_msg: >-
+      TheHive API {{ _sf_thehive_api_base }}/v1/status n'a pas répondu après
+      {{ soc_foundations_http_retries }} tentatives (statut={{ _sf_preflight_thehive.status | default('aucun') }}).
+
+- name: Preflight - attendre que Cortex API réponde
+  ansible.builtin.uri:
+    url: "{{ _sf_cortex_api_base }}/status"
+    method: GET
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 401
+      - 403
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_preflight_cortex
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_preflight_cortex.status in [200, 401, 403]
+
+- name: Preflight - assert Cortex accessible
+  ansible.builtin.assert:
+    that:
+      - _sf_preflight_cortex.status in [200, 401, 403]
+    fail_msg: >-
+      Cortex API {{ _sf_cortex_api_base }}/status n'a pas répondu
+      (statut={{ _sf_preflight_cortex.status | default('aucun') }}).
+
+- name: Preflight - résoudre l'API base effective de MISP
+  ansible.builtin.set_fact:
+    _sf_misp_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_misp_api_base)
+          and (soc_foundations_misp_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_misp_ingress_api_base, soc_foundations_misp_api_base)
+      }}
+
+- name: Preflight - attendre que MISP API réponde
+  ansible.builtin.uri:
+    url: "{{ _sf_misp_api_base }}servers/getVersion"
+    method: GET
+    headers:
+      Accept: "application/json"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 401
+      - 403
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_preflight_misp
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_preflight_misp.status in [200, 401, 403]
+
+- name: Preflight - assert MISP accessible
+  ansible.builtin.assert:
+    that:
+      - _sf_preflight_misp.status in [200, 401, 403]
+    fail_msg: >-
+      MISP API {{ _sf_misp_api_base }}servers/getVersion n'a pas répondu
+      (statut={{ _sf_preflight_misp.status | default('aucun') }}).
+
+- name: Preflight - vérifier que le pod Wazuh Manager est prêt (kubectl wait)
+  # L'API Wazuh (port 55000) n'est pas exposée via Ingress.
+  # On vérifie la disponibilité du pod plutôt que de l'API HTTP depuis l'extérieur.
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_foundations_kubeconfig_path }}
+    -n {{ soc_namespaces.wazuh }}
+    wait --for=condition=Ready pod/{{ soc_foundations_wazuh_manager_pod_name }}
+    --timeout=120s
+  register: _sf_preflight_wazuh
+  changed_when: false
+
+- name: Preflight - assert pod Wazuh Manager prêt
+  ansible.builtin.assert:
+    that:
+      - _sf_preflight_wazuh.rc == 0
+    fail_msg: >-
+      Pod {{ soc_namespaces.wazuh }}/{{ soc_foundations_wazuh_manager_pod_name }}
+      n'est pas prêt (rc={{ _sf_preflight_wazuh.rc | default('n/a') }}).
+      Vérifier l'état du déploiement Wazuh.
+
+- name: Preflight - résumé de la disponibilité des services
+  ansible.builtin.debug:
+    msg: >-
+      Preflight OK.
+      TheHive={{ _sf_preflight_thehive.status }},
+      Cortex={{ _sf_preflight_cortex.status }},
+      MISP={{ _sf_preflight_misp.status }},
+      Wazuh=pod/Ready(rc={{ _sf_preflight_wazuh.rc }})

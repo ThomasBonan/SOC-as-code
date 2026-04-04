@@ -3,7 +3,6 @@
 indexer:
   deployment:
     enabled: true
-
   replicas: 1
   storageClassName: "longhorn"
   storageSize: "20Gi"

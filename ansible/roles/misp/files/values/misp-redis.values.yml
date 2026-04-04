@@ -1,11 +1,32 @@
+architecture: standalone
+
 auth:
-  enabled: false
+  enabled: true
+  existingSecret: misp-redis
+  existingSecretPasswordKey: redis-password
+
+
+image:
+  registry: docker.io
+  repository: bitnami/redis
+  tag: latest
+  digest: "sha256:b2ccacecba0945e1da5c93e8e9e6c4c7af579514941224a7d80a2fc8dfb09f6c"
 
 master:
   persistence:
     enabled: true
-    storageClass: longhorn
     size: 5Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
 
 replica:
   replicaCount: 0
+
+metrics:
+  enabled: false

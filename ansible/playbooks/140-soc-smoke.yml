@@ -1,0 +1,7 @@
+- name: SOC smoke tests (DNS/TCP/HTTP)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+  roles:
+    - soc_smoke

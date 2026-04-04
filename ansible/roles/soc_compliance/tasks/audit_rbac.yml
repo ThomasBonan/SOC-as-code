@@ -1,0 +1,249 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# audit_rbac.yml — Audit service accounts and role bindings in SOC namespaces
+# tag: audit
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Checks (in order):
+#   1. ServiceAccounts exist in all 4 SOC namespaces (informational count)
+#   2. No ClusterRoleBinding binds a SOC-namespace SA to cluster-admin/admin
+#   3. No admin-level RoleBinding exists in SOC namespaces (least-privilege guard)
+#   4. Declared SA logins in group_vars are non-empty (schema guard)
+#
+# All tasks are read-only (changed_when: false).
+# Findings accumulate in _rbac_findings[] and are exposed via _comp_rbac_result.
+
+# ── Initialize audit state ────────────────────────────────────────
+
+- name: "audit_rbac | Initialize RBAC audit state"
+  ansible.builtin.set_fact:
+    _rbac_findings: []
+    _rbac_status:   "ok"
+  changed_when: false
+
+# ── Count ServiceAccounts in SOC namespaces ───────────────────────
+
+- name: "audit_rbac | Gather ServiceAccounts in SOC namespaces"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ServiceAccount
+    namespace: "{{ item.ns }}"
+  register: _rbac_sa_results
+  loop:
+    - { ns: "{{ soc_namespaces.thehive }}", label: "thehive" }
+    - { ns: "{{ soc_namespaces.cortex  }}", label: "cortex"  }
+    - { ns: "{{ soc_namespaces.misp    }}", label: "misp"    }
+    - { ns: "{{ soc_namespaces.wazuh   }}", label: "wazuh"   }
+  changed_when: false
+
+- name: "audit_rbac | Record SA counts per namespace"
+  ansible.builtin.set_fact:
+    _rbac_sa_counts:
+      thehive: "{{ (_rbac_sa_results.results[0].resources | default([])) | length }}"
+      cortex:  "{{ (_rbac_sa_results.results[1].resources | default([])) | length }}"
+      misp:    "{{ (_rbac_sa_results.results[2].resources | default([])) | length }}"
+      wazuh:   "{{ (_rbac_sa_results.results[3].resources | default([])) | length }}"
+  changed_when: false
+
+# ── Detect privilege escalation via ClusterRoleBinding ───────────
+
+- name: "audit_rbac | Gather all ClusterRoleBindings"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ClusterRoleBinding
+  register: _rbac_crb_list
+  changed_when: false
+
+- name: "audit_rbac | Filter ClusterRoleBindings with privileged roles touching SOC namespaces"
+  ansible.builtin.set_fact:
+    _rbac_admin_crbs: >-
+      {{
+        _rbac_crb_list.resources
+        | default([])
+        | selectattr('roleRef.name', 'in', ['cluster-admin', 'admin', 'system:masters'])
+        | list
+      }}
+  changed_when: false
+
+- name: "audit_rbac | Identify SOC-namespace subjects in privileged ClusterRoleBindings"
+  ansible.builtin.set_fact:
+    _rbac_privileged_subjects: >-
+      {{
+        _rbac_admin_crbs
+        | map(attribute='subjects')
+        | flatten
+        | selectattr('namespace', 'defined')
+        | selectattr('namespace', 'in', [
+            soc_namespaces.thehive,
+            soc_namespaces.cortex,
+            soc_namespaces.misp,
+            soc_namespaces.wazuh
+          ])
+        | list
+      }}
+  changed_when: false
+
+- name: "audit_rbac | DRIFT — SOC namespace SAs bound to privileged ClusterRole"
+  ansible.builtin.debug:
+    msg:
+      - "=== RBAC CRITICAL DRIFT: Privilege escalation detected ==="
+      - "ServiceAccount '{{ item.name }}' in namespace '{{ item.namespace }}'"
+      - "is bound to a cluster-admin/admin role. Investigate immediately."
+  loop: "{{ _rbac_privileged_subjects }}"
+  when: _rbac_privileged_subjects | length > 0
+  changed_when: false
+
+- name: "audit_rbac | Update status — privileged ClusterRoleBindings found"
+  ansible.builtin.set_fact:
+    _rbac_status: "drift"
+    _rbac_findings: >-
+      {{ _rbac_findings + [
+        {
+          'type': 'privileged_clusterrolebinding',
+          'severity': 'critical',
+          'subjects': _rbac_privileged_subjects | map(attribute='name') | list,
+          'namespaces': _rbac_privileged_subjects | map(attribute='namespace') | list | unique,
+          'message': 'SOC namespace ServiceAccounts bound to cluster-admin/admin role — least-privilege violation'
+        }
+      ] }}
+  when: _rbac_privileged_subjects | length > 0
+  changed_when: false
+
+# ── Detect admin RoleBindings in SOC namespaces ───────────────────
+
+- name: "audit_rbac | Gather RoleBindings in TheHive namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: RoleBinding
+    namespace: "{{ soc_namespaces.thehive }}"
+  register: _rbac_rb_thehive
+  changed_when: false
+
+- name: "audit_rbac | Gather RoleBindings in Cortex namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: RoleBinding
+    namespace: "{{ soc_namespaces.cortex }}"
+  register: _rbac_rb_cortex
+  changed_when: false
+
+- name: "audit_rbac | Gather RoleBindings in MISP namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: RoleBinding
+    namespace: "{{ soc_namespaces.misp }}"
+  register: _rbac_rb_misp
+  changed_when: false
+
+- name: "audit_rbac | Gather RoleBindings in Wazuh namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: RoleBinding
+    namespace: "{{ soc_namespaces.wazuh }}"
+  register: _rbac_rb_wazuh
+  changed_when: false
+
+- name: "audit_rbac | Filter admin-level RoleBindings across all SOC namespaces"
+  ansible.builtin.set_fact:
+    _rbac_ns_admin_rbs: >-
+      {{
+        (
+          (_rbac_rb_thehive.resources | default([]))
+          + (_rbac_rb_cortex.resources | default([]))
+          + (_rbac_rb_misp.resources   | default([]))
+          + (_rbac_rb_wazuh.resources  | default([]))
+        )
+        | selectattr('roleRef.name', 'in', ['admin', 'cluster-admin', 'edit'])
+        | list
+      }}
+  changed_when: false
+
+- name: "audit_rbac | DRIFT — Admin-level RoleBindings found in SOC namespaces"
+  ansible.builtin.debug:
+    msg:
+      - "=== RBAC DRIFT: Admin-level RoleBinding detected ==="
+      - "RoleBinding '{{ item.metadata.name }}' in '{{ item.metadata.namespace }}'"
+      - "grants role '{{ item.roleRef.name }}' — verify if intentional."
+  loop: "{{ _rbac_ns_admin_rbs }}"
+  when: _rbac_ns_admin_rbs | length > 0
+  changed_when: false
+
+- name: "audit_rbac | Update status — admin RoleBindings found in SOC namespaces"
+  ansible.builtin.set_fact:
+    _rbac_status: "{{ 'drift' if _rbac_status == 'ok' else _rbac_status }}"
+    _rbac_findings: >-
+      {{ _rbac_findings + [
+        {
+          'type': 'admin_rolebinding_in_soc_namespace',
+          'severity': 'high',
+          'bindings': _rbac_ns_admin_rbs | map(attribute='metadata.name') | list,
+          'namespaces': _rbac_ns_admin_rbs | map(attribute='metadata.namespace') | list | unique,
+          'roles': _rbac_ns_admin_rbs | map(attribute='roleRef.name') | list | unique,
+          'message': 'Admin-level RoleBindings found in SOC namespaces — least-privilege violation'
+        }
+      ] }}
+  when: _rbac_ns_admin_rbs | length > 0
+  changed_when: false
+
+# ── Validate declared SA logins in group_vars are non-empty ───────
+
+- name: "audit_rbac | Validate soc_service_accounts declarations in group_vars"
+  ansible.builtin.set_fact:
+    _rbac_groupvars_issues: >-
+      {{
+        ([] if (soc_service_accounts.thehive.login | default('') | length > 0) else ['thehive.login empty'])
+        + ([] if (soc_service_accounts.cortex.login | default('') | length > 0) else ['cortex.login empty'])
+        + ([] if (soc_service_accounts.misp.email | default('') | length > 0) else ['misp.email empty'])
+        + ([] if (soc_service_accounts.wazuh.username | default('') | length > 0) else ['wazuh.username empty'])
+      }}
+  changed_when: false
+
+- name: "audit_rbac | DRIFT — group_vars SA declarations incomplete"
+  ansible.builtin.debug:
+    msg:
+      - "=== RBAC DRIFT: group_vars soc_service_accounts incomplete ==="
+      - "Missing or empty fields: {{ _rbac_groupvars_issues }}"
+  when: _rbac_groupvars_issues | length > 0
+  changed_when: false
+
+- name: "audit_rbac | Update status — group_vars SA declarations incomplete"
+  ansible.builtin.set_fact:
+    _rbac_status: "{{ 'drift' if _rbac_status == 'ok' else _rbac_status }}"
+    _rbac_findings: >-
+      {{ _rbac_findings + [
+        {
+          'type': 'groupvars_sa_incomplete',
+          'severity': 'medium',
+          'issues': _rbac_groupvars_issues,
+          'message': 'soc_service_accounts declarations in group_vars have empty required fields'
+        }
+      ] }}
+  when: _rbac_groupvars_issues | length > 0
+  changed_when: false
+
+# ── Summary ───────────────────────────────────────────────────────
+
+- name: "audit_rbac | RBAC audit summary"
+  ansible.builtin.debug:
+    msg:
+      - "=== RBAC Audit Summary ==="
+      - "Status                        : {{ _rbac_status | upper }}"
+      - "SA counts (thehive/cortex/misp/wazuh): {{ _rbac_sa_counts.thehive }}/{{ _rbac_sa_counts.cortex }}/{{ _rbac_sa_counts.misp }}/{{ _rbac_sa_counts.wazuh }}"
+      - "Privileged ClusterRoleBindings: {{ _rbac_privileged_subjects | length }}"
+      - "Admin RoleBindings in SOC ns  : {{ _rbac_ns_admin_rbs | length }}"
+      - "group_vars SA issues          : {{ _rbac_groupvars_issues | length }}"
+      - "Total findings                : {{ _rbac_findings | length }}"
+  changed_when: false
+
+# ── Expose results for report.yml ────────────────────────────────
+
+- name: "audit_rbac | Expose results for report"
+  ansible.builtin.set_fact:
+    _comp_rbac_result:
+      status:                   "{{ _rbac_status }}"
+      sa_counts:                "{{ _rbac_sa_counts }}"
+      privileged_crb_count:     "{{ _rbac_privileged_subjects | length }}"
+      admin_rolebinding_count:  "{{ _rbac_ns_admin_rbs | length }}"
+      groupvars_issues:         "{{ _rbac_groupvars_issues }}"
+      findings:                 "{{ _rbac_findings }}"
+  changed_when: false

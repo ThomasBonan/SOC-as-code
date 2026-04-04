@@ -1,0 +1,32 @@
+---
+cortex_namespace: "soc-cortex"
+
+helm_binary_path: "helm"
+kubeconfig_path: "/home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf"
+
+strangebee_repo_name: strangebee
+strangebee_repo_url: https://strangebeecorp.github.io/helm-charts
+
+cortex_release_name: cortex
+cortex_chart_ref: strangebee/cortex
+cortex_chart_version: ""   # optionnel, laisse vide pour latest
+
+# FQDN si tu veux un ingress ensuite (optionnel)
+cortex_fqdn: cortex.apps.soc.lab
+
+# Secret HTTP requis par StrangeBee
+cortex_secret_name: cortex-secret
+cortex_http_secret_key: httpSecret
+
+# Stockage RWX (OBLIGATOIRE)
+# Mets ici un storageClass RWX (NFS/EFS/CephFS/Longhorn-RWX si dispo)
+cortex_rwx_storage_class: "longhorn"   # ex: "nfs-client" ou "longhorn-rwx"
+cortex_rwx_size: 5Gi
+
+# Elasticsearch dependency (incluse par le chart StrangeBee)
+# Par défaut ils utilisent bitnamilegacy, POC only.
+cortex_es_enabled: true
+cortex_es_replicas: 1
+
+# Service account (le chart peut créer, mais on garde explicite)
+cortex_service_account_name: cortex

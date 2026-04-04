@@ -1,0 +1,74 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# Playbook 190 — SOC Risk Engine
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Adds a centralized, multi-source decision layer on top of the automation
+# pipeline established by:
+#   - 170-soc-foundations : service accounts + K8s Secrets
+#   - 180-soc-automation  : alert ingestion, Cortex/MISP/AR pipeline (3-dim score)
+#
+# What this playbook adds:
+#   1. Preflight — verify 180 is operational (chain integrity check)
+#   2. Asset criticality model — K8s ConfigMap + TheHive custom field
+#   3. Scoring model — 5-dimension weighted risk score (ConfigMap + custom fields)
+#   4. TheHive decision rules — enhanced worker CronJob (post-processing on cases)
+#   5. Wazuh response mapping — align AR levels with risk thresholds
+#   6. Drift guard — detect divergence between 180 and 190 configurations
+#
+# Architecture:
+#   180 CronJob (every 2 min) : alerts → cases, basic 3-dim score
+#         ↓  [open cases: source:wazuh, no risk_engine:processed tag]
+#   190 CronJob (every 5 min) : cases → enhanced decisions, 5-dim score
+#         ↓
+#   auto_close / auto_promote / auto_contain / escalate
+#
+# Pre-requisites:
+#   - 170-soc-foundations must have run successfully
+#   - 180-soc-automation must have run successfully
+#   - K8s Secrets: thehive-sa-foundations, cortex-sa-foundations,
+#                  misp-sa-foundations, wazuh-sa-foundations
+#   - ConfigMap:   soc-automation-worker-creds (created by 180)
+#
+# Usage:
+#   ansible-playbook 190-soc-risk-engine.yml
+#   ansible-playbook 190-soc-risk-engine.yml --tags bootstrap
+#   ansible-playbook 190-soc-risk-engine.yml --tags model
+#   ansible-playbook 190-soc-risk-engine.yml --tags decision
+#   ansible-playbook 190-soc-risk-engine.yml --tags response
+#   ansible-playbook 190-soc-risk-engine.yml --tags compliance
+#   SOC_ENV=prod ansible-playbook 190-soc-risk-engine.yml -e @envs/prod.yml
+#
+# Idempotence:
+#   Re-running this playbook is safe. Each feature creates a marker ConfigMap
+#   and skips all operations when the marker already exists.
+#   The drift guard (compliance tag) is always read-only and can be run freely.
+#
+# Tags:
+#   bootstrap   : preflight checks only (verify 170+180 chain)
+#   model       : asset criticality + scoring model deployment
+#   decision    : worker CronJob deployment (post-processing layer)
+#   response    : Wazuh AR level alignment with risk thresholds
+#   compliance  : drift detection (read-only, always safe to run)
+#   soc_risk_engine : all of the above
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "190 | SOC Risk Engine — Centralized multi-source scoring & decision layer"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+
+  pre_tasks:
+    - name: "190 | Override soc_environment from SOC_ENV env var"
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+
+    - name: "190 | Show active environment"
+      ansible.builtin.debug:
+        msg: "SOC environment: {{ soc_environment | default('dev') }}"
+      changed_when: false
+
+  roles:
+    - role: soc_risk_engine

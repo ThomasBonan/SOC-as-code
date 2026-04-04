@@ -1,0 +1,35 @@
+---
+# CiliumNetworkPolicy replaces L4 NetworkPolicy for the three inter-service
+# cross-namespace flows and adds authentication.mode: required (SPIFFE mTLS).
+#
+# Important: because standard NetworkPolicy and CiliumNetworkPolicy are evaluated
+# with INTERSECTION semantics in Cilium (both must allow), each CNP must also
+# include all other egress that the selected pods need (DNS, storage) — otherwise
+# those flows would be denied even if the standard NP from 150 allows them.
+
+- name: Apply Wazuh → TheHive mTLS egress policy
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    template: cnp-wazuh-egress.yml.j2
+  when: soc_mtls_enable_wazuh_to_thehive | bool
+  delegate_to: localhost
+  run_once: true
+
+- name: Apply TheHive → Cortex mTLS egress policy
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    template: cnp-thehive-egress.yml.j2
+  when: soc_mtls_enable_thehive_to_cortex | bool
+  delegate_to: localhost
+  run_once: true
+
+- name: Apply Cortex → MISP mTLS egress policy
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    template: cnp-cortex-egress.yml.j2
+  when: soc_mtls_enable_cortex_to_misp | bool
+  delegate_to: localhost
+  run_once: true

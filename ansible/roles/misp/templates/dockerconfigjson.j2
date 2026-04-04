@@ -1,0 +1,9 @@
+{
+  "auths": {
+    "https://index.docker.io/v1/": {
+      "username": "{{ dockerhub_username }}",
+      "password": "{{ dockerhub_password }}",
+      "auth": "{{ (dockerhub_username ~ ':' ~ dockerhub_password) | b64encode }}"
+    }
+  }
+}

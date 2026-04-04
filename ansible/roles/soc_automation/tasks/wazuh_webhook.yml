@@ -1,0 +1,605 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_webhook.yml — Injecter le bloc integration Shuffle dans ossec.conf
+# tag: integration
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Lit l'URL du webhook Shuffle depuis le ConfigMap soc-shuffle-webhook-config
+# (créé par 185-shuffle.yml → tasks/workflows.yml) et l'injecte dans ossec.conf
+# du Wazuh Manager via kubectl exec.
+#
+# Le bloc injecté :
+#   <integration>
+#     <name>shuffle</name>
+#     <hook_url>http://shuffle-backend.soc-shuffle.svc:5001/api/v1/hooks/webhook_XXX</hook_url>
+#     <level>3</level>
+#     <alert_format>json</alert_format>
+#   </integration>
+#
+# Séquence d'exécution :
+#   1. 170-soc-foundations.yml
+#   2. 180-soc-automation.yml  → crée soc-automation-worker-creds ;
+#                                 wazuh_webhook IGNORÉ (Shuffle pas encore déployé)
+#   3. 185-shuffle.yml         → déploie Shuffle, importe workflows,
+#                                 crée soc-shuffle-webhook-config
+#   4. 180-soc-automation.yml  → wazuh_webhook EXÉCUTÉ (ConfigMap présent)
+#
+# Idempotence strategy:
+#   - K8s API operations (marker, ConfigMap reads): marker ConfigMap guards first-run.
+#   - In-pod files (ossec.conf, rules XML): checked EVERY run because pod filesystem
+#     is ephemeral — files are lost on pod restart. These checks are self-idempotent
+#     (grep before write, no-op if already present).
+
+# ── Lire le ConfigMap webhook (always — needed for in-pod repairs) ──
+
+- name: "wazuh_webhook | Lire ConfigMap soc-shuffle-webhook-config"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_automation_shuffle_webhook_configmap_ns }}"
+    name: "{{ soc_automation_shuffle_webhook_configmap_name }}"
+  register: _ww_shuffle_config
+  changed_when: false
+
+- name: "wazuh_webhook | Avertissement — ConfigMap Shuffle absent, étape ignorée"
+  when: _ww_shuffle_config.resources | default([]) | length == 0
+  ansible.builtin.debug:
+    msg: >-
+      ConfigMap {{ soc_automation_shuffle_webhook_configmap_name }} introuvable.
+      wazuh_webhook ignoré — exécuter 185-shuffle.yml (--tags workflows)
+      puis relancer 180-soc-automation.yml pour injecter le webhook dans Wazuh.
+
+# ── Extract webhook URL (needed by both first-run block and repair tasks) ──
+
+- name: "wazuh_webhook | Extraire l'URL du webhook"
+  when:
+    - _ww_shuffle_config.resources | default([]) | length > 0
+    - _ww_shuffle_config.resources[0].data.webhook_url is defined
+  ansible.builtin.set_fact:
+    _ww_hook_url: "{{ _ww_shuffle_config.resources[0].data.webhook_url }}"
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SECTION 1 — In-pod file repairs (ALWAYS run, self-idempotent)
+# These files live on ephemeral pod storage and can be lost on pod restart.
+# The marker ConfigMap does NOT protect these — they must be checked every run.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Python requests module (ephemeral — repair on every run) ─────
+# The Wazuh Docker/Kubernetes image does NOT include python3-requests.
+# The shuffle.py integration script (at /var/ossec/integrations/shuffle)
+# uses `import requests` to POST alerts to the Shuffle webhook.
+# Without it, integratord silently fails with:
+#   ModuleNotFoundError: No module named 'requests'
+# See: https://github.com/wazuh/wazuh-kubernetes/issues/330
+#      https://github.com/wazuh/wazuh-docker/issues/788
+
+- name: "wazuh_webhook | Vérifier si python3-requests est installé dans le pod Wazuh"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    python3 -c "import requests; print('requests OK')"
+  register: _ww_requests_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Installer python3-requests dans le pod Wazuh"
+  when:
+    - _ww_hook_url is defined
+    - _ww_requests_check.rc | default(1) != 0
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c '
+      if python3 -m pip --version >/dev/null 2>&1; then
+        python3 -m pip install --quiet requests;
+      elif command -v yum >/dev/null 2>&1; then
+        yum install -y -q python3-requests;
+      elif command -v microdnf >/dev/null 2>&1; then
+        microdnf install -y python3-requests;
+      elif command -v apk >/dev/null 2>&1; then
+        apk add --quiet py3-requests;
+      elif command -v apt-get >/dev/null 2>&1; then
+        apt-get update -qq && apt-get install -y -qq python3-requests;
+      else
+        python3 -m ensurepip --default-pip 2>/dev/null && python3 -m pip install --quiet requests;
+      fi &&
+      python3 -c "import requests; print(\"requests OK\")"
+    '
+  register: _ww_requests_install
+  changed_when: _ww_requests_install.rc == 0
+
+- name: "wazuh_webhook | Confirmer l'installation de python3-requests"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: "{{ _ww_requests_install.stdout_lines | default(['python3-requests déjà présent']) | last }}"
+  changed_when: false
+
+# ── Permissions du script d'intégration Shuffle (ephemeral) ──────
+# Le script /var/ossec/integrations/shuffle doit être exécutable (750)
+# pour que integratord puisse l'appeler.
+
+- name: "wazuh_webhook | Vérifier les permissions du script shuffle integration"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    test -x /var/ossec/integrations/shuffle
+  register: _ww_shuffle_script_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Corriger les permissions du script shuffle integration"
+  when:
+    - _ww_hook_url is defined
+    - _ww_shuffle_script_check.rc | default(1) != 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    chmod 750 /var/ossec/integrations/shuffle
+  register: _ww_shuffle_perms
+  changed_when: _ww_shuffle_perms.rc == 0
+
+# ── Selftest rule 999999 (ephemeral — repair on every run) ───────
+# Necessary for 210-soc-selftest.yml (inject_via_wazuh=true).
+# The rule matches "soc-selftest-test-event" (inject | [B]) and triggers
+# the Shuffle integration → full E2E pipeline.
+
+- name: "wazuh_webhook | Vérifier si la règle selftest 999999 existe"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -r "999999" /var/ossec/etc/rules/
+  register: _ww_rule_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Déployer la règle Wazuh selftest (rule 999999)"
+  when:
+    - _ww_hook_url is defined
+    - _ww_rule_check.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        rule_xml = (
+            '<group name="soc-selftest">\n'
+            '  <rule id="999999" level="5">\n'
+            '    <match>soc-selftest-test-event</match>\n'
+            '    <description>SOC Self-Test synthetic alert injection (210-soc-selftest)</description>\n'
+            '    <group>soc-selftest</group>\n'
+            '  </rule>\n'
+            '</group>\n'
+        )
+        rule_file = '/var/ossec/etc/rules/soc_selftest_rules.xml'
+        with open(rule_file, 'w') as f:
+            f.write(rule_xml)
+        print('Règle 999999 écrite dans ' + rule_file)
+  register: _ww_rule_deploy
+  changed_when: _ww_rule_deploy.rc | default(1) == 0
+
+- name: "wazuh_webhook | Confirmer le déploiement de la règle 999999"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: "{{ _ww_rule_deploy.stdout | default('Règle 999999 déjà présente — aucune modification') }}"
+  changed_when: false
+
+# ── Décodeur syslog srcip (ephemeral — repair on every run) ─────
+# Wazuh n'extrait pas srcip des logs syslog sans décodeur.
+# Sans ce décodeur, $exec.data.srcip est vide dans Shuffle →
+# observable TheHive invalide → échec de la chaîne.
+# Le décodeur extrait srcip=X.X.X.X des logs syslog SOC (selftest + alertes réseau).
+
+- name: "wazuh_webhook | Vérifier si le décodeur soc-syslog.xml existe"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    test -f /var/ossec/etc/decoders/soc-syslog.xml
+  register: _ww_decoder_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Déployer le décodeur soc-syslog.xml (extraction srcip)"
+  when: _ww_hook_url is defined
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        import os
+        os.makedirs('/var/ossec/etc/decoders', exist_ok=True)
+        decoder_xml = (
+            '<decoder name="soc-syslog-net">\n'
+            '  <prematch type="pcre2">soc-selftest|ALERT\\s+srcip=</prematch>\n'
+            '  <regex type="pcre2">srcip=(\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3})</regex>\n'
+            '  <order>srcip</order>\n'
+            '</decoder>\n'
+        )
+        decoder_file = '/var/ossec/etc/decoders/soc-syslog.xml'
+        with open(decoder_file, 'w') as f:
+            f.write(decoder_xml)
+        print('Décodeur soc-syslog.xml écrit dans ' + decoder_file)
+  register: _ww_decoder_deploy
+  changed_when: _ww_decoder_deploy.rc | default(1) == 0
+
+- name: "wazuh_webhook | Confirmer le déploiement du décodeur"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: "{{ _ww_decoder_deploy.stdout | default('Décodeur soc-syslog.xml déjà présent — aucune modification') }}"
+  changed_when: false
+
+# ── Ruleset: s'assurer que etc/rules ET etc/decoders sont inclus (ephemeral) ──
+# Le fichier soc_selftest_rules.xml est dans /var/ossec/etc/rules/.
+# Le <ruleset> de ossec.conf doit contenir <rule_dir>etc/rules</rule_dir>
+# et <decoder_dir>etc/decoders</decoder_dir> sinon analysisd ne charge pas
+# les règles/décodeurs personnalisés.
+
+- name: "wazuh_webhook | Vérifier si etc/rules et etc/decoders sont dans le ruleset ossec.conf"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'grep -q "rule_dir>etc/rules" /var/ossec/etc/ossec.conf && grep -q "decoder_dir>etc/decoders" /var/ossec/etc/ossec.conf'
+  register: _ww_ruledir_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Ajouter etc/rules et etc/decoders au ruleset ossec.conf"
+  when:
+    - _ww_hook_url is defined
+    - _ww_ruledir_check.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        with open('/var/ossec/etc/ossec.conf', 'r') as f:
+            content = f.read()
+        closing_ruleset = '</ruleset>'
+        if closing_ruleset not in content:
+            raise ValueError('Tag </ruleset> non trouve dans ossec.conf')
+        insert = ''
+        if 'rule_dir>etc/rules' not in content:
+            insert += '    <rule_dir>etc/rules</rule_dir>\n  '
+        if 'decoder_dir>etc/decoders' not in content:
+            insert += '    <decoder_dir>etc/decoders</decoder_dir>\n  '
+        if insert:
+            new_content = content.replace(closing_ruleset, insert + closing_ruleset)
+            with open('/var/ossec/etc/ossec.conf', 'w') as f:
+                f.write(new_content)
+            print('ruleset mis a jour: ' + insert.strip())
+        else:
+            print('ruleset deja correct')
+  register: _ww_ruledir_inject
+  changed_when: _ww_ruledir_inject.rc | default(1) == 0
+
+# ── Shuffle integration block in ossec.conf (ephemeral — repair on every run) ──
+
+- name: "wazuh_webhook | Vérifier si l'intégration Shuffle existe dans ossec.conf"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "name>shuffle</name" /var/ossec/etc/ossec.conf
+  register: _ww_grep_existing
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Vérifier si l'URL du webhook est à jour dans ossec.conf"
+  when:
+    - _ww_hook_url is defined
+    - _ww_grep_existing.rc | default(1) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "{{ _ww_hook_url }}" /var/ossec/etc/ossec.conf
+  register: _ww_url_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Injecter ou mettre à jour le bloc integration Shuffle dans ossec.conf"
+  when:
+    - _ww_hook_url is defined
+    - (_ww_grep_existing.rc | default(1) != 0) or (_ww_url_check.rc | default(1) != 0)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        import re
+        hook_url = '{{ _ww_hook_url }}'
+        new_block = (
+            '\n  <integration>\n'
+            '    <name>shuffle</name>\n'
+            '    <hook_url>' + hook_url + '</hook_url>\n'
+            '    <level>{{ soc_automation_wazuh_webhook_min_level | default(3) }}</level>\n'
+            '    <alert_format>json</alert_format>\n'
+            '  </integration>'
+        )
+        with open('/var/ossec/etc/ossec.conf', 'r') as f:
+            content = f.read()
+        # Remove existing integration block if present (URL mismatch)
+        content = re.sub(
+            r'\s*<integration>\s*<name>shuffle</name>.*?</integration>',
+            '', content, flags=re.DOTALL
+        )
+        closing = '</ossec_config>'
+        if closing not in content:
+            raise ValueError('Tag </ossec_config> non trouve dans ossec.conf')
+        new_content = content.replace(closing, new_block + '\n' + closing)
+        with open('/var/ossec/etc/ossec.conf', 'w') as f:
+            f.write(new_content)
+        print('Bloc Shuffle mis a jour avec URL: ' + hook_url)
+  register: _ww_inject_result
+  changed_when: _ww_inject_result.rc | default(1) == 0
+
+- name: "wazuh_webhook | Confirmer l'injection"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: "{{ _ww_inject_result.stdout | default('Intégration Shuffle déjà présente — aucune modification') }}"
+  changed_when: false
+
+# ── /var/log/syslog localfile monitoring (ephemeral — repair on every run) ──
+# The selftest (210) injects via: echo "...soc-selftest-test-event..." >> /var/log/syslog
+# Wazuh logcollector must monitor this file for analysisd to process the event
+# and trigger rule 999999 → integratord → Shuffle webhook.
+# The Wazuh K8s image does NOT monitor /var/log/syslog by default.
+
+- name: "wazuh_webhook | S'assurer que /var/log/syslog existe dans le pod"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'touch /var/log/syslog && chmod 644 /var/log/syslog'
+  register: _ww_syslog_touch
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Vérifier si /var/log/syslog est surveillé par Wazuh"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "var/log/syslog" /var/ossec/etc/ossec.conf
+  register: _ww_syslog_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Ajouter le monitoring /var/log/syslog dans ossec.conf"
+  when:
+    - _ww_hook_url is defined
+    - _ww_syslog_check.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        localfile_block = (
+            '\n  <localfile>\n'
+            '    <log_format>syslog</log_format>\n'
+            '    <location>/var/log/syslog</location>\n'
+            '  </localfile>'
+        )
+        closing = '</ossec_config>'
+        with open('/var/ossec/etc/ossec.conf', 'r') as f:
+            content = f.read()
+        if closing not in content:
+            raise ValueError('Tag </ossec_config> non trouve dans ossec.conf')
+        new_content = content.replace(closing, localfile_block + '\n' + closing)
+        with open('/var/ossec/etc/ossec.conf', 'w') as f:
+            f.write(new_content)
+        print('Monitoring /var/log/syslog ajoute dans ossec.conf')
+  register: _ww_syslog_inject
+  changed_when: _ww_syslog_inject.rc | default(1) == 0
+
+- name: "wazuh_webhook | Confirmer l'ajout du monitoring syslog"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: "{{ _ww_syslog_inject.stdout | default('/var/log/syslog déjà surveillé — aucune modification') }}"
+  changed_when: false
+
+# ── Reload Wazuh in-pod (NOT rollout restart — preserves filesystem) ──
+# rollout restart destroys the pod and recreates it with a fresh overlay,
+# wiping the rule file and ossec.conf changes we just wrote.
+# Instead, restart the Wazuh service inside the running container.
+
+- name: "wazuh_webhook | Recharger la config Wazuh Manager in-pod (préserve le filesystem)"
+  when:
+    - _ww_hook_url is defined
+    - (_ww_requests_install is changed) or (_ww_rule_deploy is changed) or (_ww_decoder_deploy is changed) or (_ww_ruledir_inject is changed) or (_ww_inject_result is changed) or (_ww_syslog_inject is changed)
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'nohup /var/ossec/bin/wazuh-control restart > /dev/null 2>&1 &'
+  register: _ww_restart
+  changed_when: true
+
+- name: "wazuh_webhook | Attendre la stabilisation du service Wazuh (30s)"
+  when:
+    - _ww_hook_url is defined
+    - _ww_restart is changed
+  ansible.builtin.pause:
+    seconds: 30
+
+- name: "wazuh_webhook | Vérifier que Wazuh est opérationnel après reload"
+  when:
+    - _ww_hook_url is defined
+    - _ww_restart is changed
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-control status
+  register: _ww_status
+  changed_when: false
+  failed_when: false
+  retries: 3
+  delay: 10
+  until: "'wazuh-integratord is running' in _ww_status.stdout"
+
+# ── Diagnostic: verify the full integration chain ──────────────────────
+# These tasks always run (when hook_url is defined) and output diagnostics
+# to help pinpoint where the Wazuh→Shuffle pipeline breaks.
+
+- name: "wazuh_webhook | Diagnostic — script shuffle exists and is executable"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    ls -la /var/ossec/integrations/shuffle
+  register: _ww_diag_script
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Diagnostic — ossec.conf integration + localfile + ruleset sections"
+  when: _ww_hook_url is defined
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'grep -n -A4 "integration\|localfile\|var/log/syslog\|ruleset\|rule_dir\|etc/rules" /var/ossec/etc/ossec.conf'
+  register: _ww_diag_ossec
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Diagnostic — test webhook URL reachability from Wazuh pod"
+  when: _ww_hook_url is defined
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 {{ _ww_hook_url }} 2>/dev/null);
+      if [ "$HTTP_CODE" = "000" ]; then echo "UNREACHABLE (timeout/DNS)";
+      elif [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 500 ] 2>/dev/null; then echo "OK (HTTP $HTTP_CODE — réseau opérationnel)";
+      else echo "ERROR (HTTP $HTTP_CODE)"; fi'
+  register: _ww_diag_webhook
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Diagnostic — integrations.log (last 20 lines)"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    tail -20 /var/ossec/logs/integrations.log
+  register: _ww_diag_intlog
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Diagnostic — alerts.json rule 999999 (last 5 matches)"
+  when: _ww_hook_url is defined
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'grep -h "999999" /var/ossec/logs/alerts/alerts.json 2>/dev/null | tail -5 || echo "(aucune alerte rule 999999)"'
+  register: _ww_diag_alerts
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Diagnostic — ossec.log integratord errors (last 30 lines)"
+  when: _ww_hook_url is defined
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'grep -i "integratord\|integration\|shuffle" /var/ossec/logs/ossec.log | tail -30'
+  register: _ww_diag_osseclog
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Diagnostic — RÉSUMÉ PIPELINE"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg:
+      - "══════════ DIAGNOSTIC PIPELINE WAZUH → SHUFFLE ══════════"
+      - "1. Script shuffle : {{ _ww_diag_script.stdout | default('ABSENT') }}"
+      - "2. ossec.conf (integration+localfile) :"
+      - "{{ _ww_diag_ossec.stdout_lines | default(['(vide)']) }}"
+      - "3. Webhook URL reachability : {{ _ww_diag_webhook.stdout | default('ERREUR') }}"
+      - "4. integrations.log :"
+      - "{{ _ww_diag_intlog.stdout_lines | default(['(vide ou absent)']) }}"
+      - "5. alerts.json rule 999999 :"
+      - "{{ _ww_diag_alerts.stdout_lines | default(['(aucune alerte)']) }}"
+      - "6. ossec.log (integratord/shuffle) :"
+      - "{{ _ww_diag_osseclog.stdout_lines | default(['(aucune entrée)']) }}"
+  changed_when: false
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SECTION 2 — First-run marker (K8s API — durable, only needs to run once)
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "wazuh_webhook | Check idempotence marker"
+  when: _ww_hook_url is defined
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_automation_worker_namespace }}"
+    name: "{{ soc_automation_marker_wazuh_webhook }}"
+  register: _ww_marker
+  changed_when: false
+
+- name: "wazuh_webhook | Marker d'idempotence"
+  when:
+    - _ww_hook_url is defined
+    - _ww_marker.resources | length == 0
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ soc_automation_marker_wazuh_webhook }}"
+        namespace: "{{ soc_automation_worker_namespace }}"
+        labels: "{{ soc_automation_labels }}"
+        annotations:
+          soc.lab/feature:     "wazuh-webhook"
+          soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+      data:
+        feature:      "wazuh-webhook"
+        status:       "active"
+        hook_url:     "{{ _ww_hook_url }}"
+        environment:  "{{ soc_environment | default('dev') }}"

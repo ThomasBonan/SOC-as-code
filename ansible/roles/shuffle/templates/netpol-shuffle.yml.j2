@@ -1,0 +1,167 @@
+---
+# NetworkPolicy : autoriser Shuffle à contacter les services SOC internes
+# et le risk engine, et autoriser Wazuh → Shuffle (webhook entrant).
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shuffle-egress-soc
+  namespace: {{ shuffle_namespace }}
+  labels: {{ shuffle_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: shuffle
+  policyTypes:
+    - Egress
+  egress:
+    # DNS cluster (CoreDNS)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+    # TheHive (port 9000)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.thehive }}"
+      ports:
+        - protocol: TCP
+          port: 9000
+
+    # Cortex (port 9001)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.cortex }}"
+      ports:
+        - protocol: TCP
+          port: 9001
+
+    # MISP (port 443)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.misp }}"
+      ports:
+        - protocol: TCP
+          port: 443
+
+    # Wazuh API (port 55000)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.wazuh }}"
+      ports:
+        - protocol: TCP
+          port: 55000
+
+    # Risk Engine HTTP service (port 8080, namespace soc-thehive)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.thehive }}"
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: risk-engine
+      ports:
+        - protocol: TCP
+          port: 8080
+
+    # Kubernetes API (pour orborus)
+    - to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+            except:
+              - "{{ pod_cidr | default('10.244.0.0/16') }}"
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+
+    # Internet (VirusTotal, AbuseIPDB, Shodan via Cortex — egress ouvert)
+    # À restreindre via FQDN policy (Cilium) si disponible en prod.
+    - to:
+        - ipBlock:
+            cidr: "0.0.0.0/0"
+            except:
+              - "{{ pod_cidr | default('10.244.0.0/16') }}"
+              - "{{ service_cidr | default('10.96.0.0/12') }}"
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+---
+# NetworkPolicy : autoriser le trafic entrant vers Shuffle (webhook + UI)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shuffle-ingress-webhook
+  namespace: {{ shuffle_namespace }}
+  labels: {{ shuffle_labels | to_json }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/managed-by: shuffle
+  policyTypes:
+    - Ingress
+  ingress:
+    # Wazuh manager → Shuffle webhook (port {{ shuffle_backend_port }})
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.wazuh }}"
+      ports:
+        - protocol: TCP
+          port: {{ shuffle_backend_port }}
+
+    # Ingress NGINX → Shuffle frontend (UI analytiste)
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ ingress_nginx_namespace | default('ingress-nginx') }}"
+      ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: {{ shuffle_backend_port }}
+
+    # Réseau interne lab → Shuffle (Ansible controller + CI/CD)
+{% for cidr in soc_allowed_api_sources | default(['10.0.0.0/8']) %}
+    - from:
+        - ipBlock:
+            cidr: "{{ cidr }}"
+      ports:
+        - protocol: TCP
+          port: {{ shuffle_backend_port }}
+{% endfor %}
+---
+# NetworkPolicy : autoriser Wazuh manager à envoyer des webhooks vers Shuffle
+# Déployée dans le namespace Wazuh (egress = namespace source).
+# Sans cette règle, integratord obtient un ConnectTimeout vers shuffle-backend.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-shuffle-webhook
+  namespace: {{ soc_namespaces.wazuh }}
+  labels: {{ shuffle_labels | to_json }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["wazuh-manager"]
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ shuffle_namespace }}"
+      ports:
+        - protocol: TCP
+          port: {{ shuffle_backend_port }}

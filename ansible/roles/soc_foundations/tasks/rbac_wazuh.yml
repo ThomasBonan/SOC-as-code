@@ -1,0 +1,448 @@
+---
+# soc_foundations/tasks/rbac_wazuh.yml
+# Crée un compte de service Wazuh avec le rôle wazuh-readonly (built-in id=1).
+#
+# Idempotence : si le K8s Secret wazuh-sa-foundations existe déjà, skip.
+#
+# L'API Wazuh (port 55000) n'est pas exposée via Ingress.
+# Toutes les opérations API se font via kubectl exec + curl depuis l'intérieur
+# du pod wazuh-manager-master-0 (identique au pattern kubectl exec MariaDB de soc_config).
+#
+# Flux :
+#   1. Vérifier si le Secret K8s de destination existe → skip si oui
+#   2. Lire username+password depuis wazuh-api-cred (créé par morgoved/wazuh-helm)
+#      Clés : API_USERNAME (wazuh-wui) et API_PASSWORD (MyS3cr37P450r.*- par défaut)
+#   3. Obtenir un JWT : kubectl exec wazuh-manager-master-0 -- curl -k GET -u {API_USERNAME}:{API_PASSWORD} ?raw=true
+#   4. Vérifier si le compte SA existe (GET /security/users?search={username})
+#   5. Générer un password aléatoire et créer le compte (POST /security/users)
+#   6. Assigner le rôle wazuh-readonly (POST /security/users/{id}/roles?role_ids=1)
+#   7. Stocker dans K8s Secret
+
+- name: Wazuh RBAC - vérifier si le Secret SA existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.wazuh }}"
+    name: "{{ soc_foundations_wazuh_sa_secret_name }}"
+  register: _sf_wz_sa_secret_existing
+  no_log: true
+  changed_when: false
+
+# ============================================================
+# Résolution des credentials API depuis wazuh-api-cred (créé par morgoved/wazuh-helm)
+# ============================================================
+
+- name: Wazuh RBAC - lire wazuh-api-cred (username + password)
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.wazuh }}"
+    name: "{{ soc_foundations_wazuh_admin_secret_name }}"
+  register: _sf_wz_admin_secret
+  when: _sf_wz_sa_secret_existing.resources | length == 0
+  no_log: true
+  changed_when: false
+
+- name: Wazuh RBAC - fail si wazuh-api-cred est absent
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.wazuh }}/{{ soc_foundations_wazuh_admin_secret_name }} introuvable.
+      Ce secret est créé par le chart morgoved/wazuh-helm et doit exister.
+      Vérifier que le rôle wazuh a été exécuté avant soc_foundations.
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_admin_secret.resources | length == 0
+
+- name: Wazuh RBAC - résoudre le username API depuis wazuh-api-cred
+  ansible.builtin.set_fact:
+    _sf_wz_api_user: >-
+      {{
+        _sf_wz_admin_secret.resources[0].data[soc_foundations_wazuh_api_user_secret_key_username]
+        | b64decode
+      }}
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_admin_secret.resources | length > 0
+    - soc_foundations_wazuh_api_user_secret_key_username in (_sf_wz_admin_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: Wazuh RBAC - résoudre le password API depuis wazuh-api-cred
+  ansible.builtin.set_fact:
+    _sf_wz_api_password: >-
+      {{
+        _sf_wz_admin_secret.resources[0].data[soc_foundations_wazuh_api_user_secret_key]
+        | b64decode
+      }}
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_admin_secret.resources | length > 0
+    - soc_foundations_wazuh_api_user_secret_key in (_sf_wz_admin_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: Wazuh RBAC - fail si les clés API sont absentes de wazuh-api-cred
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.wazuh }}/{{ soc_foundations_wazuh_admin_secret_name }}
+      ne contient pas les clés attendues ({{ soc_foundations_wazuh_api_user_secret_key_username }},
+      {{ soc_foundations_wazuh_api_user_secret_key }}).
+      Clés présentes : {{ _sf_wz_admin_secret.resources[0].data.keys() | list }}
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_admin_secret.resources | length > 0
+    - >-
+      soc_foundations_wazuh_api_user_secret_key not in (_sf_wz_admin_secret.resources[0].data | default({}))
+      or soc_foundations_wazuh_api_user_secret_key_username not in (_sf_wz_admin_secret.resources[0].data | default({}))
+
+# --- Authentification : obtenir le JWT via kubectl exec + curl ---
+
+- name: Wazuh RBAC - obtenir le JWT via kubectl exec (in-pod curl, ?raw=true)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.wazuh }}"
+      - exec
+      - "{{ soc_foundations_wazuh_manager_pod_name }}"
+      - --
+      - curl
+      - -s
+      - -k
+      - -X
+      - GET
+      - -u
+      - "{{ _sf_wz_api_user }}:{{ _sf_wz_api_password }}"
+      - --write-out
+      - "\n%{http_code}"
+      - "{{ soc_foundations_wazuh_api_pod_base }}/security/user/authenticate?raw=true"
+  register: _sf_wz_auth_raw
+  when: _sf_wz_sa_secret_existing.resources | length == 0
+  changed_when: false
+  failed_when: _sf_wz_auth_raw.rc != 0
+  no_log: true
+
+- name: Wazuh RBAC - extraire le JWT et le code HTTP (raw=true → dernière ligne = code HTTP)
+  ansible.builtin.set_fact:
+    _sf_wz_jwt: "{{ _sf_wz_auth_raw.stdout_lines[:-1] | join('') | trim }}"
+    _sf_wz_auth_http_code: "{{ _sf_wz_auth_raw.stdout_lines[-1] | trim }}"
+  when: _sf_wz_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Wazuh RBAC - fail si authentification échouée (HTTP != 200)
+  ansible.builtin.fail:
+    msg: >-
+      Wazuh API auth failed (HTTP {{ _sf_wz_auth_http_code }}).
+      User (depuis {{ soc_foundations_wazuh_admin_secret_name }}.{{ soc_foundations_wazuh_api_user_secret_key_username }}): {{ _sf_wz_api_user | default('non résolu') }}.
+      URL: {{ soc_foundations_wazuh_api_pod_base }}/security/user/authenticate?raw=true.
+      Réponse API: {{ _sf_wz_jwt | truncate(300) }}.
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_auth_http_code | string != '200'
+
+- name: Wazuh RBAC - assert JWT valide (commence par eyJ)
+  ansible.builtin.assert:
+    that:
+      - (_sf_wz_jwt | length) > 0
+      - _sf_wz_jwt is match('^eyJ')
+    fail_msg: >-
+      Le JWT Wazuh est vide ou invalide (ne commence pas par 'eyJ').
+      HTTP code reçu : {{ _sf_wz_auth_http_code }}.
+  when: _sf_wz_sa_secret_existing.resources | length == 0
+
+# --- Vérifier si le compte SA existe déjà ---
+
+- name: Wazuh RBAC - vérifier si le compte SA existe (kubectl exec + curl)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.wazuh }}"
+      - exec
+      - "{{ soc_foundations_wazuh_manager_pod_name }}"
+      - --
+      - curl
+      - -s
+      - -k
+      - -f
+      - -H
+      - "Authorization: Bearer {{ _sf_wz_jwt }}"
+      - "{{ soc_foundations_wazuh_api_pod_base }}/security/users?search={{ soc_foundations_wazuh_sa_username }}"
+  register: _sf_wz_sa_check_raw
+  when: _sf_wz_sa_secret_existing.resources | length == 0
+  changed_when: false
+  failed_when: _sf_wz_sa_check_raw.rc != 0
+  no_log: true
+
+- name: Wazuh RBAC - détecter l'existence du SA et son ID
+  ansible.builtin.set_fact:
+    _sf_wz_sa_user_exists: >-
+      {{
+        ((_sf_wz_sa_check_raw.stdout | from_json).get('data', {}).get('affected_items', [])
+        | selectattr('username', 'equalto', soc_foundations_wazuh_sa_username)
+        | list
+        | length) > 0
+      }}
+    _sf_wz_sa_user_id: >-
+      {{
+        (
+          (_sf_wz_sa_check_raw.stdout | from_json).get('data', {}).get('affected_items', [])
+          | selectattr('username', 'equalto', soc_foundations_wazuh_sa_username)
+          | list
+          | map(attribute='id')
+          | list
+          | first
+          | default('')
+        ) | string
+      }}
+  when: _sf_wz_sa_secret_existing.resources | length == 0
+  no_log: true
+
+# --- Créer le compte SA si absent ---
+
+- name: Wazuh RBAC - générer un password pour le SA (création ou reset)
+  ansible.builtin.set_fact:
+    _sf_wz_sa_password: >-
+      {{
+        lookup('password',
+          '/dev/null length=' ~ (soc_foundations_wazuh_sa_password_length | int - 1) ~ ' chars=ascii_letters,digits')
+        ~ '!'
+      }}
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Wazuh RBAC - créer le compte de service (kubectl exec + curl POST)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.wazuh }}"
+      - exec
+      - "{{ soc_foundations_wazuh_manager_pod_name }}"
+      - --
+      - curl
+      - -s
+      - -k
+      - -X
+      - POST
+      - -H
+      - "Authorization: Bearer {{ _sf_wz_jwt }}"
+      - -H
+      - "Content-Type: application/json"
+      - --write-out
+      - "\n%{http_code}"
+      - -d
+      - '{"username":"{{ soc_foundations_wazuh_sa_username }}","password":"{{ _sf_wz_sa_password }}"}'
+      - "{{ soc_foundations_wazuh_api_pod_base }}/security/users"
+  register: _sf_wz_sa_create_raw
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - not (_sf_wz_sa_user_exists | bool)
+  changed_when: false
+  failed_when: _sf_wz_sa_create_raw.rc != 0
+  no_log: true
+
+- name: Wazuh RBAC - extraire code HTTP et corps de la réponse création SA
+  ansible.builtin.set_fact:
+    _sf_wz_create_http_code: "{{ _sf_wz_sa_create_raw.stdout_lines[-1] | trim }}"
+    _sf_wz_create_body: "{{ _sf_wz_sa_create_raw.stdout_lines[:-1] | join('') }}"
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - not (_sf_wz_sa_user_exists | bool)
+    - _sf_wz_sa_create_raw is defined
+  no_log: true
+
+- name: Wazuh RBAC - fail si création SA échouée (HTTP != 200)
+  ansible.builtin.fail:
+    msg: >-
+      Wazuh POST /security/users a échoué (HTTP {{ _sf_wz_create_http_code }}).
+      Réponse API : {{ _sf_wz_create_body | truncate(500) }}.
+      Causes possibles : (1) wazuh-wui n'a pas la permission de créer des users (403),
+      (2) le password ne respecte pas la politique Wazuh (400 - doit contenir upper, lower, chiffre, spécial).
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - not (_sf_wz_sa_user_exists | bool)
+    - _sf_wz_create_http_code | string != '200'
+
+- name: Wazuh RBAC - résoudre l'ID SA depuis la réponse de création
+  ansible.builtin.set_fact:
+    _sf_wz_sa_user_id: >-
+      {{
+        ((_sf_wz_create_body | from_json).get('data', {}).get('affected_items', [{}])[0].get('id', '') | default('')) | string
+      }}
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - not (_sf_wz_sa_user_exists | bool)
+    - _sf_wz_sa_create_raw is defined
+    - _sf_wz_create_http_code | string == '200'
+  no_log: true
+
+- name: Wazuh RBAC - fail si l'ID SA n'a pas pu être résolu
+  ansible.builtin.fail:
+    msg: >-
+      Wazuh : impossible de résoudre l'ID de l'utilisateur SA '{{ soc_foundations_wazuh_sa_username }}'.
+      Vérifier la réponse de l'API Wazuh (kubectl exec {{ soc_foundations_wazuh_manager_pod_name }}).
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - (_sf_wz_sa_user_id | default('') | string | length) == 0
+
+# --- Réinitialiser le password si état partiel (user Wazuh existant, Secret K8s absent) ---
+# Ce cas arrive quand un run précédent a créé le user dans Wazuh mais a échoué
+# avant de créer le K8s Secret (ex: mauvais mot de passe rejeté par Wazuh sur un run antérieur).
+
+- name: Wazuh RBAC - réinitialiser le password du SA existant (PUT /security/users/{id})
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.wazuh }}"
+      - exec
+      - "{{ soc_foundations_wazuh_manager_pod_name }}"
+      - --
+      - curl
+      - -s
+      - -k
+      - -X
+      - PUT
+      - -H
+      - "Authorization: Bearer {{ _sf_wz_jwt }}"
+      - -H
+      - "Content-Type: application/json"
+      - --write-out
+      - "\n%{http_code}"
+      - -d
+      - '{"password":"{{ _sf_wz_sa_password }}"}'
+      - "{{ soc_foundations_wazuh_api_pod_base }}/security/users/{{ _sf_wz_sa_user_id }}"
+  register: _sf_wz_sa_pwd_reset_raw
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_sa_user_exists | bool
+    - (_sf_wz_sa_user_id | default('') | string | length) > 0
+  changed_when: false
+  failed_when: _sf_wz_sa_pwd_reset_raw.rc != 0
+  no_log: true
+
+- name: Wazuh RBAC - fail si reset password échoué (HTTP != 200)
+  ansible.builtin.fail:
+    msg: >-
+      Wazuh PUT /security/users/{{ _sf_wz_sa_user_id }} (reset password) a échoué
+      (HTTP {{ _sf_wz_sa_pwd_reset_raw.stdout_lines[-1] | trim }}).
+      Réponse : {{ _sf_wz_sa_pwd_reset_raw.stdout_lines[:-1] | join('') | truncate(300) }}.
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - _sf_wz_sa_user_exists | bool
+    - (_sf_wz_sa_user_id | default('') | string | length) > 0
+    - _sf_wz_sa_pwd_reset_raw is defined
+    - _sf_wz_sa_pwd_reset_raw.stdout_lines[-1] | trim != '200'
+
+# --- Assigner le rôle wazuh-readonly ---
+
+- name: Wazuh RBAC - assigner le rôle wazuh-readonly (kubectl exec + curl PUT)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.wazuh }}"
+      - exec
+      - "{{ soc_foundations_wazuh_manager_pod_name }}"
+      - --
+      - curl
+      - -s
+      - -k
+      - -X
+      - POST
+      - -H
+      - "Authorization: Bearer {{ _sf_wz_jwt }}"
+      - --write-out
+      - "\n%{http_code}"
+      - "{{ soc_foundations_wazuh_api_pod_base }}/security/users/{{ _sf_wz_sa_user_id }}/roles?role_ids={{ soc_foundations_wazuh_sa_role_id }}"
+  register: _sf_wz_sa_role_raw
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - (_sf_wz_sa_user_id | default('') | string | length) > 0
+  changed_when: false
+  failed_when: _sf_wz_sa_role_raw.rc != 0
+  no_log: true
+
+- name: Wazuh RBAC - extraire code HTTP et corps de la réponse role-assign
+  ansible.builtin.set_fact:
+    _sf_wz_role_http_code: "{{ _sf_wz_sa_role_raw.stdout_lines[-1] | trim }}"
+    _sf_wz_role_body: "{{ _sf_wz_sa_role_raw.stdout_lines[:-1] | join('') }}"
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - (_sf_wz_sa_user_id | default('') | string | length) > 0
+    - _sf_wz_sa_role_raw is defined
+  no_log: true
+
+- name: Wazuh RBAC - afficher le résultat de l'assignation de rôle (diagnostic)
+  ansible.builtin.debug:
+    msg: >-
+      Wazuh PUT /security/users/{{ _sf_wz_sa_user_id }}/roles?role_ids={{ soc_foundations_wazuh_sa_role_id }}
+      → HTTP {{ _sf_wz_role_http_code }}.
+      Réponse : {{ _sf_wz_role_body | truncate(500) }}.
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - (_sf_wz_sa_user_id | default('') | string | length) > 0
+    - _sf_wz_sa_role_raw is defined
+
+- name: Wazuh RBAC - fail si assignation rôle échouée (HTTP != 200)
+  ansible.builtin.fail:
+    msg: >-
+      Wazuh PUT /security/users/{{ _sf_wz_sa_user_id }}/roles?role_ids={{ soc_foundations_wazuh_sa_role_id }} a échoué (HTTP {{ _sf_wz_role_http_code }}).
+      Réponse API : {{ _sf_wz_role_body | truncate(500) }}.
+      Causes possibles : (1) wazuh-wui n'a pas la permission d'assigner des rôles (403),
+      (2) le role_id={{ soc_foundations_wazuh_sa_role_id }} n'existe pas (404),
+      (3) conflit (409 - rôle déjà assigné).
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - (_sf_wz_sa_user_id | default('') | string | length) > 0
+    - _sf_wz_role_http_code | string not in ['200', '409']
+
+# --- Stocker dans K8s Secret ---
+
+- name: Wazuh RBAC - stocker les credentials dans un K8s Secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_foundations_wazuh_sa_secret_name }}"
+        namespace: "{{ soc_namespaces.wazuh }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-foundations
+          soc.lab/service: wazuh
+          soc.lab/secret-type: service-account
+        annotations:
+          soc.lab/sa-username: "{{ soc_foundations_wazuh_sa_username }}"
+          soc.lab/sa-role-id: "{{ soc_foundations_wazuh_sa_role_id | string }}"
+          soc.lab/environment: "{{ soc_environment | default('dev') }}"
+      type: Opaque
+      stringData: >-
+        {{
+          {
+            soc_foundations_wazuh_sa_secret_key_username: soc_foundations_wazuh_sa_username,
+            soc_foundations_wazuh_sa_secret_key_password: _sf_wz_sa_password
+          }
+        }}
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: Wazuh RBAC - rapport de statut
+  ansible.builtin.debug:
+    msg: >-
+      Wazuh SA '{{ soc_foundations_wazuh_sa_username }}'
+      (role_id={{ soc_foundations_wazuh_sa_role_id }}, user_id={{ _sf_wz_sa_user_id | default('n/a') }}).
+      Secret : {{ soc_namespaces.wazuh }}/{{ soc_foundations_wazuh_sa_secret_name }}.
+      Action : {{ 'ignoré (déjà existant)' if _sf_wz_sa_secret_existing.resources | length > 0 else 'créé' }}.

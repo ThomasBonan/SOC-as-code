@@ -1,0 +1,59 @@
+---
+# shuffle/tasks/preflight.yml
+# Vérifie que la chaîne 170+180 est opérationnelle avant de déployer Shuffle.
+# Vérifie également que Helm est disponible sur le controller Ansible.
+
+# ── Vérification de la chaîne 170 ────────────────────────────────
+
+- name: "shuffle | Preflight — vérifier présence du marker 170 (soc_foundations)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "soc-foundations-marker"
+  register: _sh_marker_170
+  changed_when: false
+
+- name: "shuffle | Preflight — assert 170 a été exécuté"
+  ansible.builtin.assert:
+    that:
+      - _sh_marker_170.resources | length > 0
+    fail_msg: >-
+      Le marker 170 (soc-foundations-marker) est absent.
+      Exécuter 170-soc-foundations.yml avant 185-shuffle.yml.
+
+# ── Vérification du Secret de credentials (créé par 180) ──────────
+
+- name: "shuffle | Preflight — vérifier présence du Secret soc-automation-worker-creds"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ shuffle_worker_creds_ns }}"
+    name: "{{ shuffle_worker_creds_secret }}"
+  register: _sh_creds_secret
+  changed_when: false
+  no_log: true
+
+- name: "shuffle | Preflight — assert Secret de credentials disponible"
+  ansible.builtin.assert:
+    that:
+      - _sh_creds_secret.resources | length > 0
+    fail_msg: >-
+      Le Secret {{ shuffle_worker_creds_secret }} est absent du namespace {{ shuffle_worker_creds_ns }}.
+      Exécuter 180-soc-automation.yml (tag: integration) pour créer les credentials.
+
+# ── Vérification de Helm ───────────────────────────────────────────
+
+- name: "shuffle | Preflight — vérifier que Helm est installé"
+  ansible.builtin.command: helm version --short
+  register: _sh_helm_version
+  changed_when: false
+  failed_when: _sh_helm_version.rc != 0
+
+- name: "shuffle | Preflight — résumé"
+  ansible.builtin.debug:
+    msg: >-
+      Preflight OK.
+      Chaîne 170 opérationnelle.
+      Credentials disponibles.
+      Helm={{ _sh_helm_version.stdout }}.

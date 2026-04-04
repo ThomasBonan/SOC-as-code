@@ -1,0 +1,53 @@
+thehive:
+  replicas: 1
+  httpSecret: "__HTTP_SECRET__"
+  jvmOpts: "{{ thehive_jvm_opts }}"
+  service:
+    type: ClusterIP
+    port: 9000
+
+{% if thehive_storage_class | length > 0 %}
+  persistence:
+    storageClass: "{{ thehive_storage_class }}"
+    size: "{{ thehive_persistence_size }}"
+{% else %}
+  persistence:
+    size: "{{ thehive_persistence_size }}"
+{% endif %}
+
+# Cassandra dependency (POC)
+cassandra:
+  enabled: {{ thehive_enable_cassandra | bool }}
+  replicaCount: 1
+  jvm:
+    extraOpts: "{{ cassandra_jvm_extra_opts }}"
+    maxHeapSize: "{{ cassandra_jvm_max_heap }}"
+    newHeapSize: "{{ cassandra_jvm_new_heap }}"
+{% if thehive_storage_class | length > 0 %}
+  persistence:
+    storageClass: "{{ thehive_storage_class }}"
+{% endif %}
+
+# Elasticsearch dependency (POC)
+elasticsearch:
+  enabled: {{ thehive_enable_elasticsearch | bool }}
+  master:
+    replicaCount: 1
+    heapSize: "{{ elasticsearch_heap_size }}"
+    extraEnvVars:
+      - name: JVM_OPTS
+        value: "{{ elasticsearch_jvm_opts }}"
+{% if thehive_storage_class | length > 0 %}
+    persistence:
+      storageClass: "{{ thehive_storage_class }}"
+{% endif %}
+
+# MinIO dependency (POC)
+minio:
+  enabled: {{ thehive_enable_minio | bool }}
+  mode: standalone
+  persistence:
+    enabled: true
+{% if thehive_storage_class | length > 0 %}
+    storageClass: "{{ thehive_storage_class }}"
+{% endif %}

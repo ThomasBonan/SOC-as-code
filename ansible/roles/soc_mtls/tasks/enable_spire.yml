@@ -1,0 +1,78 @@
+---
+# Upgrade the existing Cilium Helm release to enable SPIRE mutual authentication.
+#
+# Strategy: get current user-supplied values with `helm get values`, merge SPIRE
+# overrides on top, write to a temp file, and upgrade with only -f (no --reuse-values).
+#
+# Why NOT --reuse-values:
+#   --reuse-values re-injects values that were null/empty at install time.
+#   When the chart template tries to access .Values.hubble.metrics.tls.enabled
+#   (or similar nested paths), it gets a nil pointer error because the parent key
+#   was never explicitly set and is stored as null rather than as a default object.
+#   Using -f with the output of `helm get values` avoids this: Helm fills every
+#   unset key with chart defaults, so no nil pointers occur.
+
+- name: Get current Cilium user-supplied values
+  ansible.builtin.command: >
+    {{ helm_binary_path }} get values cilium
+    --namespace kube-system
+    --kubeconfig {{ kubeconfig_path }}
+    -o yaml
+  register: _cilium_current_values
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Write merged Cilium values with SPIRE overrides
+  ansible.builtin.copy:
+    dest: /tmp/cilium-spire-overrides.yaml
+    mode: "0600"
+    content: "{{ base | combine(spire, recursive=True) | to_nice_yaml }}"
+  vars:
+    # helm get values outputs 'null' when nothing was explicitly set → fall back to {}
+    base: "{{ (_cilium_current_values.stdout | from_yaml) or {} }}"
+    spire:
+      # Cilium 1.15 changed kubeProxyReplacement from "disabled"/"strict" to false/true.
+      # Override the old value that helm get values may have preserved.
+      kubeProxyReplacement: "false"
+      authentication:
+        enabled: true            # required by Cilium chart validate.yaml
+        mutual:
+          spire:
+            enabled: true
+            install:
+              enabled: true
+              namespace: "{{ soc_mtls_spire_namespace }}"
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Upgrade Cilium with SPIRE mutual authentication
+  ansible.builtin.command: >
+    {{ helm_binary_path }} upgrade cilium cilium/cilium
+    --namespace kube-system
+    --kubeconfig {{ kubeconfig_path }}
+    -f /tmp/cilium-spire-overrides.yaml
+    --wait
+    --timeout 10m0s
+  changed_when: true
+  delegate_to: localhost
+  run_once: true
+
+- name: Wait for SPIRE server rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ soc_mtls_spire_namespace }}
+    rollout status deployment/spire-server --timeout=5m
+  changed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Wait for SPIRE agent DaemonSet rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ soc_mtls_spire_namespace }}
+    rollout status daemonset/spire-agent --timeout=5m
+  changed_when: false
+  delegate_to: localhost
+  run_once: true

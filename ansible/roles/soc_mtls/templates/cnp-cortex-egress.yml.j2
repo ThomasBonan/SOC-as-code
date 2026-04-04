@@ -1,0 +1,65 @@
+---
+# CiliumNetworkPolicy: Cortex egress
+# Enforces SPIFFE mTLS for Cortex → MISP and preserves all other
+# required egress flows (intersection semantics with standard NetworkPolicy).
+#
+# Note: internet FQDN egress (analyzer dependencies) is handled by the
+# existing CiliumNetworkPolicy from soc_netpol (cnp-cortex-internet-fqdn).
+# Multiple CiliumNetworkPolicies on the same endpoint are UNIONed, so both
+# policies remain active without conflict.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cnp-cortex-egress-mtls
+  namespace: {{ soc_namespaces.cortex }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    soc.lab/component: mtls
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cortex
+  egress:
+
+    # ── mTLS required: Cortex → MISP ─────────────────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.misp }}"
+            app: misp
+      authentication:
+        mode: required
+      toPorts:
+        - ports:
+            - port: "{{ soc_ports.misp | string }}"
+              protocol: TCP
+
+    # ── DNS ───────────────────────────────────────────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: coredns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # ── Internal: Elasticsearch (analysis results index) ─────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.cortex }}"
+            app.kubernetes.io/name: elasticsearch
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.cortex }}"
+            app: elasticsearch
+      toPorts:
+        - ports:
+            - port: "9200"
+              protocol: TCP

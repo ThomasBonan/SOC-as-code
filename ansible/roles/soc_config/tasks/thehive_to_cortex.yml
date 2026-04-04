@@ -1,0 +1,428 @@
+---
+- name: Resolve TheHive auth mode
+  ansible.builtin.set_fact:
+    thehive_effective_auth_mode: >-
+      {{
+        (
+          (soc_config_thehive_auth_mode == 'auto')
+          | ternary(
+              (
+                (soc_config_thehive_api_key | length > 0)
+                | ternary(
+                    'bearer',
+                    (
+                      (soc_config_thehive_username | length > 0 and soc_config_thehive_password | length > 0)
+                      | ternary('basic', 'none')
+                    )
+                  )
+              ),
+              soc_config_thehive_auth_mode
+            )
+        )
+      }}
+  no_log: true
+
+- name: Resolve TheHive API base for control-host calls
+  ansible.builtin.set_fact:
+    thehive_api_base_effective: >-
+      {{
+        (
+          ('.svc' in soc_config_thehive_api_base)
+          and (soc_config_thehive_ingress_api_base | length > 0)
+        )
+        | ternary(soc_config_thehive_ingress_api_base, soc_config_thehive_api_base)
+      }}
+
+- name: Check stored TheHive API key secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_config_thehive_api_key_secret_name }}"
+  register: thehive_api_key_secret
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_api_key | length == 0
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+  no_log: true
+
+- name: Load TheHive API key from secret
+  ansible.builtin.set_fact:
+    soc_config_thehive_api_key: >-
+      {{
+        thehive_api_key_secret.resources[0].data[soc_config_thehive_api_key_secret_key]
+        | b64decode
+      }}
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_api_key | length == 0
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+    - thehive_api_key_secret.resources | length > 0
+    - soc_config_thehive_api_key_secret_key in (thehive_api_key_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: Bootstrap TheHive current user with bootstrap credentials
+  ansible.builtin.uri:
+    url: "{{ thehive_api_base_effective }}/v1/user/current"
+    method: GET
+    url_username: "{{ soc_config_thehive_bootstrap_user }}"
+    url_password: "{{ soc_config_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_config_thehive_validate_certs }}"
+    status_code:
+      - 200
+      - 401
+      - 403
+    return_content: true
+    timeout: "{{ soc_config_http_timeout | int }}"
+  register: thehive_bootstrap_current_user
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_api_key | length == 0
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+  no_log: true
+
+- name: Fail when TheHive bootstrap credentials are invalid
+  ansible.builtin.fail:
+    msg: >-
+      Could not bootstrap TheHive API key automatically (HTTP {{ thehive_bootstrap_current_user.status }}).
+      Configure valid bootstrap credentials with:
+      soc_config_thehive_bootstrap_user / soc_config_thehive_bootstrap_password.
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_api_key | length == 0
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+    - (thehive_bootstrap_current_user.status | default(0)) in [401, 403]
+
+- name: Bootstrap TheHive API key for current user
+  ansible.builtin.uri:
+    url: "{{ thehive_api_base_effective }}/v1/user/{{ thehive_bootstrap_current_user.json._id }}/key/renew"
+    method: POST
+    url_username: "{{ soc_config_thehive_bootstrap_user }}"
+    url_password: "{{ soc_config_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_config_thehive_validate_certs }}"
+    status_code: 200
+    return_content: true
+    timeout: "{{ soc_config_http_timeout | int }}"
+  register: thehive_bootstrap_api_key
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_api_key | length == 0
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+    - (thehive_bootstrap_current_user.status | default(0)) == 200
+  no_log: true
+
+- name: Set bootstrapped TheHive API key
+  ansible.builtin.set_fact:
+    soc_config_thehive_api_key: >-
+      {{
+        (
+          thehive_bootstrap_api_key.content
+          | trim
+          | regex_replace('^\"', '')
+          | regex_replace('\"$', '')
+        )
+      }}
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_api_key | length == 0
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+    - (thehive_bootstrap_current_user.status | default(0)) == 200
+  no_log: true
+
+- name: Assert bootstrapped TheHive API key is not empty
+  ansible.builtin.assert:
+    that:
+      - soc_config_thehive_api_key | length > 0
+    fail_msg: "Bootstrapped TheHive API key is empty."
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+    - thehive_bootstrap_current_user is defined
+    - (thehive_bootstrap_current_user.status | default(0)) == 200
+  no_log: true
+
+- name: Persist bootstrapped TheHive API key in Kubernetes secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_config_thehive_api_key_secret_name }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+      type: Opaque
+      stringData: "{{ { (soc_config_thehive_api_key_secret_key): soc_config_thehive_api_key } }}"
+  when:
+    - soc_config_thehive_api_key_auto_bootstrap | bool
+    - soc_config_thehive_username | length == 0
+    - soc_config_thehive_password | length == 0
+    - thehive_bootstrap_current_user is defined
+    - (thehive_bootstrap_current_user.status | default(0)) == 200
+  no_log: true
+
+- name: Resolve TheHive auth mode (final)
+  ansible.builtin.set_fact:
+    thehive_effective_auth_mode: >-
+      {{
+        (
+          (soc_config_thehive_auth_mode == 'auto')
+          | ternary(
+              (
+                (soc_config_thehive_api_key | length > 0)
+                | ternary(
+                    'bearer',
+                    (
+                      (soc_config_thehive_username | length > 0 and soc_config_thehive_password | length > 0)
+                      | ternary('basic', 'none')
+                    )
+                  )
+              ),
+              soc_config_thehive_auth_mode
+            )
+        )
+      }}
+  no_log: true
+
+- name: Log TheHive API base fallback
+  ansible.builtin.debug:
+    msg: >-
+      Using host-reachable TheHive API base {{ thehive_api_base_effective }}
+      instead of {{ soc_config_thehive_api_base }}.
+  when: thehive_api_base_effective != soc_config_thehive_api_base
+
+- name: Log resolved TheHive API base
+  ansible.builtin.debug:
+    msg: "TheHive API base resolved to {{ thehive_api_base_effective }}"
+
+- name: Assert TheHive authentication settings are valid
+  ansible.builtin.assert:
+    that:
+      - thehive_effective_auth_mode in ['bearer', 'basic', 'none']
+      - thehive_effective_auth_mode != 'bearer' or soc_config_thehive_api_key | length > 0
+      - thehive_effective_auth_mode != 'basic' or (soc_config_thehive_username | length > 0 and soc_config_thehive_password | length > 0)
+      - soc_config_thehive_cortex_api_key_resolved | default('') | length > 0
+    fail_msg: >-
+      Invalid TheHive auth/key settings. Use soc_config_thehive_auth_mode=auto|bearer|basic|none.
+      For bearer, set soc_config_thehive_api_key. For basic, set both
+      soc_config_thehive_username and soc_config_thehive_password.
+      Also provide a Cortex API key (explicit or generated).
+
+- name: Build TheHive API headers
+  ansible.builtin.set_fact:
+    thehive_api_headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+
+- name: Add TheHive bearer token header
+  ansible.builtin.set_fact:
+    thehive_api_headers: "{{ thehive_api_headers | combine({'Authorization': 'Bearer ' ~ soc_config_thehive_api_key}) }}"
+  when: thehive_effective_auth_mode == 'bearer'
+  no_log: true
+
+- name: Add TheHive organisation header
+  ansible.builtin.set_fact:
+    thehive_api_headers: "{{ thehive_api_headers | combine({'X-Organisation': soc_config_thehive_organisation}) }}"
+  when: soc_config_thehive_organisation | length > 0
+
+- name: Wait for TheHive API status endpoint
+  ansible.builtin.uri:
+    url: "{{ thehive_api_base_effective }}/v1/status"
+    method: GET
+    headers: "{{ thehive_api_headers }}"
+    url_username: "{{ soc_config_thehive_username if thehive_effective_auth_mode == 'basic' else omit }}"
+    url_password: "{{ soc_config_thehive_password if thehive_effective_auth_mode == 'basic' else omit }}"
+    force_basic_auth: "{{ thehive_effective_auth_mode == 'basic' }}"
+    follow_redirects: all
+    validate_certs: "{{ soc_config_thehive_validate_certs }}"
+    status_code:
+      - 200
+      - 401
+      - 403
+    return_content: true
+    timeout: "{{ soc_config_http_timeout | int }}"
+  register: thehive_status
+  retries: "{{ soc_config_http_retries | int }}"
+  delay: "{{ soc_config_http_delay | int }}"
+  until: thehive_status.status in [200, 401, 403]
+  no_log: true
+
+- name: Fail when TheHive API requires authentication
+  ansible.builtin.fail:
+    msg: >-
+      TheHive API returned HTTP {{ thehive_status.status }} on {{ thehive_api_base_effective }}/v1/status.
+      Automatic key bootstrap did not yield a valid auth context.
+      Current mode: {{ thehive_effective_auth_mode }}.
+      If using auto-bootstrap, verify soc_config_thehive_bootstrap_user/password.
+      If a stale key is stored, delete secret
+      {{ soc_namespaces.thehive }}/{{ soc_config_thehive_api_key_secret_name }}
+      and rerun.
+  when: thehive_status.status in [401, 403]
+
+- name: Assert TheHive runtime Cortex settings inputs
+  ansible.builtin.assert:
+    that:
+      - soc_config_thehive_cortex_api_key_resolved | length > 0
+      - soc_config_thehive_cortex_hostnames | length > 0
+      - soc_config_thehive_cortex_port | int > 0
+      - soc_config_thehive_cortex_protocol in ['http', 'https']
+    fail_msg: "Invalid TheHive runtime Cortex settings."
+  no_log: true
+
+- name: Read TheHive runtime env configmap
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_config_thehive_env_configmap_name }}"
+  register: thehive_env_cm
+
+- name: Fail if TheHive runtime env configmap is missing
+  ansible.builtin.fail:
+    msg: >-
+      Missing ConfigMap {{ soc_namespaces.thehive }}/{{ soc_config_thehive_env_configmap_name }}.
+      TheHive chart resources are required for automatic Cortex runtime wiring.
+  when: thehive_env_cm.resources | length == 0
+
+- name: Build TheHive runtime env data with Cortex settings
+  ansible.builtin.set_fact:
+    thehive_env_data_new: >-
+      {{
+        (thehive_env_cm.resources[0].data | default({}))
+        | combine(
+            {
+              'TH_NO_CONFIG_CORTEX': '0',
+              'TH_CORTEX_PROTO': soc_config_thehive_cortex_protocol,
+              'TH_CORTEX_HOSTNAMES': (soc_config_thehive_cortex_hostnames | join(',')),
+              'TH_CORTEX_PORT': (soc_config_thehive_cortex_port | string)
+            }
+          )
+      }}
+
+- name: Patch TheHive runtime env configmap with Cortex settings
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ soc_config_thehive_env_configmap_name }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+      data: "{{ thehive_env_data_new }}"
+  register: thehive_env_cm_patch
+
+- name: Read TheHive runtime secret
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_config_thehive_runtime_secret_name }}"
+  register: thehive_runtime_secret
+  no_log: true
+
+- name: Fail if TheHive runtime secret is missing
+  ansible.builtin.fail:
+    msg: >-
+      Missing Secret {{ soc_namespaces.thehive }}/{{ soc_config_thehive_runtime_secret_name }}.
+      TheHive chart resources are required for automatic Cortex runtime wiring.
+  when: thehive_runtime_secret.resources | length == 0
+
+- name: Build TheHive runtime secret data with Cortex API key
+  ansible.builtin.set_fact:
+    thehive_runtime_secret_data_new: >-
+      {{
+        (thehive_runtime_secret.resources[0].data | default({}))
+        | combine({'TH_CORTEX_KEYS': (soc_config_thehive_cortex_api_key_resolved | b64encode)})
+      }}
+  no_log: true
+
+- name: Patch TheHive runtime secret with Cortex API key
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_config_thehive_runtime_secret_name }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+      type: Opaque
+      data: "{{ thehive_runtime_secret_data_new }}"
+  register: thehive_runtime_secret_patch
+  no_log: true
+
+- name: Restart TheHive deployment when Cortex runtime config changed
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_namespaces.thehive }}
+    rollout restart deploy/{{ soc_config_thehive_release_name }}
+  when: thehive_env_cm_patch.changed or thehive_runtime_secret_patch.changed
+  changed_when: true
+
+- name: Wait TheHive deployment rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_namespaces.thehive }}
+    rollout status deploy/{{ soc_config_thehive_release_name }} --timeout=10m
+  changed_when: false
+
+- name: Wait TheHive API after rollout
+  ansible.builtin.uri:
+    url: "{{ thehive_api_base_effective }}/v1/status"
+    method: GET
+    headers: "{{ thehive_api_headers }}"
+    url_username: "{{ soc_config_thehive_username if thehive_effective_auth_mode == 'basic' else omit }}"
+    url_password: "{{ soc_config_thehive_password if thehive_effective_auth_mode == 'basic' else omit }}"
+    force_basic_auth: "{{ thehive_effective_auth_mode == 'basic' }}"
+    validate_certs: "{{ soc_config_thehive_validate_certs }}"
+    status_code:
+      - 200
+      - 503
+    return_content: true
+    timeout: "{{ soc_config_http_timeout | int }}"
+  register: thehive_status_after_rollout
+  retries: "{{ soc_config_http_retries | int }}"
+  delay: "{{ soc_config_http_delay | int }}"
+  until: thehive_status_after_rollout.status == 200
+  no_log: true
+
+- name: Probe Cortex connector from TheHive API
+  ansible.builtin.uri:
+    url: "{{ thehive_api_base_effective }}{{ soc_config_thehive_cortex_probe_path }}"
+    method: GET
+    headers: "{{ thehive_api_headers }}"
+    url_username: "{{ soc_config_thehive_username if thehive_effective_auth_mode == 'basic' else omit }}"
+    url_password: "{{ soc_config_thehive_password if thehive_effective_auth_mode == 'basic' else omit }}"
+    force_basic_auth: "{{ thehive_effective_auth_mode == 'basic' }}"
+    validate_certs: "{{ soc_config_thehive_validate_certs }}"
+    status_code:
+      - 200
+      - 400
+      - 404
+      - 503
+    return_content: true
+    timeout: "{{ soc_config_http_timeout | int }}"
+  register: thehive_cortex_probe
+  retries: "{{ soc_config_http_retries | int }}"
+  delay: "{{ soc_config_http_delay | int }}"
+  until: thehive_cortex_probe.status in [200, 400, 404]
+  no_log: true
+
+- name: Fail when Cortex connector probe is not healthy
+  ansible.builtin.fail:
+    msg: >-
+      TheHive Cortex connector probe returned HTTP {{ thehive_cortex_probe.status }}.
+      Check TheHive path/payload or Cortex API key validity.
+  when:
+    - soc_config_thehive_cortex_fail_on_probe_error | bool
+    - thehive_cortex_probe.status != 200

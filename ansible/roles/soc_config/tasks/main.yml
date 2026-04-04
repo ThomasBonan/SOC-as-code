@@ -1,0 +1,92 @@
+---
+# --- THEHIVE secret (create-once) ---
+- name: Check TheHive integration secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_config_thehive_cortex_generated_secret_name }}"
+  register: thehive_int_secret
+  when:
+    - soc_config_enable_thehive_to_cortex | bool
+    - soc_config_thehive_cortex_use_generated_key | bool
+    - soc_config_thehive_cortex_api_key | length == 0
+
+- name: Create TheHive integration secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_config_thehive_cortex_generated_secret_name }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+      type: Opaque
+      stringData: "{{ { (soc_config_thehive_cortex_generated_secret_key): lookup('password', '/dev/null length=64 chars=ascii_letters,digits') } }}"
+  when:
+    - soc_config_enable_thehive_to_cortex | bool
+    - soc_config_thehive_cortex_use_generated_key | bool
+    - soc_config_thehive_cortex_api_key | length == 0
+    - thehive_int_secret.resources | length == 0
+  no_log: true
+
+- name: Read TheHive integration secret
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_config_thehive_cortex_generated_secret_name }}"
+  register: thehive_int_secret_read
+  when:
+    - soc_config_enable_thehive_to_cortex | bool
+    - soc_config_thehive_cortex_use_generated_key | bool
+    - soc_config_thehive_cortex_api_key | length == 0
+  no_log: true
+
+- name: Assert generated secret contains Cortex API key
+  ansible.builtin.assert:
+    that:
+      - thehive_int_secret_read.resources | length > 0
+      - soc_config_thehive_cortex_generated_secret_key in (thehive_int_secret_read.resources[0].data | default({}))
+    fail_msg: >-
+      Could not resolve generated TheHive->Cortex API key from secret
+      {{ soc_namespaces.thehive }}/{{ soc_config_thehive_cortex_generated_secret_name }}.
+  when:
+    - soc_config_enable_thehive_to_cortex | bool
+    - soc_config_thehive_cortex_use_generated_key | bool
+    - soc_config_thehive_cortex_api_key | length == 0
+  no_log: true
+
+- name: Resolve TheHive->Cortex API key from generated secret
+  ansible.builtin.set_fact:
+    soc_config_thehive_cortex_api_key_resolved: >-
+      {{
+        thehive_int_secret_read.resources[0].data[soc_config_thehive_cortex_generated_secret_key]
+        | b64decode
+      }}
+  when:
+    - soc_config_enable_thehive_to_cortex | bool
+    - soc_config_thehive_cortex_use_generated_key | bool
+    - soc_config_thehive_cortex_api_key | length == 0
+  no_log: true
+
+- name: Resolve TheHive->Cortex API key from provided variable
+  ansible.builtin.set_fact:
+    soc_config_thehive_cortex_api_key_resolved: "{{ soc_config_thehive_cortex_api_key }}"
+  when:
+    - soc_config_enable_thehive_to_cortex | bool
+    - soc_config_thehive_cortex_api_key | length > 0
+  no_log: true
+
+- name: Configure TheHive <-> Cortex
+  ansible.builtin.include_tasks: thehive_to_cortex.yml
+  when: soc_config_enable_thehive_to_cortex | bool
+
+- name: Configure Cortex -> MISP
+  ansible.builtin.include_tasks: cortex_to_misp.yml
+  when: soc_config_enable_cortex_to_misp | bool
+
+- name: Configure Wazuh -> TheHive
+  ansible.builtin.include_tasks: wazuh_to_thehive.yml
+  when: soc_config_enable_wazuh_to_thehive | bool

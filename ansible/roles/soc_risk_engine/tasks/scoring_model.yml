@@ -1,0 +1,202 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# scoring_model.yml — Deploy 5-dimension risk scoring model
+# tag: model
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Deploys the centralized scoring model that defines the 5-dimension weighted
+# risk score formula and its 4-level decision thresholds.
+#
+# What this task does:
+#   1. Creates 3 TheHive custom fields (idempotent via 400/409):
+#      - risk_score_v2  (float)  — enhanced 5-dim score computed by 190 worker
+#      - alert_frequency (integer) — similar alert count in time window
+#      - risk_decision  (string) — automated decision applied to this case
+#   2. Renders scoring-policy.json.j2 → deploys soc-risk-policy ConfigMap
+#   3. Creates an idempotence marker ConfigMap
+#
+# Scoring formula (computed by the Python worker at runtime):
+#   total_w       = sum(all weights)
+#   dim_wazuh     = (severity - 1) / 3 * 100   [TheHive severity 1-4]
+#   dim_cortex    = (max_level  / 3) * 100       [Cortex taxonomy level 0-3]
+#   dim_misp      = 100 if misp_hit else 0       [binary]
+#   dim_asset     = (asset_weight - 1) / 4 * 100 [weight 1-5]
+#   dim_frequency = min(100, (count - 1) / 9 * 100) [1→0, 10+→100]
+#   risk_score_v2 = sum(dim * weight) / total_w  [0-100]
+#
+# Decision rules (top-down, first match wins):
+#   >= escalate(90)    → severity=Critical + priority:critical
+#   >= auto_contain(75) → Wazuh AR firewall-drop + risk_decision:contained
+#   >= auto_promote(50) → severity=High + risk_decision:auto_promoted
+#   <  auto_close(20)  → status=Resolved/FalsePositive + risk_decision:auto_closed
+#   otherwise          → risk_decision:reviewed (no automated action)
+#
+# Idempotence: marker ConfigMap soc_risk_engine_marker_scoring
+
+# ── Create TheHive custom fields (always run — naturally idempotent) ──────────
+
+- name: "scoring_model | Ensure risk_score_v2 custom field exists in TheHive"
+  ansible.builtin.uri:
+    url:              "{{ soc_risk_engine_thehive_api_base }}/v1/customField"
+    method:           POST
+    url_username:     "{{ soc_risk_engine_thehive_bootstrap_user }}"
+    url_password:     "{{ soc_risk_engine_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    body_format:      json
+    body:
+      name:        "risk_score_v2"
+      displayName: "Risk Score v2 (5-dim)"
+      type:        "float"
+      description: "Enhanced 5-dimension risk score (0.00-100.00) computed by soc_risk_engine (190). Dimensions: wazuh, cortex, misp, asset, frequency."
+      group:       "Risk Engine"
+      mandatory:   false
+    status_code:    [200, 201, 400, 409]
+    timeout:        "{{ soc_risk_engine_http_timeout }}"
+    validate_certs: "{{ soc_risk_engine_validate_certs }}"
+  register: _sm_cf_score
+  no_log:       true
+  changed_when: _sm_cf_score.status in [200, 201]
+
+- name: "scoring_model | Log risk_score_v2 field status"
+  ansible.builtin.debug:
+    msg: >-
+      risk_score_v2:
+      {% if _sm_cf_score.status in [200, 201] %}Created ({{ _sm_cf_score.status }}).
+      {% elif _sm_cf_score.status in [400, 409] %}Already exists — OK.
+      {% else %}Unexpected status {{ _sm_cf_score.status }}.{% endif %}
+  changed_when: false
+
+- name: "scoring_model | Ensure alert_frequency custom field exists in TheHive"
+  ansible.builtin.uri:
+    url:              "{{ soc_risk_engine_thehive_api_base }}/v1/customField"
+    method:           POST
+    url_username:     "{{ soc_risk_engine_thehive_bootstrap_user }}"
+    url_password:     "{{ soc_risk_engine_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    body_format:      json
+    body:
+      name:        "alert_frequency"
+      displayName: "Alert Frequency"
+      type:        "integer"
+      description: "Count of similar alerts in the last {{ soc_risk_engine_frequency_window_hours }}h window (same rule_id or src_ip). Used as dimension 5 in risk_score_v2."
+      group:       "Risk Engine"
+      mandatory:   false
+    status_code:    [200, 201, 400, 409]
+    timeout:        "{{ soc_risk_engine_http_timeout }}"
+    validate_certs: "{{ soc_risk_engine_validate_certs }}"
+  register: _sm_cf_freq
+  no_log:       true
+  changed_when: _sm_cf_freq.status in [200, 201]
+
+- name: "scoring_model | Log alert_frequency field status"
+  ansible.builtin.debug:
+    msg: >-
+      alert_frequency:
+      {% if _sm_cf_freq.status in [200, 201] %}Created ({{ _sm_cf_freq.status }}).
+      {% elif _sm_cf_freq.status in [400, 409] %}Already exists — OK.
+      {% else %}Unexpected status {{ _sm_cf_freq.status }}.{% endif %}
+  changed_when: false
+
+- name: "scoring_model | Ensure risk_decision custom field exists in TheHive"
+  ansible.builtin.uri:
+    url:              "{{ soc_risk_engine_thehive_api_base }}/v1/customField"
+    method:           POST
+    url_username:     "{{ soc_risk_engine_thehive_bootstrap_user }}"
+    url_password:     "{{ soc_risk_engine_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    body_format:      json
+    body:
+      name:        "risk_decision"
+      displayName: "Risk Decision"
+      type:        "string"
+      description: "Automated decision applied by soc_risk_engine: auto_closed | auto_promoted | contained | escalated | reviewed."
+      group:       "Risk Engine"
+      mandatory:   false
+    status_code:    [200, 201, 400, 409]
+    timeout:        "{{ soc_risk_engine_http_timeout }}"
+    validate_certs: "{{ soc_risk_engine_validate_certs }}"
+  register: _sm_cf_decision
+  no_log:       true
+  changed_when: _sm_cf_decision.status in [200, 201]
+
+- name: "scoring_model | Log risk_decision field status"
+  ansible.builtin.debug:
+    msg: >-
+      risk_decision:
+      {% if _sm_cf_decision.status in [200, 201] %}Created ({{ _sm_cf_decision.status }}).
+      {% elif _sm_cf_decision.status in [400, 409] %}Already exists — OK.
+      {% else %}Unexpected status {{ _sm_cf_decision.status }}.{% endif %}
+  changed_when: false
+
+# ── Check idempotence marker ──────────────────────────────────────
+
+- name: "scoring_model | Check idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_risk_engine_service_namespace }}"
+    name: "{{ soc_risk_engine_marker_scoring }}"
+  register: _sm_marker
+  changed_when: false
+
+- name: "scoring_model | Already deployed — skip"
+  ansible.builtin.debug:
+    msg: "Scoring model already deployed (marker exists) — skipping."
+  when: _sm_marker.resources | length > 0
+  changed_when: false
+
+# ── Deploy scoring model block ────────────────────────────────────
+
+- name: "scoring_model | Deploy risk scoring model"
+  when: _sm_marker.resources | length == 0
+  block:
+
+    - name: "scoring_model | Deploy soc-risk-policy ConfigMap"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_risk_engine_policy_configmap }}"
+            namespace: "{{ soc_risk_engine_service_namespace }}"
+            labels: "{{ soc_risk_engine_labels }}"
+            annotations:
+              soc.lab/description: "SOC Risk Engine scoring policy — 5-dimension weighted model."
+              soc.lab/managed-by:  "190-soc-risk-engine"
+          data:
+            risk-policy.json: "{{ lookup('template', 'scoring-policy.json.j2') }}"
+
+    - name: "scoring_model | Create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_risk_engine_marker_scoring }}"
+            namespace: "{{ soc_risk_engine_service_namespace }}"
+            labels: "{{ soc_risk_engine_labels }}"
+            annotations:
+              soc.lab/automation-state: active
+              soc.lab/feature:          "scoring_model"
+              soc.lab/deployed-at:      "{{ now(utc=True).isoformat() }}"
+          data:
+            feature:          "scoring_model"
+            status:           "active"
+            policy_configmap: "{{ soc_risk_engine_policy_configmap }}"
+            weights:          "wazuh={{ soc_risk_weights.wazuh }},cortex={{ soc_risk_weights.cortex }},misp={{ soc_risk_weights.misp }},asset={{ soc_risk_weights.asset }},frequency={{ soc_risk_weights.frequency }}"
+            thresholds:       "auto_close={{ soc_risk_thresholds.auto_close }},auto_promote={{ soc_risk_thresholds.auto_promote }},auto_contain={{ soc_risk_thresholds.auto_contain }},escalate={{ soc_risk_thresholds.escalate }}"
+            environment:      "{{ soc_environment | default('dev') }}"
+
+    - name: "scoring_model | Deployment report"
+      ansible.builtin.debug:
+        msg:
+          - "=== Scoring Model Deployed ==="
+          - "ConfigMap   : {{ soc_risk_engine_policy_configmap }}"
+          - "Weights     : wazuh={{ soc_risk_weights.wazuh }}, cortex={{ soc_risk_weights.cortex }}, misp={{ soc_risk_weights.misp }}, asset={{ soc_risk_weights.asset }}, frequency={{ soc_risk_weights.frequency }}"
+          - "Thresholds  : auto_close=<{{ soc_risk_thresholds.auto_close }}, auto_promote={{ soc_risk_thresholds.auto_promote }}, auto_contain={{ soc_risk_thresholds.auto_contain }}, escalate={{ soc_risk_thresholds.escalate }}"
+          - "Custom fields: risk_score_v2 (float), alert_frequency (int), risk_decision (string)"
+      changed_when: false

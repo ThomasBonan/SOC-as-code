@@ -1,0 +1,181 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# report.yml — Assemble and persist the SOC self-test report
+# tag: report
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Actions:
+#   1. Initialize default result facts (safe if verify modules were skipped)
+#   2. Compute propagation latencies from epoch timestamps
+#   3. Compute global selftest status (healthy / degraded / failed)
+#   4. Ensure the artifacts directory exists
+#   5. Write JSON report artifact (local file, CI/CD consumable)
+#   6. Deploy report as K8s ConfigMap (audit trail, overwrites on each run)
+#   7. Print structured console summary with box drawing and latencies
+#   8. Fail the play if global_status != healthy AND soc_selftest_fail_on_error=true
+#
+# Global status logic:
+#   failed   : any of [inject, thehive, cortex, risk] == "fail" (core pipeline broken)
+#   degraded : any of [misp, active_response] == "fail" (secondary layer issue)
+#   healthy  : all phases ok or skipped
+
+# ── Initialize safe defaults ──────────────────────────────────────
+# Guard: allows "--tags report" to run standalone without prior verify steps.
+
+- name: "report | Initialize default result facts (guard for standalone --tags report)"
+  ansible.builtin.set_fact:
+    _st_run_id:         "{{ _st_run_id         | default('unknown') }}"
+    _st_inject_status:  "{{ _st_inject_status  | default('skipped') }}"
+    _st_thehive_status: "{{ _st_thehive_status | default('skipped') }}"
+    _st_cortex_status:  "{{ _st_cortex_status  | default('skipped') }}"
+    _st_risk_status:    "{{ _st_risk_status    | default('skipped') }}"
+    _st_misp_status:    "{{ _st_misp_status    | default('skipped') }}"
+    _st_ar_status:      "{{ _st_ar_status      | default('skipped') }}"
+    _st_risk_score:     "{{ _st_risk_score     | default(-1) }}"
+    _st_risk_decision:  "{{ _st_risk_decision  | default('unknown') }}"
+    _st_cortex_score:   "{{ _st_cortex_score   | default(-1) }}"
+    _st_alert_id:       "{{ _st_alert_id       | default('') }}"
+    _st_case_id:        "{{ _st_case_id        | default('') }}"
+    _st_misp_event_id:  "{{ _st_misp_event_id  | default('') }}"
+    _st_inject_epoch:   "{{ _st_inject_epoch   | default(0) | int }}"
+    _st_thehive_epoch:  "{{ _st_thehive_epoch  | default(0) | int }}"
+    _st_cortex_epoch:   "{{ _st_cortex_epoch   | default(0) | int }}"
+    _st_risk_epoch:     "{{ _st_risk_epoch     | default(0) | int }}"
+  changed_when: false
+
+# ── Compute propagation latencies ────────────────────────────────
+# Latencies are computed from epoch seconds recorded at each phase.
+# Negative values indicate the phase was skipped or epoch not set.
+
+- name: "report | Compute propagation latencies (seconds)"
+  ansible.builtin.set_fact:
+    _st_lat_inject_to_thehive: "{{ (_st_thehive_epoch | int) - (_st_inject_epoch  | int) }}"
+    _st_lat_thehive_to_cortex: "{{ (_st_cortex_epoch  | int) - (_st_thehive_epoch | int) }}"
+    _st_lat_cortex_to_risk:    "{{ (_st_risk_epoch    | int) - (_st_cortex_epoch  | int) }}"
+    _st_lat_total:             "{{ (_st_risk_epoch    | int) - (_st_inject_epoch  | int) }}"
+    _st_timestamp:             "{{ now(utc=True).isoformat() }}"
+  changed_when: false
+
+# ── Compute global selftest status ────────────────────────────────
+
+- name: "report | Compute global selftest status"
+  ansible.builtin.set_fact:
+    _st_global_status: >-
+      {{
+        'failed'
+        if 'fail' in [_st_inject_status, _st_thehive_status, _st_cortex_status, _st_risk_status]
+        else 'degraded'
+        if 'fail' in [_st_misp_status, _st_ar_status]
+        else 'healthy'
+      }}
+  changed_when: false
+
+# ── Ensure artifacts directory exists ────────────────────────────
+
+- name: "report | Ensure artifacts directory exists"
+  ansible.builtin.file:
+    path:  "{{ soc_selftest_artifact_dir }}"
+    state: directory
+    mode:  "0750"
+
+# ── Write JSON report artifact ─────────────────────────────────────
+
+- name: "report | Write selftest report JSON artifact"
+  ansible.builtin.template:
+    src:  selftest-report.json.j2
+    dest: "{{ soc_selftest_artifact_file }}"
+    mode: "0640"
+
+- name: "report | Report artifact written"
+  ansible.builtin.debug:
+    msg: "Self-test report written to: {{ soc_selftest_artifact_file }}"
+  changed_when: false
+
+# ── Deploy report ConfigMap (K8s audit trail) ─────────────────────
+# Overwrites on every run — no permanent marker, selftest is re-runnable.
+# ALL data values must be | string (K8s rejects non-string values in ConfigMap data).
+
+- name: "report | Deploy selftest report ConfigMap (K8s audit trail)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name:      "{{ soc_selftest_report_configmap }}"
+        namespace: "{{ soc_selftest_report_ns }}"
+        labels:    "{{ soc_selftest_labels }}"
+        annotations:
+          soc.lab/managed-by:    "210-soc-selftest"
+          soc.lab/global-status: "{{ _st_global_status }}"
+          soc.lab/run-id:        "{{ _st_run_id }}"
+          soc.lab/tested-at:     "{{ _st_timestamp }}"
+          soc.lab/environment:   "{{ soc_environment | default('dev') }}"
+      data:
+        global_status:   "{{ _st_global_status }}"
+        run_id:          "{{ _st_run_id }}"
+        tested_at:       "{{ _st_timestamp }}"
+        environment:     "{{ soc_environment | default('dev') }}"
+        inject_status:   "{{ _st_inject_status }}"
+        thehive_status:  "{{ _st_thehive_status }}"
+        cortex_status:   "{{ _st_cortex_status }}"
+        risk_status:     "{{ _st_risk_status }}"
+        misp_status:     "{{ _st_misp_status }}"
+        ar_status:       "{{ _st_ar_status }}"
+        risk_score:      "{{ _st_risk_score | string }}"
+        risk_decision:   "{{ _st_risk_decision }}"
+        cortex_score:    "{{ _st_cortex_score | string }}"
+        latency_total_s: "{{ _st_lat_total | string }}"
+        alert_id:        "{{ _st_alert_id }}"
+        case_id:         "{{ _st_case_id }}"
+        report.json:     "{{ lookup('template', 'selftest-report.json.j2') }}"
+
+# ── Console summary ───────────────────────────────────────────────
+
+- name: "report | SOC Self-Test console report"
+  ansible.builtin.debug:
+    msg:
+      - "╔══════════════════════════════════════════════════════════════════════╗"
+      - "║          SOC SELF-TEST REPORT — 210-soc-selftest                    ║"
+      - "╠══════════════════════════════════════════════════════════════════════╣"
+      - "  Environment      : {{ soc_environment | default('dev') }}"
+      - "  Run ID           : {{ _st_run_id }}"
+      - "  Timestamp         : {{ _st_timestamp }}"
+      - "  Safe mode         : {{ soc_selftest_safe_mode | bool | string | upper }}"
+      - "  Injection mode    : {{ 'WAZUH E2E' if soc_selftest_inject_via_wazuh | bool else 'DIRECT THEHIVE' }}"
+      - "╠══════════════════════════════════════════════════════════════════════╣"
+      - "  Injection         : {{ _st_inject_status  | upper }}"
+      - "  TheHive           : {{ _st_thehive_status | upper }}"
+      - "  Cortex            : {{ _st_cortex_status  | upper }}  (cortex_score={{ _st_cortex_score }})"
+      - "  Risk Engine       : {{ _st_risk_status    | upper }}  (score={{ _st_risk_score }}, decision={{ _st_risk_decision }})"
+      - "  MISP              : {{ _st_misp_status    | upper }}"
+      - "  Active Response   : {{ _st_ar_status      | upper }}"
+      - "╠══════════════════════════════════════════════════════════════════════╣"
+      - "  inject→thehive   : {{ _st_lat_inject_to_thehive }}s"
+      - "  thehive→cortex   : {{ _st_lat_thehive_to_cortex }}s"
+      - "  cortex→risk      : {{ _st_lat_cortex_to_risk }}s"
+      - "  total latency    : {{ _st_lat_total }}s"
+      - "╠══════════════════════════════════════════════════════════════════════╣"
+      - "  GLOBAL STATUS    : {{ _st_global_status | upper }}"
+      - "╠══════════════════════════════════════════════════════════════════════╣"
+      - "  Artifact         : {{ soc_selftest_artifact_file }}"
+      - "  ConfigMap        : {{ soc_selftest_report_configmap }} (ns: {{ soc_selftest_report_ns }})"
+      - "╚══════════════════════════════════════════════════════════════════════╝"
+  changed_when: false
+
+# ── Fail gate (CI/CD) ─────────────────────────────────────────────
+
+- name: "report | Fail pipeline on selftest failure"
+  ansible.builtin.fail:
+    msg: >-
+      SOC self-test FAILED. Global status: {{ _st_global_status | upper }}.
+      run_id={{ _st_run_id }}
+      Core pipeline  : inject={{ _st_inject_status }} / thehive={{ _st_thehive_status }} / cortex={{ _st_cortex_status }} / risk={{ _st_risk_status }}
+      Secondary layer: misp={{ _st_misp_status }} / active_response={{ _st_ar_status }}
+      risk_score={{ _st_risk_score }} | decision={{ _st_risk_decision }}
+      Review: {{ soc_selftest_artifact_file }}
+      Set soc_selftest_fail_on_error=false to downgrade to a warning.
+  when:
+    - _st_global_status != 'healthy'
+    - soc_selftest_fail_on_error | bool

@@ -1,0 +1,44 @@
+---
+# ── Idempotence guard ────────────────────────────────────────────────────────
+- name: Check mTLS marker
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: ConfigMap
+    name: "{{ soc_mtls_marker_name }}"
+    namespace: "{{ soc_mtls_marker_namespace }}"
+  register: _mtls_marker
+  delegate_to: localhost
+  run_once: true
+
+- name: Provision SOC mTLS (SPIRE + CiliumNetworkPolicies)
+  when: _mtls_marker.resources | length == 0
+  block:
+
+    - name: Enable SPIRE in Cilium
+      import_tasks: enable_spire.yml
+      tags: [spire, soc_mtls]
+
+    - name: Apply CiliumNetworkPolicies with mutual authentication
+      import_tasks: apply_policies.yml
+      tags: [policies, soc_mtls]
+
+    - name: Create mTLS marker
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_mtls_marker_name }}"
+            namespace: "{{ soc_mtls_marker_namespace }}"
+            labels:
+              app.kubernetes.io/managed-by: ansible
+              soc.lab/component: mtls
+          data:
+            provisioned: "true"
+            spire_namespace: "{{ soc_mtls_spire_namespace }}"
+            cilium_version: "{{ cilium_version }}"
+      delegate_to: localhost
+      run_once: true

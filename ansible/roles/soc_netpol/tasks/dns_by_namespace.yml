@@ -1,0 +1,16 @@
+---
+- name: Apply DNS egress policy for selector
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-dns.yml.j2
+  loop: "{{ dns_selectors }}"
+  loop_control:
+    loop_var: dns_selector
+    index_var: dns_idx
+  vars:
+    netpol_namespace: "{{ dns_ns }}"
+    netpol_name: "{{ soc_netpol_dns_policy_name }}-{{ dns_idx }}"
+    netpol_pod_selector: "{{ dns_selector }}"
+    netpol_dns_namespace: "{{ soc_netpol_dns_namespace }}"
+    netpol_dns_pod_selectors: "{{ soc_netpol_dns_pod_selectors }}"

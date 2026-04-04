@@ -1,0 +1,305 @@
+---
+# ============================================================
+# soc_foundations role - defaults
+# Conventions : préfixe soc_foundations_* pour toutes les variables du rôle.
+# Les valeurs sensibles ne sont JAMAIS en dur : elles proviennent de K8s Secrets
+# ou de variables chiffrées via Ansible Vault.
+# ============================================================
+
+# --- Runtime ---
+soc_foundations_kubeconfig_path: "{{ kubeconfig_path }}"
+soc_foundations_http_timeout: "{{ soc_http.timeout | default(10) }}"
+soc_foundations_http_retries: "{{ soc_http.retries | default(20) }}"
+soc_foundations_http_delay: "{{ soc_http.delay | default(3) }}"
+soc_foundations_validate_certs: false
+
+# --- Feature toggles ---
+soc_foundations_enable_preflight: true
+soc_foundations_enable_rbac: true
+soc_foundations_enable_rbac_thehive: true
+soc_foundations_enable_rbac_thehive_selftest: true
+soc_foundations_enable_rbac_cortex: true
+soc_foundations_enable_rbac_misp: true
+soc_foundations_enable_rbac_wazuh: true
+soc_foundations_enable_secrets_vault_compat: true
+soc_foundations_enable_netpol_api_ingress: true
+soc_foundations_enable_integration_placeholders: true
+
+# ============================================================
+# RBAC - TheHive
+# ============================================================
+# Credentials admin pour bootstrap (Basic auth vers TheHive)
+# Compatible avec les variables thehive_bootstrap_user / thehive_bootstrap_password du projet
+soc_foundations_thehive_bootstrap_login: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
+soc_foundations_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+
+# Compte de service à créer
+soc_foundations_thehive_sa_login: "{{ soc_service_accounts.thehive.login | default('svc-foundations@thehive.local') }}"
+soc_foundations_thehive_sa_name: "{{ soc_service_accounts.thehive.name | default('SOC Foundations Service Account') }}"
+soc_foundations_thehive_sa_profile: "{{ soc_service_accounts.thehive.profile | default('analyst') }}"
+soc_foundations_thehive_sa_organisation: "{{ soc_service_accounts.thehive.organisation | default('') }}"
+
+# Secret K8s de destination (create-once)
+soc_foundations_thehive_sa_secret_name: "thehive-sa-foundations"
+soc_foundations_thehive_sa_secret_key_api: "api_key"
+soc_foundations_thehive_sa_secret_key_login: "login"
+
+# Résolution de l'API base effective (ingress si .svc non atteignable depuis le controller)
+soc_foundations_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"
+soc_foundations_thehive_ingress_scheme: "https"
+soc_foundations_thehive_ingress_host: >-
+  {{
+    ((apps_domain | default('') | length) > 0)
+    | ternary(
+        (soc_services.thehive | default('thehive')) ~ '.' ~ apps_domain,
+        ''
+      )
+  }}
+soc_foundations_thehive_ingress_api_base: >-
+  {{
+    ((soc_foundations_thehive_ingress_host | length) > 0)
+    | ternary(
+        soc_foundations_thehive_ingress_scheme ~ '://' ~ soc_foundations_thehive_ingress_host ~ '/api',
+        ''
+      )
+  }}
+
+# Compte de service Shuffle + selftest (210-soc-selftest)
+# Profil analyst étendu (rbac_thehive.yml) — toutes les permissions workflow y sont ajoutées.
+# Le profil org-admin est un built-in protégé (PATCH → 403) : on utilise analyst à la place.
+# Org "SOC" = même org que le compte Cortex (soc_service_accounts.cortex.organisation).
+# rbac_thehive_selftest.yml crée l'org et assigne le profil si le SA existe déjà.
+soc_foundations_thehive_selftest_sa_login:        "svc-selftest@thehive.local"
+soc_foundations_thehive_selftest_sa_name:         "SOC Self-Test Service Account"
+soc_foundations_thehive_selftest_sa_profile:      "analyst"
+soc_foundations_thehive_selftest_sa_organisation: "{{ soc_service_accounts.cortex.organisation | default('SOC') }}"
+
+# Secret K8s de destination (create-once)
+soc_foundations_thehive_selftest_sa_secret_name:      "thehive-selftest-foundations"
+soc_foundations_thehive_selftest_sa_secret_key_api:   "api_key"
+soc_foundations_thehive_selftest_sa_secret_key_login: "login"
+
+# ============================================================
+# RBAC - Cortex
+# ============================================================
+# Admin bootstrap : utilise Basic auth puis génère un Bearer token admin
+soc_foundations_cortex_bootstrap_login: "{{ cortex_bootstrap_user | default('admin') }}"
+soc_foundations_cortex_bootstrap_password: "{{ cortex_bootstrap_password | default('secret') }}"
+
+# Compte de service à créer
+soc_foundations_cortex_sa_login: "{{ soc_service_accounts.cortex.login | default('svc-foundations') }}"
+soc_foundations_cortex_sa_name: "{{ soc_service_accounts.cortex.name | default('SOC Foundations Service Account') }}"
+soc_foundations_cortex_sa_organisation: "{{ soc_service_accounts.cortex.organisation | default('SOC') }}"
+soc_foundations_cortex_sa_role: "{{ soc_service_accounts.cortex.role | default('read') }}"
+
+# Secret K8s de destination
+soc_foundations_cortex_sa_secret_name: "cortex-sa-foundations"
+soc_foundations_cortex_sa_secret_key_api: "api_key"
+soc_foundations_cortex_sa_secret_key_login: "login"
+
+# API base (même pattern que soc_config)
+soc_foundations_cortex_api_base: "{{ soc_endpoints.cortex.api_base }}"
+soc_foundations_cortex_ingress_scheme: "https"
+soc_foundations_cortex_ingress_host: >-
+  {{
+    ((apps_domain | default('') | length) > 0)
+    | ternary(
+        (soc_services.cortex | default('cortex')) ~ '.' ~ apps_domain,
+        ''
+      )
+  }}
+soc_foundations_cortex_ingress_api_base: >-
+  {{
+    ((soc_foundations_cortex_ingress_host | length) > 0)
+    | ternary(
+        soc_foundations_cortex_ingress_scheme ~ '://' ~ soc_foundations_cortex_ingress_host ~ '/api',
+        ''
+      )
+  }}
+
+# Analyzers à activer pour l'organisation SOC
+# Chaque entrée : name (identifiant Cortex exact) + config (dict, optionnel)
+# Clés API sensibles (ex: abuseipdb_api_key) → Ansible Vault ou group_vars chiffrées.
+soc_foundations_enable_rbac_cortex_analyzers: true
+soc_foundations_cortex_analyzers:
+  - name: "AbuseIPDB_1_0"
+    config:
+      auto_extract_artifacts: false
+      key: "{{ abuseipdb_api_key | default('') }}"
+  - name: "Shodan_InfoDigger_1_0"
+    config:
+      auto_extract_artifacts: false
+      key: "{{ shodan_api_key | default('') }}"
+  - name: "MaxMind_GeoIP_4_0"
+    config: {}
+  - name: "Abuse_Finder_3_0"
+    config: {}
+
+# ============================================================
+# RBAC - MISP
+# ============================================================
+# Même source de credentials que soc_config/tasks/cortex_to_misp.yml
+soc_foundations_misp_admin_secret_name: "misp-app-secret"
+soc_foundations_misp_admin_email_secret_key: "admin_email"
+soc_foundations_misp_db_secret_name: "misp-mariadb-auth"
+soc_foundations_misp_db_password_secret_key: "mariadb-password"
+soc_foundations_misp_db_statefulset_name: "misp-mariadb"
+soc_foundations_misp_db_pod_name: "{{ soc_foundations_misp_db_statefulset_name }}-0"
+soc_foundations_misp_db_name: "misp"
+soc_foundations_misp_db_user: "misp"
+
+# Compte de service à créer
+soc_foundations_misp_sa_email: "{{ soc_service_accounts.misp.email | default('svc-foundations@soc.lab') }}"
+soc_foundations_misp_sa_org_id: "{{ soc_service_accounts.misp.org_id | default(1) }}"
+soc_foundations_misp_sa_role_id: "{{ soc_service_accounts.misp.role_id | default(3) }}"  # 3 = Sync User
+
+# Secret K8s de destination
+soc_foundations_misp_sa_secret_name: "misp-sa-foundations"
+soc_foundations_misp_sa_secret_key_authkey: "authkey"
+soc_foundations_misp_sa_secret_key_email: "email"
+
+# API base MISP (même pattern ingress-fallback que TheHive/Cortex)
+soc_foundations_misp_api_base: "{{ soc_endpoints.misp.api_base }}"
+soc_foundations_misp_ingress_scheme: "https"
+soc_foundations_misp_ingress_host: >-
+  {{
+    ((apps_domain | default('') | length) > 0)
+    | ternary(
+        (soc_services.misp | default('misp')) ~ '.' ~ apps_domain,
+        ''
+      )
+  }}
+soc_foundations_misp_ingress_api_base: >-
+  {{
+    ((soc_foundations_misp_ingress_host | length) > 0)
+    | ternary(
+        soc_foundations_misp_ingress_scheme ~ '://' ~ soc_foundations_misp_ingress_host ~ '/',
+        ''
+      )
+  }}
+
+# ============================================================
+# RBAC - Wazuh
+# ============================================================
+# Credentials API : le chart morgoved/wazuh-helm stocke les credentials de l'API
+# REST Manager (port 55000) dans le secret 'wazuh-api-cred' (créé par le chart Helm).
+# Clés : API_USERNAME (= wazuh-wui) et API_PASSWORD (= MyS3cr37P450r.*- par défaut).
+# Ces credentials sont DIFFÉRENTS de wazuh-credentials (qui ne contient qu'OpenSearch).
+soc_foundations_wazuh_admin_secret_name: "wazuh-api-cred"
+# Clé du username dans le secret admin (le username est lu dynamiquement depuis le secret)
+soc_foundations_wazuh_api_user_secret_key_username: "API_USERNAME"
+# Clé du password dans le secret admin
+soc_foundations_wazuh_api_user_secret_key: "API_PASSWORD"
+# Valeur de fallback si secret_key est vide (non utilisé par défaut)
+soc_foundations_wazuh_api_password: ""
+
+# Compte de service à créer
+soc_foundations_wazuh_sa_username: "{{ soc_service_accounts.wazuh.username | default('svc-foundations') }}"
+soc_foundations_wazuh_sa_password_length: 24
+# Wazuh built-in role : wazuh-readonly = id 1
+soc_foundations_wazuh_sa_role_id: "{{ soc_service_accounts.wazuh.role_id | default(1) }}"
+
+# Secret K8s de destination
+soc_foundations_wazuh_sa_secret_name: "wazuh-sa-foundations"
+soc_foundations_wazuh_sa_secret_key_username: "username"
+soc_foundations_wazuh_sa_secret_key_password: "password"
+
+# Wazuh Manager API (REST API interne, port 55000)
+# L'API Wazuh n'est PAS exposée via Ingress.
+# Les appels API se font via kubectl exec depuis l'intérieur du pod (in-pod curl).
+soc_foundations_wazuh_manager_pod_name: "wazuh-manager-master-0"
+# URL de l'API accessible depuis l'intérieur du pod (localhost)
+soc_foundations_wazuh_api_pod_base: "https://localhost:55000"
+
+# ============================================================
+# Secrets vault-compat
+# ============================================================
+soc_foundations_vault_configmap_name: "soc-vault-config"
+soc_foundations_vault_configmap_namespace: "{{ soc_namespaces.thehive }}"
+soc_foundations_registry_secret_name: "soc-foundations-registry"
+soc_foundations_registry_secret_namespace: "{{ soc_namespaces.thehive }}"
+
+# ============================================================
+# NetworkPolicies - API ingress
+# ============================================================
+soc_foundations_netpol_labels:
+  app.kubernetes.io/managed-by: soc-foundations
+  app.kubernetes.io/component: api-ingress-policy
+
+# Ingress controller : autoriser ses pods à traverser les NetworkPolicies
+# (nécessaire car nginx utilise les IPs de nœuds pour le trafic entrant,
+#  qui peuvent ne pas être dans soc_allowed_api_sources)
+soc_foundations_netpol_allow_ingress_controller: true
+soc_foundations_netpol_ingress_controller_namespace: "ingress-nginx"
+soc_foundations_netpol_ingress_controller_pod_labels:
+  app.kubernetes.io/name: ingress-nginx
+
+# Noms des NetworkPolicies par service
+soc_foundations_netpol_thehive_name: "ingress-api-thehive"
+soc_foundations_netpol_cortex_name: "ingress-api-cortex"
+soc_foundations_netpol_misp_name: "ingress-api-misp"
+soc_foundations_netpol_wazuh_name: "ingress-api-wazuh"
+
+# Namespaces autorisés à accéder à chaque service via trafic intra-cluster pod-à-pod.
+# Cilium ignore ipBlock pour les flux inter-pods : namespaceSelector est obligatoire.
+soc_foundations_netpol_thehive_allow_from_namespaces:
+  - "{{ soc_namespaces.wazuh }}"    # Script d'intégration Wazuh → TheHive
+  - "{{ soc_namespaces.thehive }}"  # Automation worker CronJob (ns thehive) → TheHive API
+  - "{{ shuffle_namespace | default('soc-shuffle') }}"  # Shuffle workflow engine → TheHive API
+soc_foundations_netpol_cortex_allow_from_namespaces:
+  - "{{ soc_namespaces.thehive }}"  # TheHive → API connecteur Cortex (/v1/connector/cortex/analyzer)
+  - "{{ shuffle_namespace | default('soc-shuffle') }}"  # Shuffle workflow engine → Cortex API
+soc_foundations_netpol_misp_allow_from_namespaces:
+  - "{{ soc_namespaces.cortex }}"   # Analyzers Cortex → push IOC MISP
+  - "{{ soc_namespaces.thehive }}"  # Worker CronJob (ns thehive) → push IOC MISP
+  - "{{ shuffle_namespace | default('soc-shuffle') }}"  # Shuffle workflow engine → MISP API
+soc_foundations_netpol_wazuh_allow_from_namespaces:
+  - "{{ shuffle_namespace | default('soc-shuffle') }}"  # Shuffle workflow engine → Wazuh API
+
+# Ports API par service (issus de soc_ports dans group_vars)
+soc_foundations_netpol_thehive_port: "{{ soc_ports.thehive }}"
+soc_foundations_netpol_cortex_port: "{{ soc_ports.cortex }}"
+soc_foundations_netpol_misp_port: "{{ soc_ports.misp }}"
+soc_foundations_netpol_wazuh_port: 55000
+
+# Pod selectors par service (adapter si les labels changent avec la version de chart)
+soc_foundations_netpol_thehive_pod_selector:
+  matchLabels:
+    app.kubernetes.io/name: thehive
+
+soc_foundations_netpol_cortex_pod_selector:
+  matchLabels:
+    app.kubernetes.io/name: cortex
+
+soc_foundations_netpol_misp_pod_selector:
+  matchLabels:
+    app: misp
+
+soc_foundations_netpol_wazuh_pod_selector:
+  matchLabels:
+    app.kubernetes.io/component: wazuh-manager
+
+# ============================================================
+# Integration placeholders (stubs ConfigMaps)
+# ============================================================
+soc_foundations_stubs:
+  - name: "soc-webhook-stub"
+    namespace: "{{ soc_namespaces.thehive }}"
+    description: "Placeholder for future inbound webhook connector to TheHive"
+    connector_type: "webhook"
+    target_service: "thehive"
+  - name: "soc-cortex-connector-stub"
+    namespace: "{{ soc_namespaces.cortex }}"
+    description: "Placeholder for future Cortex external connector configuration"
+    connector_type: "analyzer-config"
+    target_service: "cortex"
+  - name: "soc-misp-feed-stub"
+    namespace: "{{ soc_namespaces.misp }}"
+    description: "Placeholder for future MISP feed synchronization configuration"
+    connector_type: "feed-sync"
+    target_service: "misp"
+  - name: "soc-siem-connector-stub"
+    namespace: "{{ soc_namespaces.wazuh }}"
+    description: "Placeholder for future Wazuh SIEM external integration"
+    connector_type: "siem-integration"
+    target_service: "wazuh"

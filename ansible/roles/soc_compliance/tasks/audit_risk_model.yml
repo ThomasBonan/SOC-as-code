@@ -1,0 +1,360 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# audit_risk_model.yml — Audit risk scoring model and decision thresholds
+# tag: audit
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Checks (in order):
+#   1. soc-risk-policy ConfigMap present and parseable
+#   2. Deployed decision thresholds match group_vars soc_risk_thresholds
+#   3. Deployed scoring weights match group_vars soc_risk_weights
+#   4. soc-asset-criticality ConfigMap present and parseable
+#   5. Deployed asset weights match group_vars soc_risk_asset_weights
+#   6. Cross-schema drift: 180 thresholds vs 190 thresholds (field names differ)
+#
+# All tasks are read-only (changed_when: false).
+# This extends 190's drift_guard with broader scope (+ weights + asset model).
+# Findings accumulate in _risk_findings[] and are exposed via _comp_risk_result.
+
+# ── Initialize audit state ────────────────────────────────────────
+
+- name: "audit_risk_model | Initialize risk model audit state"
+  ansible.builtin.set_fact:
+    _risk_findings:       []
+    _risk_status:         "ok"
+    _rmod_threshold_drift: false
+    _rmod_weight_drift:    false
+    _rmod_asset_drift:     false
+    _rmod_cross_drift:     false
+  changed_when: false
+
+# ── Read soc-risk-policy ConfigMap (190) ─────────────────────────
+
+- name: "audit_risk_model | Read soc-risk-policy ConfigMap"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_cm_190_risk_policy }}"
+  register: _rmod_policy_cm
+  changed_when: false
+
+- name: "audit_risk_model | DRIFT — soc-risk-policy ConfigMap missing"
+  ansible.builtin.set_fact:
+    _risk_status: "drift"
+    _risk_findings: >-
+      {{ _risk_findings + [
+        {
+          'type': 'missing_configmap',
+          'component': 'risk_policy_190',
+          'severity': 'critical',
+          'resource': soc_compliance_cm_190_risk_policy,
+          'namespace': soc_namespaces.thehive,
+          'message': 'soc-risk-policy ConfigMap missing — 190 risk engine model not deployed'
+        }
+      ] }}
+  when: _rmod_policy_cm.resources | length == 0
+  changed_when: false
+
+- name: "audit_risk_model | Parse deployed risk policy JSON"
+  ansible.builtin.set_fact:
+    _rmod_deployed_policy: >-
+      {{
+        (_rmod_policy_cm.resources[0].data['risk-policy.json'] | from_json)
+        if (
+          _rmod_policy_cm.resources | length > 0
+          and 'risk-policy.json' in (_rmod_policy_cm.resources[0].data | default({}))
+        )
+        else {}
+      }}
+  changed_when: false
+
+# ── Compare deployed thresholds vs group_vars ─────────────────────
+
+- name: "audit_risk_model | Compute threshold drift (deployed vs group_vars)"
+  ansible.builtin.set_fact:
+    _rmod_threshold_diffs: >-
+      {{
+        [
+          {
+            'field':    'auto_close',
+            'deployed': (_rmod_deployed_policy.thresholds | default({})).auto_close   | default('N/A'),
+            'declared': soc_risk_thresholds.auto_close,
+            'match': ((_rmod_deployed_policy.thresholds | default({})).auto_close | default('') | string)
+                     == (soc_risk_thresholds.auto_close | string)
+          },
+          {
+            'field':    'auto_promote',
+            'deployed': (_rmod_deployed_policy.thresholds | default({})).auto_promote | default('N/A'),
+            'declared': soc_risk_thresholds.auto_promote,
+            'match': ((_rmod_deployed_policy.thresholds | default({})).auto_promote | default('') | string)
+                     == (soc_risk_thresholds.auto_promote | string)
+          },
+          {
+            'field':    'auto_contain',
+            'deployed': (_rmod_deployed_policy.thresholds | default({})).auto_contain | default('N/A'),
+            'declared': soc_risk_thresholds.auto_contain,
+            'match': ((_rmod_deployed_policy.thresholds | default({})).auto_contain | default('') | string)
+                     == (soc_risk_thresholds.auto_contain | string)
+          },
+          {
+            'field':    'escalate',
+            'deployed': (_rmod_deployed_policy.thresholds | default({})).escalate     | default('N/A'),
+            'declared': soc_risk_thresholds.escalate,
+            'match': ((_rmod_deployed_policy.thresholds | default({})).escalate | default('') | string)
+                     == (soc_risk_thresholds.escalate | string)
+          }
+        ]
+      }}
+    _rmod_threshold_drift: >-
+      {{
+        ((_rmod_deployed_policy.thresholds | default({})).auto_close   | default('') | string) != (soc_risk_thresholds.auto_close   | string)
+        or ((_rmod_deployed_policy.thresholds | default({})).auto_promote | default('') | string) != (soc_risk_thresholds.auto_promote | string)
+        or ((_rmod_deployed_policy.thresholds | default({})).auto_contain | default('') | string) != (soc_risk_thresholds.auto_contain | string)
+        or ((_rmod_deployed_policy.thresholds | default({})).escalate     | default('') | string) != (soc_risk_thresholds.escalate     | string)
+      }}
+  when: _rmod_policy_cm.resources | length > 0
+  changed_when: false
+
+- name: "audit_risk_model | DRIFT — deployed thresholds diverge from group_vars"
+  ansible.builtin.debug:
+    msg:
+      - "=== RISK MODEL DRIFT: Decision threshold mismatch ==="
+      - "  Field '{{ item.field }}': deployed={{ item.deployed }} | declared={{ item.declared }}"
+  loop: "{{ _rmod_threshold_diffs | default([]) }}"
+  when:
+    - _rmod_policy_cm.resources | length > 0
+    - _rmod_threshold_drift | bool
+    - not item.match
+  changed_when: false
+
+- name: "audit_risk_model | Update status — threshold drift"
+  ansible.builtin.set_fact:
+    _risk_status: "drift"
+    _risk_findings: >-
+      {{ _risk_findings + [
+        {
+          'type': 'threshold_drift',
+          'component': 'risk_policy_thresholds',
+          'severity': 'high',
+          'diffs': _rmod_threshold_diffs | selectattr('match', 'equalto', false) | list,
+          'message': 'Deployed risk thresholds diverge from group_vars soc_risk_thresholds — re-run 190'
+        }
+      ] }}
+  when:
+    - _rmod_policy_cm.resources | length > 0
+    - _rmod_threshold_drift | bool
+  changed_when: false
+
+# ── Compare deployed weights vs group_vars ────────────────────────
+
+- name: "audit_risk_model | Compute weight drift (deployed vs group_vars)"
+  ansible.builtin.set_fact:
+    _rmod_weight_diffs: >-
+      {{
+        [
+          {
+            'dim':      'wazuh',
+            'deployed': (_rmod_deployed_policy.weights | default({})).wazuh     | default('N/A'),
+            'declared': soc_risk_weights.wazuh,
+            'match': ((_rmod_deployed_policy.weights | default({})).wazuh | default('') | string) == (soc_risk_weights.wazuh | string)
+          },
+          {
+            'dim':      'cortex',
+            'deployed': (_rmod_deployed_policy.weights | default({})).cortex    | default('N/A'),
+            'declared': soc_risk_weights.cortex,
+            'match': ((_rmod_deployed_policy.weights | default({})).cortex | default('') | string) == (soc_risk_weights.cortex | string)
+          },
+          {
+            'dim':      'misp',
+            'deployed': (_rmod_deployed_policy.weights | default({})).misp      | default('N/A'),
+            'declared': soc_risk_weights.misp,
+            'match': ((_rmod_deployed_policy.weights | default({})).misp | default('') | string) == (soc_risk_weights.misp | string)
+          },
+          {
+            'dim':      'asset',
+            'deployed': (_rmod_deployed_policy.weights | default({})).asset     | default('N/A'),
+            'declared': soc_risk_weights.asset,
+            'match': ((_rmod_deployed_policy.weights | default({})).asset | default('') | string) == (soc_risk_weights.asset | string)
+          },
+          {
+            'dim':      'frequency',
+            'deployed': (_rmod_deployed_policy.weights | default({})).frequency | default('N/A'),
+            'declared': soc_risk_weights.frequency,
+            'match': ((_rmod_deployed_policy.weights | default({})).frequency | default('') | string) == (soc_risk_weights.frequency | string)
+          }
+        ]
+      }}
+    _rmod_weight_drift: >-
+      {{
+        ((_rmod_deployed_policy.weights | default({})).wazuh     | default('') | string) != (soc_risk_weights.wazuh     | string)
+        or ((_rmod_deployed_policy.weights | default({})).cortex    | default('') | string) != (soc_risk_weights.cortex    | string)
+        or ((_rmod_deployed_policy.weights | default({})).misp      | default('') | string) != (soc_risk_weights.misp      | string)
+        or ((_rmod_deployed_policy.weights | default({})).asset     | default('') | string) != (soc_risk_weights.asset     | string)
+        or ((_rmod_deployed_policy.weights | default({})).frequency | default('') | string) != (soc_risk_weights.frequency | string)
+      }}
+  when: _rmod_policy_cm.resources | length > 0
+  changed_when: false
+
+- name: "audit_risk_model | DRIFT — deployed scoring weights diverge from group_vars"
+  ansible.builtin.debug:
+    msg:
+      - "=== RISK MODEL DRIFT: Scoring weight mismatch ==="
+      - "  Dimension '{{ item.dim }}': deployed={{ item.deployed }} | declared={{ item.declared }}"
+  loop: "{{ _rmod_weight_diffs | default([]) }}"
+  when:
+    - _rmod_policy_cm.resources | length > 0
+    - _rmod_weight_drift | bool
+    - not item.match
+  changed_when: false
+
+- name: "audit_risk_model | Update status — weight drift"
+  ansible.builtin.set_fact:
+    _risk_status: "{{ 'drift' if _risk_status == 'ok' else _risk_status }}"
+    _risk_findings: >-
+      {{ _risk_findings + [
+        {
+          'type': 'weight_drift',
+          'component': 'risk_policy_weights',
+          'severity': 'medium',
+          'diffs': _rmod_weight_diffs | selectattr('match', 'equalto', false) | list,
+          'message': 'Deployed scoring weights diverge from group_vars soc_risk_weights — re-run 190'
+        }
+      ] }}
+  when:
+    - _rmod_policy_cm.resources | length > 0
+    - _rmod_weight_drift | bool
+  changed_when: false
+
+# ── Read soc-asset-criticality ConfigMap (190) ────────────────────
+
+- name: "audit_risk_model | Read soc-asset-criticality ConfigMap"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_compliance_cm_190_asset_criticality }}"
+  register: _rmod_asset_cm
+  changed_when: false
+
+- name: "audit_risk_model | DRIFT — soc-asset-criticality ConfigMap missing"
+  ansible.builtin.set_fact:
+    _risk_status: "drift"
+    _risk_findings: >-
+      {{ _risk_findings + [
+        {
+          'type': 'missing_configmap',
+          'component': 'asset_criticality_190',
+          'severity': 'high',
+          'resource': soc_compliance_cm_190_asset_criticality,
+          'namespace': soc_namespaces.thehive,
+          'message': 'soc-asset-criticality ConfigMap missing — asset scoring dimension inactive'
+        }
+      ] }}
+  when: _rmod_asset_cm.resources | length == 0
+  changed_when: false
+
+- name: "audit_risk_model | Parse deployed asset criticality JSON"
+  ansible.builtin.set_fact:
+    _rmod_deployed_assets: >-
+      {{
+        (_rmod_asset_cm.resources[0].data['asset-criticality.json'] | from_json)
+        if (
+          _rmod_asset_cm.resources | length > 0
+          and 'asset-criticality.json' in (_rmod_asset_cm.resources[0].data | default({}))
+        )
+        else {}
+      }}
+  changed_when: false
+
+- name: "audit_risk_model | Compute asset weight drift (deployed vs group_vars)"
+  ansible.builtin.set_fact:
+    _rmod_asset_drift: >-
+      {{
+        ((_rmod_deployed_assets.weights | default({})) | to_json)
+        != (soc_risk_asset_weights | to_json)
+      }}
+  when: _rmod_asset_cm.resources | length > 0
+  changed_when: false
+
+- name: "audit_risk_model | DRIFT — deployed asset criticality diverges from group_vars"
+  ansible.builtin.debug:
+    msg:
+      - "=== RISK MODEL DRIFT: Asset criticality mismatch ==="
+      - "  Deployed: {{ _rmod_deployed_assets.weights | default({}) }}"
+      - "  Declared: {{ soc_risk_asset_weights }}"
+  when:
+    - _rmod_asset_cm.resources | length > 0
+    - _rmod_asset_drift | bool
+  changed_when: false
+
+- name: "audit_risk_model | Update status — asset drift"
+  ansible.builtin.set_fact:
+    _risk_status: "{{ 'drift' if _risk_status == 'ok' else _risk_status }}"
+    _risk_findings: >-
+      {{ _risk_findings + [
+        {
+          'type': 'asset_weight_drift',
+          'component': 'asset_criticality',
+          'severity': 'medium',
+          'deployed': _rmod_deployed_assets.weights | default({}),
+          'declared': soc_risk_asset_weights,
+          'message': 'Deployed asset criticality weights diverge from group_vars soc_risk_asset_weights — re-run 190'
+        }
+      ] }}
+  when:
+    - _rmod_asset_cm.resources | length > 0
+    - _rmod_asset_drift | bool
+  changed_when: false
+
+# ── Architecture note: 180 threshold comparison removed ──────────
+# The old 180 CronJob worker (soc-automation-worker-script ConfigMap) no longer
+# exists — replaced by Shuffle SOAR (event-driven) + risk-engine Flask service.
+# The 3-dim intermediate score from 180 is eliminated: only the 5-dim 190 model
+# remains. Cross-schema drift cannot occur — the single scoring authority is 190.
+# 190's own drift_guard already validates deployed soc-risk-policy vs group_vars.
+
+- name: "audit_risk_model | INFO — single scoring model (no cross-schema comparison)"
+  ansible.builtin.set_fact:
+    _rmod_cross_drift: false
+  changed_when: false
+
+- name: "audit_risk_model | INFO — risk model architecture (Shuffle + 190 Flask service)"
+  ansible.builtin.debug:
+    msg:
+      - "INFO: Cross-schema drift check removed — 180 CronJob worker eliminated."
+      - "Single scoring authority: 190 risk-engine Flask service (POST /score)."
+      - "190's drift_guard validates soc-risk-policy thresholds vs group_vars."
+      - "190 deployed thresholds: auto_close={{ (_rmod_deployed_policy.thresholds | default({})).auto_close | default('N/A') }}  auto_promote={{ (_rmod_deployed_policy.thresholds | default({})).auto_promote | default('N/A') }}  auto_contain={{ (_rmod_deployed_policy.thresholds | default({})).auto_contain | default('N/A') }}  escalate={{ (_rmod_deployed_policy.thresholds | default({})).escalate | default('N/A') }}"
+  when: _rmod_policy_cm.resources | length > 0
+  changed_when: false
+
+# ── Summary ───────────────────────────────────────────────────────
+
+- name: "audit_risk_model | Risk model audit summary"
+  ansible.builtin.debug:
+    msg:
+      - "=== Risk Model Audit Summary ==="
+      - "Status             : {{ _risk_status | upper }}"
+      - "soc-risk-policy CM : {{ 'OK' if _rmod_policy_cm.resources | length > 0 else 'MISSING' }}"
+      - "Threshold drift    : {{ 'YES' if (_rmod_threshold_drift | bool) else 'NO' }}"
+      - "Weight drift       : {{ 'YES' if (_rmod_weight_drift | bool) else 'NO' }}"
+      - "Asset drift        : {{ 'YES' if (_rmod_asset_drift | bool) else 'NO' }}"
+      - "180/190 schema     : INFO (by-design difference, see informational task above)"
+      - "Total findings     : {{ _risk_findings | length }}"
+  changed_when: false
+
+# ── Expose results for report.yml ────────────────────────────────
+
+- name: "audit_risk_model | Expose results for report"
+  ansible.builtin.set_fact:
+    _comp_risk_result:
+      status:               "{{ _risk_status }}"
+      risk_policy_cm:       "{{ 'present' if _rmod_policy_cm.resources | length > 0 else 'missing' }}"
+      asset_criticality_cm: "{{ 'present' if _rmod_asset_cm.resources  | length > 0 else 'missing' }}"
+      threshold_drift:      "{{ _rmod_threshold_drift | bool }}"
+      weight_drift:         "{{ _rmod_weight_drift    | bool }}"
+      asset_drift:          "{{ _rmod_asset_drift     | bool }}"
+      cross_schema_drift:   "{{ _rmod_cross_drift     | bool }}"
+      findings:             "{{ _risk_findings }}"
+  changed_when: false

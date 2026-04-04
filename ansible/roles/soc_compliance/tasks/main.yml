@@ -1,0 +1,54 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_compliance — Task orchestrator
+# Uses import_tasks (static) so tags on this file propagate to sub-tasks.
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "soc_compliance | Preflight — verify 170/180/190 chain and probe all SOC APIs"
+  import_tasks: preflight.yml
+  when: soc_compliance_enable_preflight | bool
+  tags:
+    - bootstrap
+    - soc_compliance
+
+- name: "soc_compliance | Audit RBAC — service accounts, role bindings, privilege escalation"
+  import_tasks: audit_rbac.yml
+  when: soc_compliance_enable_audit_rbac | bool
+  tags:
+    - audit
+    - soc_compliance
+
+- name: "soc_compliance | Audit integrations — webhooks, CronJobs, analyzer policies"
+  import_tasks: audit_integrations.yml
+  when: soc_compliance_enable_audit_integrations | bool
+  tags:
+    - audit
+    - soc_compliance
+
+- name: "soc_compliance | Audit risk model — scoring weights and decision thresholds"
+  import_tasks: audit_risk_model.yml
+  when: soc_compliance_enable_audit_risk_model | bool
+  tags:
+    - audit
+    - soc_compliance
+
+- name: "soc_compliance | Audit network — NetworkPolicy presence and CIDR conformance"
+  import_tasks: audit_network.yml
+  when: soc_compliance_enable_audit_network | bool
+  tags:
+    - audit
+    - soc_compliance
+
+- name: "soc_compliance | Audit secrets — K8s secret existence and key completeness"
+  import_tasks: audit_secrets.yml
+  when: soc_compliance_enable_audit_secrets | bool
+  tags:
+    - audit
+    - soc_compliance
+
+- name: "soc_compliance | Report — generate structured compliance report"
+  import_tasks: report.yml
+  when: soc_compliance_enable_report | bool
+  tags:
+    - report
+    - soc_compliance

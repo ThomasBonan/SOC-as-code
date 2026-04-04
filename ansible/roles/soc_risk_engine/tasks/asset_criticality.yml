@@ -1,0 +1,146 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# asset_criticality.yml — Deploy asset weight model
+# tag: model
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Introduces the concept of asset criticality into the SOC risk model.
+#
+# What this task does:
+#   1. Creates the 'asset_criticality' custom field in TheHive (idempotent via 400/409)
+#   2. Deploys the soc-asset-criticality ConfigMap with the weight mapping JSON
+#   3. Creates an idempotence marker ConfigMap
+#
+# Asset criticality is set on TheHive cases via tags: asset:<type>
+# (e.g. asset:server-prod). The risk engine worker reads the asset: tag,
+# looks up its weight in the ConfigMap, and uses it as dimension 4 in scoring.
+#
+# Idempotence: marker ConfigMap soc_risk_engine_marker_asset
+
+# ── Create TheHive custom field (always runs — naturally idempotent) ──────────
+# Runs on every execution outside the marker block.
+# 400/409 = already exists (not an error).
+# Uses bootstrap admin credentials — the analyst SA profile lacks org-admin rights.
+
+- name: "asset_criticality | Ensure asset_criticality custom field exists in TheHive"
+  ansible.builtin.uri:
+    url:              "{{ soc_risk_engine_thehive_api_base }}/v1/customField"
+    method:           POST
+    url_username:     "{{ soc_risk_engine_thehive_bootstrap_user }}"
+    url_password:     "{{ soc_risk_engine_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    body_format:      json
+    body:
+      name:        "asset_criticality"
+      displayName: "Asset Criticality"
+      type:        "integer"
+      description: "Asset criticality weight (1-5). Set by soc_risk_engine based on asset: tag. 1=lab, 2=workstation, 3=server-internal, 5=server-prod."
+      group:       "Risk Engine"
+      mandatory:   false
+    status_code:    [200, 201, 400, 409]
+    timeout:        "{{ soc_risk_engine_http_timeout }}"
+    validate_certs: "{{ soc_risk_engine_validate_certs }}"
+  register: _ac_cf_asset
+  no_log:       true
+  changed_when: _ac_cf_asset.status in [200, 201]
+
+- name: "asset_criticality | Log asset_criticality field status"
+  ansible.builtin.debug:
+    msg: >-
+      asset_criticality custom field:
+      {% if _ac_cf_asset.status in [200, 201] %}
+      Created ({{ _ac_cf_asset.status }}) via admin credentials.
+      {% elif _ac_cf_asset.status in [400, 409] %}
+      Already exists ({{ _ac_cf_asset.status }}) — OK.
+      {% else %}
+      Unexpected status {{ _ac_cf_asset.status | default('no response') }}.
+      {% endif %}
+  changed_when: false
+
+# ── Check idempotence marker ──────────────────────────────────────
+
+- name: "asset_criticality | Check idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_risk_engine_service_namespace }}"
+    name: "{{ soc_risk_engine_marker_asset }}"
+  register: _ac_marker
+  changed_when: false
+
+- name: "asset_criticality | Already deployed — skip"
+  ansible.builtin.debug:
+    msg: "Asset criticality model already deployed (marker exists) — skipping."
+  when: _ac_marker.resources | length > 0
+  changed_when: false
+
+# ── Deploy asset criticality model block ──────────────────────────
+
+- name: "asset_criticality | Deploy asset weight model"
+  when: _ac_marker.resources | length == 0
+  block:
+
+    - name: "asset_criticality | Deploy soc-asset-criticality ConfigMap"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_risk_engine_asset_configmap }}"
+            namespace: "{{ soc_risk_engine_service_namespace }}"
+            labels: "{{ soc_risk_engine_labels }}"
+            annotations:
+              soc.lab/description: >-
+                Asset criticality weights for 190-soc-risk-engine.
+                Maps asset:<type> tags on TheHive cases to integer weights (1-5).
+              soc.lab/managed-by: "190-soc-risk-engine"
+          data:
+            asset-criticality.json: |
+              {
+                "version": "1.0",
+                "description": "Asset criticality weight mapping (1=lowest, 5=highest). Applied as dimension 4 in risk_score_v2 computation.",
+                "weights": {
+                  "server-prod":     {{ soc_risk_asset_weights['server-prod']     | default(5) }},
+                  "server-internal": {{ soc_risk_asset_weights['server-internal'] | default(3) }},
+                  "workstation":     {{ soc_risk_asset_weights.workstation         | default(2) }},
+                  "lab":             {{ soc_risk_asset_weights.lab                 | default(1) }},
+                  "default":         {{ soc_risk_asset_weights.default             | default(1) }}
+                },
+                "environment": "{{ soc_environment | default('dev') }}",
+                "deployed_at": "{{ now(utc=True).isoformat() }}"
+              }
+
+    - name: "asset_criticality | Create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_risk_engine_marker_asset }}"
+            namespace: "{{ soc_risk_engine_service_namespace }}"
+            labels: "{{ soc_risk_engine_labels }}"
+            annotations:
+              soc.lab/automation-state: active
+              soc.lab/feature:          "asset_criticality"
+              soc.lab/deployed-at:      "{{ now(utc=True).isoformat() }}"
+          data:
+            feature:              "asset_criticality"
+            status:               "active"
+            asset_configmap:      "{{ soc_risk_engine_asset_configmap }}"
+            asset_types:          "server-prod,server-internal,workstation,lab,default"
+            environment:          "{{ soc_environment | default('dev') }}"
+
+    - name: "asset_criticality | Deployment report"
+      ansible.builtin.debug:
+        msg:
+          - "=== Asset Criticality Model Deployed ==="
+          - "ConfigMap  : {{ soc_risk_engine_asset_configmap }}"
+          - "Namespace  : {{ soc_risk_engine_service_namespace }}"
+          - "Weights    : server-prod={{ soc_risk_asset_weights['server-prod'] | default(5) }}, server-internal={{ soc_risk_asset_weights['server-internal'] | default(3) }}, workstation={{ soc_risk_asset_weights.workstation | default(2) }}, lab={{ soc_risk_asset_weights.lab | default(1) }}"
+          - "Custom field: asset_criticality (integer, group: Risk Engine)"
+          - "Usage      : Tag cases with asset:<type> (e.g. asset:server-prod)"
+      changed_when: false

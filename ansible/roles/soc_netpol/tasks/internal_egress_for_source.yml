@@ -1,0 +1,17 @@
+---
+- name: Allow egress to internal dependencies
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-egress.yml.j2
+  loop: "{{ internal_dests }}"
+  loop_control:
+    loop_var: dep
+    index_var: dep_idx
+  vars:
+    netpol_namespace: "{{ internal_namespace }}"
+    netpol_name: "{{ internal_policy_prefix }}-{{ internal_source_idx }}-{{ dep.name | default(dep_idx) }}"
+    netpol_pod_selector: "{{ internal_source_selector }}"
+    netpol_dest_namespace: "{{ internal_namespace }}"
+    netpol_dest_pod_selectors: "{{ dep.pod_selectors }}"
+    netpol_ports: "{{ dep.ports }}"

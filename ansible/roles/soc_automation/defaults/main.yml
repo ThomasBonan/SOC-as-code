@@ -1,0 +1,147 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_automation role — defaults
+# Playbook 180 | SOC Automation Core
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# These defaults are designed to work out-of-the-box for a dev environment.
+# Override per-environment in:
+#   ansible/playbooks/envs/prod.yml  (SOC_ENV=prod)
+#   ansible/playbooks/envs/staging.yml
+#
+# Conventions:
+#   - All variables prefixed soc_automation_
+#   - Feature toggles: soc_automation_enable_<feature>
+#   - SA secret refs mirror soc_foundations defaults (read-only, never overwrite)
+
+# ── Feature toggles ───────────────────────────────────────────────
+soc_automation_enable_preflight:      true   # Vérification des SA credentials depuis 170
+soc_automation_enable_credentials:    true   # Créer le Secret agrégé soc-automation-worker-creds
+soc_automation_enable_cortex_to_misp: true   # Stocker la politique MISP push (lue par Shuffle)
+soc_automation_enable_wazuh_webhook:  true   # Injecter le bloc integration Shuffle dans ossec.conf
+
+# ── Runtime settings ──────────────────────────────────────────────
+soc_automation_kubeconfig_path: "{{ kubeconfig_path }}"
+soc_automation_http_timeout:    "{{ soc_http.timeout | default(10) }}"
+soc_automation_http_retries:    "{{ soc_http.retries | default(20) }}"
+soc_automation_http_delay:      "{{ soc_http.delay   | default(3)  }}"
+soc_automation_validate_certs:  false
+# Preflight probes use a short retry count — services must already be running
+soc_automation_preflight_retries: 3
+soc_automation_preflight_delay:   5
+
+# ── SA Secrets (created by 170-soc-foundations — DO NOT MODIFY) ──
+# These are read-only references. Never write to these secrets here.
+soc_automation_thehive_sa_secret_name: "thehive-sa-foundations"
+soc_automation_thehive_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
+soc_automation_thehive_sa_key:         "api_key"
+
+# Write SA for automation worker and Shuffle SOAR (ENV_THEHIVE_APIKEY).
+# svc-selftest is locked by the TheHive free-tier license (users.normal 0/0 quota).
+# svc-foundations (analyst profile, all workflow permissions added by rbac_thehive.yml)
+# handles both write and read operations. Belongs to the same org as the read SA.
+soc_automation_thehive_write_sa_secret_name: "thehive-sa-foundations"
+soc_automation_thehive_write_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
+soc_automation_thehive_write_sa_key:         "api_key"
+
+soc_automation_cortex_sa_secret_name:  "cortex-sa-foundations"
+soc_automation_cortex_sa_secret_ns:    "{{ soc_namespaces.cortex }}"
+soc_automation_cortex_sa_key:          "api_key"
+
+soc_automation_misp_sa_secret_name:    "misp-sa-foundations"
+soc_automation_misp_sa_secret_ns:      "{{ soc_namespaces.misp }}"
+soc_automation_misp_sa_key:            "authkey"
+
+soc_automation_wazuh_sa_secret_name:   "wazuh-sa-foundations"
+soc_automation_wazuh_sa_secret_ns:     "{{ soc_namespaces.wazuh }}"
+soc_automation_wazuh_sa_key_user:      "username"
+soc_automation_wazuh_sa_key_pass:      "password"
+
+# ── TheHive bootstrap credentials (for org-admin operations) ─────
+# Required to create custom fields — the analyst SA profile returns 403 (not org-admin).
+# Reuses the same variables as soc_foundations (170): thehive_bootstrap_user / thehive_bootstrap_password.
+soc_automation_thehive_bootstrap_user:     "{{ thehive_bootstrap_user     | default('admin@thehive.local') }}"
+soc_automation_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+
+# ── API base URLs ─────────────────────────────────────────────────
+soc_automation_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"
+soc_automation_cortex_api_base:  "{{ soc_endpoints.cortex.api_base  }}"
+soc_automation_misp_api_base:    >-
+  {{
+    soc_endpoints.misp.api_base
+    | default('https://misp.' ~ soc_namespaces.misp ~ '.svc:443')
+  }}
+
+# ── Wazuh pod reference ───────────────────────────────────────────
+soc_automation_wazuh_manager_pod: "wazuh-manager-master-0"
+soc_automation_wazuh_ns:          "{{ soc_namespaces.wazuh }}"
+# Script version expected in wazuh-thehive-integration ConfigMap
+soc_automation_wazuh_expected_script_version: "2.0"
+# ConfigMap name (matches soc_config_wazuh_configmap_name)
+soc_automation_wazuh_configmap_name: "wazuh-thehive-integration"
+
+# ── Analyzer auto-run mapping (observable type → Cortex analyzer names) ───────
+# Analyzer names must match exactly what is registered in Cortex
+soc_automation_analyzer_map:
+  ip:
+    - "AbuseIPDB_1_0"
+    - "VirusTotal_GetReport_3_1"
+  hash:
+    - "VirusTotal_GetReport_3_1"
+    - "HybridAnalysis_GetReport_2_0"
+  domain:
+    - "VirusTotal_GetReport_3_1"
+    - "Shodan_Host_2_0"
+  url:
+    - "VirusTotal_GetReport_3_1"
+  fqdn:
+    - "Shodan_Host_2_0"
+# Timeout for Cortex analyzer jobs (seconds)
+soc_automation_analyzer_timeout: 300
+
+# ── MISP IOC push policy ──────────────────────────────────────────
+# Minimum Cortex analyzer score (0-10) to trigger MISP push
+soc_automation_misp_push_min_score: 5
+# Tag required on TheHive observable to allow MISP push
+soc_automation_misp_push_tag: "confirmed"
+# TLP level per environment (1=GREEN, 2=AMBER, 3=RED)
+soc_automation_misp_tlp:
+  dev:     1
+  staging: 2
+  prod:    2
+# Tags automatically added to every MISP attribute created by this automation
+soc_automation_misp_auto_tags:
+  - "source:thehive"
+  - "soc:automated"
+# Mapping of TheHive observable type → MISP attribute type
+soc_automation_misp_ioc_type_map:
+  ip:     "ip-dst"
+  hash:   "md5"
+  domain: "domain"
+  url:    "url"
+  fqdn:   "hostname"
+
+# ── Credentials agrégés pour Shuffle ─────────────────────────────
+# Namespace cible du Secret (même namespace que TheHive pour proximité réseau)
+soc_automation_worker_namespace:    "{{ soc_namespaces.thehive }}"
+# Nom du Secret agrégé lu par Shuffle et le service Risk Engine (190)
+soc_automation_worker_creds_secret: "soc-automation-worker-creds"
+
+# ── Wazuh webhook (integration Shuffle) ──────────────────────────
+# Niveau d'alerte minimum envoyé à Shuffle (3 = tous les medium et plus)
+soc_automation_wazuh_webhook_min_level: 3
+# ConfigMap créé par 165-shuffle.yml contenant l'URL du webhook
+soc_automation_shuffle_webhook_configmap_name: "soc-shuffle-webhook-config"
+soc_automation_shuffle_webhook_configmap_ns:   "{{ soc_namespaces.thehive }}"
+
+# ── K8s resource labels (applied to all resources created by this role) ────────
+soc_automation_labels:
+  app.kubernetes.io/managed-by: soc-automation
+  app.kubernetes.io/component:  soc-automation
+  soc.lab/playbook:             "180-soc-automation"
+  soc.lab/environment:          "{{ soc_environment | default('dev') }}"
+
+# ── Automation marker ConfigMap names (idempotence) ──────────────
+soc_automation_marker_credentials:   "soc-automation-marker-credentials"
+soc_automation_marker_cortex_misp:   "soc-automation-marker-cortex-misp"
+soc_automation_marker_wazuh_webhook: "soc-automation-marker-wazuh-webhook"

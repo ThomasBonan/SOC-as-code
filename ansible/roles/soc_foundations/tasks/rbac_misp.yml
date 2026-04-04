@@ -1,0 +1,445 @@
+---
+# soc_foundations/tasks/rbac_misp.yml
+# Crée un compte de service MISP avec le rôle Sync User (role_id=3).
+#
+# Idempotence : si le K8s Secret misp-sa-foundations existe déjà, skip.
+#
+# Pattern authkey admin : identique à soc_config/tasks/cortex_to_misp.yml
+#   - Lire admin_email depuis misp-app-secret
+#   - Lire password MariaDB depuis misp-mariadb-auth
+#   - kubectl exec vers le pod MariaDB pour récupérer l'authkey admin
+#   - Utiliser l'authkey admin pour créer le SA via l'API MISP
+#   - Récupérer l'authkey du SA créé via MariaDB (plus fiable que l'API)
+#   - Stocker dans K8s Secret
+#
+# Note : MISP authentifie avec le header Authorization: {authkey} (sans "Bearer")
+
+- name: MISP RBAC - vérifier si le Secret SA existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.misp }}"
+    name: "{{ soc_foundations_misp_sa_secret_name }}"
+  register: _sf_misp_sa_secret_existing
+  no_log: true
+  changed_when: false
+
+- name: MISP RBAC - résoudre l'API base effective (ingress si .svc non atteignable)
+  ansible.builtin.set_fact:
+    _sf_misp_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_misp_api_base)
+          and (soc_foundations_misp_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_misp_ingress_api_base, soc_foundations_misp_api_base)
+      }}
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+
+# --- Lecture des credentials admin ---
+
+- name: MISP RBAC - lire misp-app-secret (admin_email)
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.misp }}"
+    name: "{{ soc_foundations_misp_admin_secret_name }}"
+  register: _sf_misp_admin_secret
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+  changed_when: false
+
+- name: MISP RBAC - fail si misp-app-secret est absent
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.misp }}/{{ soc_foundations_misp_admin_secret_name }} introuvable.
+      Ce secret est requis pour bootstrapper le compte de service MISP.
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - _sf_misp_admin_secret.resources | length == 0
+
+- name: MISP RBAC - fail si admin_email manquant dans misp-app-secret
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.misp }}/{{ soc_foundations_misp_admin_secret_name }}
+      ne contient pas la clé {{ soc_foundations_misp_admin_email_secret_key }}.
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - _sf_misp_admin_secret.resources | length > 0
+    - soc_foundations_misp_admin_email_secret_key not in (_sf_misp_admin_secret.resources[0].data | default({}))
+
+- name: MISP RBAC - résoudre l'email admin MISP
+  ansible.builtin.set_fact:
+    _sf_misp_admin_email: >-
+      {{
+        _sf_misp_admin_secret.resources[0].data[soc_foundations_misp_admin_email_secret_key]
+        | b64decode
+      }}
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - _sf_misp_admin_secret.resources | length > 0
+    - soc_foundations_misp_admin_email_secret_key in (_sf_misp_admin_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: MISP RBAC - lire misp-mariadb-auth (password DB)
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.misp }}"
+    name: "{{ soc_foundations_misp_db_secret_name }}"
+  register: _sf_misp_db_secret
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+  changed_when: false
+
+- name: MISP RBAC - fail si misp-mariadb-auth est absent
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.misp }}/{{ soc_foundations_misp_db_secret_name }} introuvable.
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - _sf_misp_db_secret.resources | length == 0
+
+- name: MISP RBAC - fail si mariadb-password manquant dans le secret DB
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.misp }}/{{ soc_foundations_misp_db_secret_name }}
+      ne contient pas la clé {{ soc_foundations_misp_db_password_secret_key }}.
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - _sf_misp_db_secret.resources | length > 0
+    - soc_foundations_misp_db_password_secret_key not in (_sf_misp_db_secret.resources[0].data | default({}))
+
+- name: MISP RBAC - résoudre le password MariaDB
+  ansible.builtin.set_fact:
+    _sf_misp_db_password: >-
+      {{
+        _sf_misp_db_secret.resources[0].data[soc_foundations_misp_db_password_secret_key]
+        | b64decode
+      }}
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - _sf_misp_db_secret.resources | length > 0
+    - soc_foundations_misp_db_password_secret_key in (_sf_misp_db_secret.resources[0].data | default({}))
+  no_log: true
+
+# --- Attendre la disponibilité du pod MariaDB ---
+
+- name: MISP RBAC - attendre que le pod MariaDB soit prêt
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_foundations_kubeconfig_path }}
+    -n {{ soc_namespaces.misp }}
+    wait --for=condition=Ready pod/{{ soc_foundations_misp_db_pod_name }} --timeout=5m
+  changed_when: false
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+
+# --- Détecter le client SQL disponible (mariadb ou mysql) ---
+
+- name: MISP RBAC - détecter mariadb CLI dans le pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_foundations_misp_db_pod_name }}"
+      - --
+      - mariadb
+      - --version
+  register: _sf_misp_db_cli_mariadb
+  changed_when: false
+  failed_when: false
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+
+- name: MISP RBAC - détecter mysql CLI dans le pod (fallback)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_foundations_misp_db_pod_name }}"
+      - --
+      - mysql
+      - --version
+  register: _sf_misp_db_cli_mysql
+  changed_when: false
+  failed_when: false
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - (_sf_misp_db_cli_mariadb.rc | default(1)) != 0
+
+- name: MISP RBAC - résoudre le binaire SQL CLI
+  ansible.builtin.set_fact:
+    _sf_misp_db_cli: >-
+      {{
+        'mariadb'
+        if (_sf_misp_db_cli_mariadb.rc | default(1)) == 0
+        else (
+          'mysql'
+          if (_sf_misp_db_cli_mysql.rc | default(1)) == 0
+          else ''
+        )
+      }}
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+
+- name: MISP RBAC - fail si aucun client SQL disponible dans le pod
+  ansible.builtin.fail:
+    msg: >-
+      Aucun client SQL (mariadb ou mysql) détecté dans
+      {{ soc_namespaces.misp }}/{{ soc_foundations_misp_db_pod_name }}.
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - (_sf_misp_db_cli | default('') | length) == 0
+
+# --- Récupérer l'authkey admin depuis la base de données ---
+
+- name: MISP RBAC - récupérer l'authkey admin depuis MariaDB (par email)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_foundations_misp_db_pod_name }}"
+      - --
+      - "{{ _sf_misp_db_cli }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_foundations_misp_db_user }}"
+      - "-p{{ _sf_misp_db_password }}"
+      - "{{ soc_foundations_misp_db_name }}"
+      - -e
+      - "SELECT authkey FROM users WHERE email='{{ _sf_misp_admin_email }}' ORDER BY id ASC LIMIT 1;"
+  register: _sf_misp_admin_authkey_query
+  changed_when: false
+  failed_when: false
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: MISP RBAC - récupérer l'authkey admin depuis MariaDB (fallback par role_id=1)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_foundations_misp_db_pod_name }}"
+      - --
+      - "{{ _sf_misp_db_cli }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_foundations_misp_db_user }}"
+      - "-p{{ _sf_misp_db_password }}"
+      - "{{ soc_foundations_misp_db_name }}"
+      - -e
+      - "SELECT authkey FROM users WHERE role_id = 1 ORDER BY id ASC LIMIT 1;"
+  register: _sf_misp_admin_authkey_fallback
+  changed_when: false
+  failed_when: false
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - (_sf_misp_admin_authkey_query.stdout | default('') | trim | length) == 0
+  no_log: true
+
+- name: MISP RBAC - résoudre l'authkey admin
+  ansible.builtin.set_fact:
+    _sf_misp_admin_authkey: >-
+      {{
+        (
+          (_sf_misp_admin_authkey_query.stdout | default('') | trim)
+          if (_sf_misp_admin_authkey_query.stdout | default('') | trim | length) > 0
+          else (_sf_misp_admin_authkey_fallback.stdout | default('') | trim)
+        )
+      }}
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: MISP RBAC - fail si authkey admin introuvable
+  ansible.builtin.fail:
+    msg: >-
+      Impossible de récupérer l'authkey admin MISP depuis la base de données.
+      Vérifier que MISP est correctement initialisé (table users peuplée).
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - (_sf_misp_admin_authkey | default('') | trim | length) == 0
+
+# --- Vérifier si le compte SA MISP existe déjà ---
+
+- name: MISP RBAC - lister les utilisateurs MISP via API
+  ansible.builtin.uri:
+    url: "{{ _sf_misp_api_base }}admin/users/index"
+    method: GET
+    headers:
+      Authorization: "{{ _sf_misp_admin_authkey }}"
+      Accept: "application/json"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_misp_users_list
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_misp_users_list.status == 200
+  no_log: true
+
+- name: MISP RBAC - détecter si le SA email est déjà enregistré
+  ansible.builtin.set_fact:
+    _sf_misp_sa_user_exists: >-
+      {{
+        (_sf_misp_users_list.json | default([]))
+        | selectattr('User.email', 'defined')
+        | selectattr('User.email', 'equalto', soc_foundations_misp_sa_email)
+        | list
+        | length > 0
+      }}
+    _sf_misp_sa_user_id: >-
+      {{
+        (
+          (_sf_misp_users_list.json | default([]))
+          | selectattr('User.email', 'defined')
+          | selectattr('User.email', 'equalto', soc_foundations_misp_sa_email)
+          | list
+          | map(attribute='User.id')
+          | list
+          | first
+          | default('')
+        )
+      }}
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+
+# --- Créer le compte SA si absent ---
+
+- name: MISP RBAC - créer le compte de service via API MISP
+  ansible.builtin.uri:
+    url: "{{ _sf_misp_api_base }}admin/users/add"
+    method: POST
+    headers:
+      Authorization: "{{ _sf_misp_admin_authkey }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      email: "{{ soc_foundations_misp_sa_email }}"
+      org_id: "{{ soc_foundations_misp_sa_org_id | int }}"
+      role_id: "{{ soc_foundations_misp_sa_role_id | int }}"
+      password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+      change_pw: "0"
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 201
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_misp_sa_create
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - not (_sf_misp_sa_user_exists | bool)
+  no_log: true
+
+- name: MISP RBAC - résoudre l'ID utilisateur SA depuis la réponse de création
+  ansible.builtin.set_fact:
+    _sf_misp_sa_user_id: >-
+      {{
+        _sf_misp_sa_create.json.User.id
+        | default(_sf_misp_sa_create.json.id | default(''))
+      }}
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - not (_sf_misp_sa_user_exists | bool)
+    - _sf_misp_sa_create is defined
+    - _sf_misp_sa_create.status in [200, 201]
+  no_log: true
+
+# --- Récupérer l'authkey du SA depuis MariaDB ---
+
+- name: MISP RBAC - récupérer l'authkey du SA depuis MariaDB
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_foundations_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_foundations_misp_db_pod_name }}"
+      - --
+      - "{{ _sf_misp_db_cli }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_foundations_misp_db_user }}"
+      - "-p{{ _sf_misp_db_password }}"
+      - "{{ soc_foundations_misp_db_name }}"
+      - -e
+      - "SELECT authkey FROM users WHERE email='{{ soc_foundations_misp_sa_email }}' ORDER BY id ASC LIMIT 1;"
+  register: _sf_misp_sa_authkey_query
+  changed_when: false
+  failed_when: false
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: MISP RBAC - résoudre l'authkey SA
+  ansible.builtin.set_fact:
+    _sf_misp_sa_authkey: "{{ _sf_misp_sa_authkey_query.stdout | default('') | trim }}"
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: MISP RBAC - assert que l'authkey SA n'est pas vide
+  ansible.builtin.assert:
+    that:
+      - _sf_misp_sa_authkey | length > 0
+    fail_msg: >-
+      MISP : l'authkey du SA {{ soc_foundations_misp_sa_email }} est vide.
+      Vérifier que la création du compte a réussi.
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+
+- name: MISP RBAC - stocker l'authkey dans un K8s Secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_foundations_misp_sa_secret_name }}"
+        namespace: "{{ soc_namespaces.misp }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-foundations
+          soc.lab/service: misp
+          soc.lab/secret-type: service-account
+        annotations:
+          soc.lab/sa-email: "{{ soc_foundations_misp_sa_email }}"
+          soc.lab/sa-role-id: "{{ soc_foundations_misp_sa_role_id | string }}"
+          soc.lab/environment: "{{ soc_environment | default('dev') }}"
+      type: Opaque
+      stringData: >-
+        {{
+          {
+            soc_foundations_misp_sa_secret_key_email: soc_foundations_misp_sa_email,
+            soc_foundations_misp_sa_secret_key_authkey: _sf_misp_sa_authkey
+          }
+        }}
+  when: _sf_misp_sa_secret_existing.resources | length == 0
+  no_log: true
+
+- name: MISP RBAC - rapport de statut
+  ansible.builtin.debug:
+    msg: >-
+      MISP SA '{{ soc_foundations_misp_sa_email }}'
+      (role_id={{ soc_foundations_misp_sa_role_id }}).
+      Secret : {{ soc_namespaces.misp }}/{{ soc_foundations_misp_sa_secret_name }}.
+      Action : {{ 'ignoré (déjà existant)' if _sf_misp_sa_secret_existing.resources | length > 0 else 'créé' }}.

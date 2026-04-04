@@ -1,0 +1,291 @@
+---
+# ── Wazuh → TheHive integration (v2.0 — Python script) ───────────────────────
+# Deploys an enhanced Python integration script that replaces the legacy shell
+# script (v1.0). The same ConfigMap/Secret/StatefulSet structure is preserved
+# for backwards compatibility. Idempotence is enforced via the
+# soc.lab/script-version annotation on the ConfigMap.
+
+# ── Step 1: Resolve TheHive API key ──────────────────────────────────────────
+- name: "wazuh_to_thehive | Resolve API key from provided variable"
+  ansible.builtin.set_fact:
+    soc_config_wazuh_thehive_api_key_resolved: "{{ soc_config_wazuh_thehive_api_key }}"
+  when: soc_config_wazuh_thehive_api_key | length > 0
+  no_log: true
+
+- name: "wazuh_to_thehive | Resolve API key from TheHive runtime fact"
+  ansible.builtin.set_fact:
+    soc_config_wazuh_thehive_api_key_resolved: "{{ soc_config_thehive_api_key }}"
+  when:
+    - (soc_config_wazuh_thehive_api_key_resolved | default('') | length) == 0
+    - (soc_config_thehive_api_key | default('') | length) > 0
+  no_log: true
+
+- name: "wazuh_to_thehive | Read TheHive auth secret (fallback)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_config_thehive_api_key_secret_name }}"
+  register: _wth_thehive_auth_secret
+  when: (soc_config_wazuh_thehive_api_key_resolved | default('') | length) == 0
+  no_log: true
+
+- name: "wazuh_to_thehive | Resolve API key from TheHive auth secret"
+  ansible.builtin.set_fact:
+    soc_config_wazuh_thehive_api_key_resolved: >-
+      {{
+        _wth_thehive_auth_secret.resources[0].data[soc_config_thehive_api_key_secret_key]
+        | b64decode
+      }}
+  when:
+    - (soc_config_wazuh_thehive_api_key_resolved | default('') | length) == 0
+    - _wth_thehive_auth_secret.resources | default([]) | length > 0
+    - soc_config_thehive_api_key_secret_key in (_wth_thehive_auth_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: "wazuh_to_thehive | Assert API key is available"
+  ansible.builtin.assert:
+    that:
+      - soc_config_wazuh_thehive_alert_endpoint | length > 0
+      - (soc_config_wazuh_thehive_api_key_resolved | default('') | length) > 0
+    fail_msg: >-
+      No TheHive API key resolvable for Wazuh integration.
+      Set soc_config_wazuh_thehive_api_key or ensure thehive-api-auth secret exists.
+
+# ── Step 2: Check current script version in ConfigMap ─────────────────────────
+- name: "wazuh_to_thehive | Read current integration ConfigMap"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_config_wazuh_namespace }}"
+    name: "{{ soc_config_wazuh_configmap_name }}"
+  register: _wth_current_cm
+  changed_when: false
+
+- name: "wazuh_to_thehive | Determine if script upgrade is needed"
+  ansible.builtin.set_fact:
+    _wth_needs_update: >-
+      {{
+        (_wth_current_cm.resources | length == 0)
+        or (
+          (_wth_current_cm.resources[0].metadata.annotations | default({}))
+          .get('soc.lab/script-version', '1.0') is version(soc_config_wazuh_script_version, '<')
+        )
+      }}
+
+- name: "wazuh_to_thehive | Script already at v{{ soc_config_wazuh_script_version }} — skip ConfigMap update"
+  ansible.builtin.debug:
+    msg: >-
+      ConfigMap {{ soc_config_wazuh_configmap_name }} already at
+      v{{ soc_config_wazuh_script_version }} — skipping script update.
+  when: not (_wth_needs_update | bool)
+  changed_when: false
+
+# ── Step 3: Deploy Python script ConfigMap (when upgrade needed) ──────────────
+- name: "wazuh_to_thehive | Deploy Python integration ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ soc_config_wazuh_configmap_name }}"
+        namespace: "{{ soc_config_wazuh_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-config
+          soc.lab/service: wazuh
+          soc.lab/component: thehive-integration
+        annotations:
+          soc.lab/script-version: "{{ soc_config_wazuh_script_version }}"
+          soc.lab/script-type: python
+          soc.lab/playbook: "130-soc-config"
+      data: >-
+        {{
+          {
+            (soc_config_wazuh_script_filename): lookup('template', 'wazuh-integration.py.j2'),
+            (soc_config_wazuh_config_filename): soc_config_wazuh_config_content
+          }
+        }}
+  register: _wth_cm_result
+  when: _wth_needs_update | bool
+
+# ── Step 4: Deploy TheHive API key Secret ─────────────────────────────────────
+- name: "wazuh_to_thehive | Create or update TheHive API key Secret"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_config_wazuh_secret_name }}"
+        namespace: "{{ soc_config_wazuh_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-config
+          soc.lab/service: wazuh
+      type: Opaque
+      stringData:
+        thehive_api_key: "{{ soc_config_wazuh_thehive_api_key_resolved }}"
+  register: _wth_secret_result
+  no_log: true
+
+# ── Step 5: Read Wazuh StatefulSet and compute patch ─────────────────────────
+- name: "wazuh_to_thehive | Read Wazuh manager StatefulSet"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ soc_config_wazuh_namespace }}"
+    name: "{{ soc_config_wazuh_manager_statefulset }}"
+  register: _wth_mgr_sts
+
+- name: "wazuh_to_thehive | Fail if Wazuh StatefulSet not found"
+  ansible.builtin.fail:
+    msg: >-
+      StatefulSet {{ soc_config_wazuh_namespace }}/{{ soc_config_wazuh_manager_statefulset }}
+      not found. Ensure wazuh is deployed.
+  when: _wth_mgr_sts.resources | length == 0
+
+- name: "wazuh_to_thehive | Build StatefulSet patch (volumes / mounts / env)"
+  ansible.builtin.set_fact:
+    _wth_container_name: "{{ _wth_mgr_sts.resources[0].spec.template.spec.containers[0].name }}"
+    # Remove any previously set SOC/THEHIVE vars, then re-add with current values
+    _wth_env_new: >-
+      {{
+        (
+          _wth_mgr_sts.resources[0].spec.template.spec.containers[0].env | default([])
+          | rejectattr('name', 'in', [
+              'THEHIVE_URL', 'THEHIVE_API_KEY_FILE', 'THEHIVE_VERIFY_TLS',
+              'THEHIVE_ALERT_SOURCE', 'THEHIVE_ALERT_TYPE', 'THEHIVE_HTTP_TIMEOUT',
+              'SOC_MIN_SEVERITY', 'SOC_DEDUP_WINDOW', 'SOC_EXTRACT_OBS',
+              'SOC_LOG_LEVEL', 'SOC_VALIDATE_CERTS', 'SOC_HTTP_TIMEOUT',
+              'SOC_HTTP_RETRIES', 'SOC_BACKOFF_BASE', 'SOC_ALERT_TYPES',
+            ])
+          | list
+        )
+        + [
+            {'name': 'THEHIVE_URL',         'value': soc_config_wazuh_thehive_alert_endpoint},
+            {'name': 'THEHIVE_API_KEY_FILE', 'value': soc_config_wazuh_api_key_path},
+            {'name': 'THEHIVE_VERIFY_TLS',  'value': (soc_config_wazuh_thehive_verify_tls | bool | lower)},
+            {'name': 'THEHIVE_ALERT_SOURCE','value': soc_config_wazuh_thehive_alert_source},
+            {'name': 'THEHIVE_ALERT_TYPE',  'value': soc_config_wazuh_thehive_alert_type},
+            {'name': 'THEHIVE_HTTP_TIMEOUT','value': (soc_config_http_timeout | string)},
+            {'name': 'SOC_MIN_SEVERITY',    'value': (soc_config_wazuh_min_severity | string)},
+            {'name': 'SOC_DEDUP_WINDOW',    'value': (soc_config_wazuh_dedup_window_sec | string)},
+            {'name': 'SOC_EXTRACT_OBS',     'value': (soc_config_wazuh_extract_observables | bool | lower)},
+            {'name': 'SOC_LOG_LEVEL',       'value': soc_config_wazuh_log_level},
+            {'name': 'SOC_VALIDATE_CERTS',  'value': (soc_config_wazuh_thehive_verify_tls | bool | lower)},
+            {'name': 'SOC_HTTP_TIMEOUT',    'value': (soc_config_wazuh_http_timeout | string)},
+            {'name': 'SOC_HTTP_RETRIES',    'value': (soc_config_wazuh_http_retries | string)},
+            {'name': 'SOC_BACKOFF_BASE',    'value': (soc_config_wazuh_http_backoff_base | string)},
+            {'name': 'SOC_ALERT_TYPES',     'value': (soc_config_wazuh_alert_types | join(','))},
+          ]
+      }}
+    _wth_mounts_new: >-
+      {{
+        (
+          _wth_mgr_sts.resources[0].spec.template.spec.containers[0].volumeMounts | default([])
+          | rejectattr('mountPath', 'equalto', soc_config_wazuh_script_path)
+          | rejectattr('mountPath', 'equalto', soc_config_wazuh_config_path)
+          | rejectattr('mountPath', 'equalto', soc_config_wazuh_api_key_path)
+          | list
+        )
+        + [
+            {
+              'name':      soc_config_wazuh_configmap_name,
+              'mountPath': soc_config_wazuh_script_path,
+              'subPath':   soc_config_wazuh_script_filename,
+              'readOnly':  true
+            },
+            {
+              'name':      soc_config_wazuh_configmap_name,
+              'mountPath': soc_config_wazuh_config_path,
+              'subPath':   soc_config_wazuh_config_filename,
+              'readOnly':  true
+            },
+            {
+              'name':      soc_config_wazuh_secret_name,
+              'mountPath': soc_config_wazuh_api_key_path,
+              'subPath':   'thehive_api_key',
+              'readOnly':  true
+            }
+          ]
+      }}
+    _wth_volumes_new: >-
+      {{
+        (
+          _wth_mgr_sts.resources[0].spec.template.spec.volumes | default([])
+          | rejectattr('name', 'equalto', soc_config_wazuh_configmap_name)
+          | rejectattr('name', 'equalto', soc_config_wazuh_secret_name)
+          | list
+        )
+        + [
+            {
+              'name': soc_config_wazuh_configmap_name,
+              'configMap': {
+                'name': soc_config_wazuh_configmap_name,
+                'defaultMode': 493
+              }
+            },
+            {
+              'name': soc_config_wazuh_secret_name,
+              'secret': {
+                'secretName': soc_config_wazuh_secret_name,
+                'defaultMode': 256
+              }
+            }
+          ]
+      }}
+
+- name: "wazuh_to_thehive | Patch Wazuh manager StatefulSet"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    namespace: "{{ soc_config_wazuh_namespace }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: "{{ soc_config_wazuh_manager_statefulset }}"
+      spec:
+        template:
+          spec:
+            volumes: "{{ _wth_volumes_new }}"
+            containers:
+              - name: "{{ _wth_container_name }}"
+                env: "{{ _wth_env_new }}"
+                volumeMounts: "{{ _wth_mounts_new }}"
+  register: _wth_sts_patch
+
+# ── Step 6: Rollout restart if anything changed ───────────────────────────────
+- name: "wazuh_to_thehive | Rollout restart Wazuh manager"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_config_wazuh_namespace }}
+    rollout restart statefulset/{{ soc_config_wazuh_manager_statefulset }}
+  when: >-
+    (_wth_cm_result is defined and _wth_cm_result.changed | default(false))
+    or _wth_secret_result.changed | default(false)
+    or _wth_sts_patch.changed | default(false)
+  changed_when: true
+
+- name: "wazuh_to_thehive | Wait for Wazuh manager rollout"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_config_wazuh_namespace }}
+    rollout status statefulset/{{ soc_config_wazuh_manager_statefulset }} --timeout=15m
+  changed_when: false
+
+# ── Step 7: Status report ─────────────────────────────────────────────────────
+- name: "wazuh_to_thehive | Integration status"
+  ansible.builtin.debug:
+    msg:
+      - "Script version : {{ soc_config_wazuh_script_version }} (Python)"
+      - "ConfigMap      : {{ soc_config_wazuh_configmap_name }} (ns: {{ soc_config_wazuh_namespace }})"
+      - "Secret         : {{ soc_config_wazuh_secret_name }}"
+      - "Min severity   : {{ soc_config_wazuh_min_severity }}"
+      - "Dedup window   : {{ soc_config_wazuh_dedup_window_sec }}s"
+      - "Alert types    : {{ soc_config_wazuh_alert_types | join(', ') }}"
+      - "Extract OBS    : {{ soc_config_wazuh_extract_observables }}"
+      - "Upgrade needed : {{ _wth_needs_update }}"

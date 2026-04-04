@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: "{{ stub_name }}"
+  namespace: "{{ stub_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: soc-foundations
+    soc.lab/component: integration-stub
+    soc.lab/target-service: "{{ stub_target_service }}"
+    soc.lab/connector-type: "{{ stub_connector_type }}"
+  annotations:
+    soc.lab/description: "{{ stub_description }}"
+    soc.lab/status: "placeholder"
+    soc.lab/ready: "false"
+    soc.lab/created-by: "soc_foundations Ansible role"
+data:
+  connector_type: "{{ stub_connector_type }}"
+  target_service: "{{ stub_target_service }}"
+  status: "placeholder"
+  enabled: "false"
+  description: "{{ stub_description }}"
+  config: |
+    # Placeholder de configuration pour {{ stub_name }}
+    # Remplacer ce stub par la configuration réelle du connecteur.
+    # connector_type : {{ stub_connector_type }}
+    # target_service : {{ stub_target_service }}
+    #
+    # Étapes pour activer :
+    #   1. Remplir les clés de configuration ci-dessous
+    #   2. Mettre enabled: "true"
+    #   3. Mettre l'annotation soc.lab/ready: "true"
+    endpoint: ""
+    auth_secret_ref: ""
+    enabled: "false"

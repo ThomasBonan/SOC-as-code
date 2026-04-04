@@ -1,0 +1,144 @@
+# shuffle-values.yml.j2
+# Helm values override pour le chart officiel Shuffle (Bitnami-style).
+# Référence : functions/kubernetes/charts/shuffle/values.yaml
+# ────────────────────────────────────────────────────────────────────────────
+
+# ── Paramètres globaux Shuffle ────────────────────────────────────
+shuffle:
+  # URL que Orborus utilise pour joindre le backend (service K8s interne)
+  baseUrl: "http://{{ shuffle_release_name }}-backend.{{ shuffle_namespace }}.svc:{{ shuffle_backend_port }}"
+  org: "{{ shuffle_admin_org_name }}"
+
+# ── Backend ───────────────────────────────────────────────────────
+backend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/shuffle/shuffle-backend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  containerPorts:
+    http: {{ shuffle_backend_port }}
+  openSearch:
+    url: "http://{{ shuffle_release_name }}-opensearch-master-hl:9200"
+    skipSSLVerify: true
+  # Admin par défaut créé au démarrage — évite l'appel API /users/init (non supporté en POST)
+  extraEnvVars:
+    - name: SHUFFLE_DEFAULT_USERNAME
+      value: "{{ shuffle_admin_username }}"
+    - name: SHUFFLE_DEFAULT_PASSWORD
+      value: "{{ shuffle_admin_password }}"
+  resourcesPreset: "small"
+  resources:
+    requests:
+      cpu: "200m"
+      memory: "512Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"
+
+# ── Frontend ──────────────────────────────────────────────────────
+frontend:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/shuffle/shuffle-frontend
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  containerPorts:
+    http: 80
+    https: 443
+  service:
+    type: ClusterIP
+    port: 80
+  resourcesPreset: "nano"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+
+# ── Orborus (orchestrateur de workflows) ──────────────────────────
+orborus:
+  replicaCount: 1
+  image:
+    repository: ghcr.io/shuffle/shuffle-orborus
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  executionConcurrency: 5
+  manageWorkerDeployments: true
+  resourcesPreset: "nano"
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "300m"
+      memory: "256Mi"
+  # OpenSearch URL — doit être identique à backend pour éviter la dérive inter-composants.
+  # Sans ces vars, orborus utilise le défaut du chart (https://opensearch:9200) qui est
+  # inaccessible dans cette installation (service headless sur master-hl:9200).
+  extraEnvVars:
+    - name: SHUFFLE_OPENSEARCH_URL
+      value: "http://{{ shuffle_release_name }}-opensearch-master-hl:9200"
+    - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
+      value: "true"
+
+# ── Worker (spawné dynamiquement par Orborus, pas statique) ──────
+worker:
+  enableHelmDeployment: false
+  image:
+    repository: ghcr.io/shuffle/shuffle-worker
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  containerPorts:
+    http: 33333
+  # Même URL OpenSearch que backend/orborus.
+  extraEnvVars:
+    - name: SHUFFLE_OPENSEARCH_URL
+      value: "http://{{ shuffle_release_name }}-opensearch-master-hl:9200"
+    - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
+      value: "true"
+
+# ── App (image de base pour les apps Shuffle) ─────────────────────
+# Les app pods (http, tools, subflow, ai) sont créés par le backend Shuffle comme
+# des Deployments K8s. Ils servent HTTP sur le port 80, ce qui nécessite root ou
+# CAP_NET_BIND_SERVICE. Sans runAsUser: 0, les containers crashent avec
+# PermissionError: [Errno 13] Permission denied (socket.bind port 80).
+# Le namespace soc-shuffle est déjà tagué pod-security.kubernetes.io/enforce: privileged.
+app:
+  image:
+    registry: docker.io
+    repository: frikky
+    tag: "latest"
+  containerSecurityContext:
+    runAsUser: 0
+    runAsNonRoot: false
+
+# ── OpenSearch (dépendance Bitnami — base de données Shuffle) ─────
+opensearch:
+  enabled: true
+  master:
+    replicaCount: 1
+    # masterOnly: false → le nœud master remplit aussi le rôle data/ingest/coordinating.
+    # Obligatoire quand data.replicaCount=0 (sinon number_of_data_nodes=0 → shards UNASSIGNED).
+    masterOnly: false
+    heapSize: "512m"
+    persistence:
+      enabled: true
+      storageClass: "longhorn"
+      size: "5Gi"
+    resourcesPreset: ""
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "1000m"
+        memory: "2Gi"
+  coordinating:
+    replicaCount: 0
+  data:
+    replicaCount: 0
+  ingest:
+    replicaCount: 0

@@ -1,0 +1,52 @@
+# Cortex chart values (StrangeBee) - POC
+# IMPORTANT: RWX is required for job shared data.
+
+cortex:
+  # Lab: 1 replica, stratégie Recreate (évite le maxSurge=1 qui double les besoins CPU)
+  replicaCount: 1
+  updateStrategy:
+    type: Recreate
+
+  # HTTP secret lu depuis le Secret K8s (create-once par Ansible)
+  k8sSecretName: "cortex-secret"
+  k8sSecretKey: "httpSecret"
+
+  # Auth : activer les providers local (Basic auth) ET key (Bearer API key)
+  # Sans "key", les appels Bearer depuis Shuffle/automation échouent avec 401.
+  config: |
+    auth.providers: [local, key]
+
+  # Shared storage requirement (RWX)
+  persistentVolumeClaim:
+    create: true
+    # storageClass MUST support ReadWriteMany
+    storageClass: "__SET_BY_ANSIBLE__"
+    accessModes:
+      - ReadWriteMany
+    size: "__SET_BY_ANSIBLE__"
+
+  serviceAccount:
+    create: true
+    name: cortex
+
+# Elasticsearch dependency (bundled)
+elasticsearch:
+  enabled: true
+  # 1 node for POC
+  master:
+    replicaCount: 1
+  data:
+    replicaCount: 1
+  coordinating:
+    replicaCount: 0
+  ingest:
+    replicaCount: 0
+
+  # POC sizing
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 4Gi

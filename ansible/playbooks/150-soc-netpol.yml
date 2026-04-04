@@ -1,0 +1,7 @@
+- name: SOC network policies (minimal flows)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+  roles:
+    - soc_netpol

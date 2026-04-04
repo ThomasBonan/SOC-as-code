@@ -1,0 +1,120 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# misp_push_policy.yml — Configure IOC push policy (Shuffle → MISP)
+# tag: integration
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Stocke la politique de push MISP dans un ConfigMap lu par le workflow Shuffle
+# (action push_ioc_to_misp dans alert-triage.json).
+# La logique de push est désormais exécutée par Shuffle SOAR, non plus par un worker Python.
+#
+# Conditions pour le push MISP :
+#   - risk_score_v2 >= soc_risk_thresholds.auto_promote (défaut: 50)
+#   - Vérification dédupliquée via l'app MISP dans Shuffle
+#
+# Idempotence: marker ConfigMap soc_automation_marker_cortex_misp
+
+# ── Check idempotence marker ──────────────────────────────────────
+
+- name: "cortex_to_misp | Check idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_automation_worker_namespace }}"
+    name: "{{ soc_automation_marker_cortex_misp }}"
+  register: _ctm_marker
+  changed_when: false
+
+- name: "cortex_to_misp | Already configured — skip"
+  ansible.builtin.debug:
+    msg: "MISP push policy already deployed (marker exists) — skipping."
+  when: _ctm_marker.resources | length > 0
+  changed_when: false
+
+# ── Main configuration block ──────────────────────────────────────
+
+- name: "cortex_to_misp | Configure MISP push policy"
+  when: _ctm_marker.resources | length == 0
+  block:
+    # Step 1: Verify MISP SA connectivity (already checked in preflight — fast check only)
+    - name: "cortex_to_misp | Probe MISP API with SA key"
+      ansible.builtin.uri:
+        url:            "{{ soc_automation_misp_api_base }}/servers/getVersion"
+        method:         GET
+        headers:
+          Authorization:  "{{ _sa_misp_key }}"
+          Accept:         "application/json"
+          Content-Type:   "application/json"
+        follow_redirects: none
+        status_code:    [200, 302]
+        timeout:        "{{ soc_automation_http_timeout }}"
+        validate_certs: "{{ soc_automation_validate_certs }}"
+      register: _ctm_misp_probe
+      retries:      "{{ soc_automation_preflight_retries }}"
+      delay:        "{{ soc_automation_preflight_delay }}"
+      until:        _ctm_misp_probe.status in [200, 302]
+      no_log:       true
+      changed_when: false
+      failed_when:  _ctm_misp_probe.status not in [200, 302]
+
+    - name: "cortex_to_misp | Log MISP version"
+      ansible.builtin.debug:
+        msg: "MISP version: {{ _ctm_misp_probe.json.version | default('unknown') }}"
+      changed_when: false
+
+    # Step 2: Compute TLP for current environment
+    - name: "cortex_to_misp | Resolve TLP for environment"
+      ansible.builtin.set_fact:
+        _ctm_tlp: >-
+          {{
+            soc_automation_misp_tlp[soc_environment | default('dev')]
+            | default(soc_automation_misp_tlp['dev'])
+          }}
+
+    # Step 3: Store push policy ConfigMap
+    - name: "cortex_to_misp | Store MISP push policy ConfigMap"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "soc-automation-misp-push-policy"
+            namespace: "{{ soc_automation_worker_namespace }}"
+            labels: "{{ soc_automation_labels }}"
+            annotations:
+              soc.lab/misp-version: "{{ _ctm_misp_probe.json.version | default('unknown') }}"
+          data:
+            policy.json: |
+              {
+                "min_cortex_score": {{ soc_automation_misp_push_min_score }},
+                "required_tag":     "{{ soc_automation_misp_push_tag }}",
+                "tlp":              {{ _ctm_tlp }},
+                "auto_tags":        {{ soc_automation_misp_auto_tags | to_json }},
+                "ioc_type_map":     {{ soc_automation_misp_ioc_type_map | to_json }},
+                "misp_api_base":    "{{ soc_automation_misp_api_base }}",
+                "dedup_check":      true,
+                "environment":      "{{ soc_environment | default('dev') }}"
+              }
+
+    # Create marker AFTER successful configuration
+    - name: "cortex_to_misp | Create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_automation_marker_cortex_misp }}"
+            namespace: "{{ soc_automation_worker_namespace }}"
+            labels: "{{ soc_automation_labels }}"
+            annotations:
+              soc.lab/automation-state: active
+          data:
+            feature:           "cortex_to_misp"
+            status:            "active"
+            misp_min_score:    "{{ soc_automation_misp_push_min_score | string }}"
+            tlp:               "{{ _ctm_tlp | string }}"
+            environment:       "{{ soc_environment | default('dev') }}"

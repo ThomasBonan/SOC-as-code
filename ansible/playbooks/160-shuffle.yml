@@ -1,0 +1,40 @@
+---
+# 165-shuffle.yml
+# Shuffle SOAR — Orchestrateur central du pipeline SOC.
+# Remplace les CronJobs Python de 160 et 180 par une architecture event-driven
+# (webhooks Wazuh en temps réel → workflows visuels → apps natives TheHive/Cortex/MISP).
+#
+# Tags disponibles :
+#   bootstrap  - preflight : vérification de la chaîne 170+180 et de Helm
+#   deploy     - déploiement Helm + NetworkPolicy
+#   configure  - configuration des apps Shuffle (credentials TheHive/Cortex/MISP/Wazuh)
+#   workflows  - import des workflows JSON + activation du webhook
+#   shuffle    - toutes les tâches du rôle
+#
+# Prérequis : 170-soc-foundations.yml et 180-soc-automation.yml doivent être exécutés avant.
+# La chaîne d'exécution recommandée :
+#   170 → 165 → 180 → 190 → 200 → 210
+#
+# Override d'environnement via variable SOC_ENV (dev/staging/prod) :
+#   SOC_ENV=prod ansible-playbook 165-shuffle.yml -e @envs/prod.yml
+#
+# Exemples d'utilisation :
+#   ansible-playbook 165-shuffle.yml                       # run complet
+#   ansible-playbook 165-shuffle.yml --tags bootstrap      # preflight seul
+#   ansible-playbook 165-shuffle.yml --tags deploy         # Helm install seul
+#   ansible-playbook 165-shuffle.yml --tags configure      # config apps seul
+#   ansible-playbook 165-shuffle.yml --tags workflows      # import workflows seul
+
+- name: 165 | Shuffle SOAR — Orchestration engine
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+  pre_tasks:
+    - name: Override soc_environment depuis la variable d'environnement SOC_ENV
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+      tags: always
+  roles:
+    - shuffle

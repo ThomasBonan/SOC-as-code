@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shuffle
+  namespace: {{ shuffle_namespace }}
+  labels: {{ shuffle_labels | to_json }}
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "{{ shuffle_cluster_issuer }}"
+spec:
+  ingressClassName: {{ shuffle_ingress_class }}
+  tls:
+    - hosts:
+        - {{ shuffle_ingress_host }}
+      secretName: {{ shuffle_tls_secret }}
+  rules:
+    - host: {{ shuffle_ingress_host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ shuffle_release_name }}-frontend
+                port:
+                  number: {{ shuffle_frontend_port }}

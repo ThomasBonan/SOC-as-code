@@ -1,0 +1,36 @@
+# Namespace / release
+thehive_namespace: soc-thehive
+thehive_release_name: thehive
+
+# Helm
+helm_bin: /usr/local/bin/helm
+thehive_helm_repo_name: strangebee
+thehive_helm_repo_url: https://strangebeecorp.github.io/helm-charts
+thehive_helm_chart: strangebee/thehive
+
+# App exposure
+thehive_fqdn: thehive.apps.soc.lab
+thehive_ingress_class: nginx
+thehive_tls_secret: thehive-tls
+thehive_cluster_issuer: letsencrypt
+
+# Storage (POC)
+thehive_storage_class: ""   # "" => default storageClass
+thehive_persistence_size: 10Gi
+
+# Secrets
+thehive_secret_name: thehive-secret
+
+# Resources (POC : plus léger que “prod defaults”)
+thehive_jvm_opts: "-Xms1g -Xmx1g -Xmn200m"
+cassandra_jvm_extra_opts: "-Xms1g -Xmx1g -Xmn200m"
+cassandra_jvm_max_heap: "1g"
+cassandra_jvm_new_heap: "200m"
+
+elasticsearch_heap_size: "1g"
+elasticsearch_jvm_opts: "-Xms1g -Xmx1g -Xmn200m"
+
+# Dependencies (POC default : cassandra + elasticsearch + minio)
+thehive_enable_cassandra: true
+thehive_enable_elasticsearch: true
+thehive_enable_minio: true

@@ -1,0 +1,33 @@
+---
+# soc_foundations/tasks/integration_placeholders.yml
+# Crée des ConfigMaps K8s comme stubs de configuration pour les intégrations futures.
+#
+# Ces placeholders :
+#   - Documentent les types de connecteurs prévus (webhook, analyzer-config, feed-sync, siem)
+#   - Sont marqués status: placeholder / enabled: false
+#   - Seront peuplés dans les phases suivantes sans avoir à restructurer l'architecture
+#   - Permettent aux pipelines CI/CD de détecter l'état de préparation (annotation soc.lab/ready)
+#
+# Idempotent : kubernetes.core.k8s avec state: present.
+
+- name: Placeholders - créer les ConfigMaps stubs d'intégration
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    template: configmap-integration-stub.yml.j2
+  loop: "{{ soc_foundations_stubs }}"
+  loop_control:
+    loop_var: stub_item
+    label: "{{ stub_item.name }} ({{ stub_item.namespace }})"
+  vars:
+    stub_name: "{{ stub_item.name }}"
+    stub_namespace: "{{ stub_item.namespace }}"
+    stub_description: "{{ stub_item.description }}"
+    stub_connector_type: "{{ stub_item.connector_type }}"
+    stub_target_service: "{{ stub_item.target_service }}"
+
+- name: Placeholders - rapport des stubs créés
+  ansible.builtin.debug:
+    msg: >-
+      {{ soc_foundations_stubs | length }} stub(s) d'intégration créé(s)/mis à jour :
+      {{ soc_foundations_stubs | map(attribute='name') | list | join(', ') }}.

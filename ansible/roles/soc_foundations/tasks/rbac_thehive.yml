@@ -1,0 +1,397 @@
+---
+# soc_foundations/tasks/rbac_thehive.yml
+# Crée un compte de service TheHive avec le profil "analyst" et génère une API key.
+# Assure également que le profil analyst dispose de manageAlert/create (idempotent).
+#
+# Idempotence : si le K8s Secret thehive-sa-foundations existe déjà, toutes les
+# opérations API sont ignorées (create-once pattern identique à soc_config).
+#
+# Flux :
+#   1. Vérifier si le Secret K8s de destination existe → skip si oui
+#   2. Résoudre l'API base effective (ingress si .svc non atteignable)
+#   3. Vérifier si l'organisation cible existe → créer si absente (POST /v1/organisation)
+#      (POST /v1/user avec organisation=X retourne 403 si l'org X n'existe pas encore)
+#   4. Vérifier si le compte existe déjà (GET /v1/user/{login})
+#   5. Créer le compte si absent (POST /v1/user)
+#   6. Générer l'API key (POST /v1/user/{login}/key/renew)
+#   7. Stocker dans K8s Secret
+
+- name: TheHive RBAC - vérifier si le Secret SA existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_foundations_thehive_sa_secret_name }}"
+  register: _sf_th_sa_secret_existing
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - résoudre l'API base effective
+  ansible.builtin.set_fact:
+    _sf_thehive_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_thehive_api_base)
+          and (soc_foundations_thehive_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_thehive_ingress_api_base, soc_foundations_thehive_api_base)
+      }}
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Vérifier / créer l'organisation cible ────────────────────────
+# POST /v1/user avec organisation=X échoue avec 403 si l'org X n'existe pas encore.
+# On vérifie et on crée l'org avant toute opération sur le compte SA.
+
+- name: TheHive RBAC - vérifier si l'organisation cible existe
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/organisation/{{ soc_foundations_thehive_sa_organisation }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 404
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_org_check
+  when:
+    - _sf_th_sa_secret_existing.resources | length == 0
+    - soc_foundations_thehive_sa_organisation | length > 0
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - créer l'organisation si elle n'existe pas
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/organisation"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name:        "{{ soc_foundations_thehive_sa_organisation }}"
+      description: "SOC Operations Organisation — managed by soc-foundations"
+    status_code:
+      - 200
+      - 201
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  when:
+    - _sf_th_sa_secret_existing.resources | length == 0
+    - soc_foundations_thehive_sa_organisation | length > 0
+    - (_sf_th_org_check.status | default(200)) == 404
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Vérifier / créer le compte utilisateur ───────────────────────
+
+- name: TheHive RBAC - vérifier si le compte SA existe déjà via API
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user/{{ soc_foundations_thehive_sa_login }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 404
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_sa_check
+  when: _sf_th_sa_secret_existing.resources | length == 0
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - créer le compte de service via API
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body: >-
+      {{
+        {
+          'login': soc_foundations_thehive_sa_login,
+          'name': soc_foundations_thehive_sa_name,
+          'profile': soc_foundations_thehive_sa_profile
+        }
+        | combine(
+            {'organisation': soc_foundations_thehive_sa_organisation}
+            if soc_foundations_thehive_sa_organisation | length > 0
+            else {}
+          )
+      }}
+    status_code:
+      - 201
+      - 200
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_sa_create
+  when:
+    - _sf_th_sa_secret_existing.resources | length == 0
+    - (_sf_th_sa_check.status | default(404)) == 404
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# Si le user existe mais est locked (post soft-delete), l'admin peut tout de même
+# renouveler sa clé. On tente de le réactiver avec son org cible avant le rekey.
+- name: TheHive RBAC - réactiver un compte soft-deleted si nécessaire
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user/{{ soc_foundations_thehive_sa_login }}"
+    method: PATCH
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      locked: false
+      defaultOrganisation: "{{ soc_foundations_thehive_sa_organisation | default(omit) }}"
+    status_code: [200, 400, 403]   # 400/403 si la licence bloque l'unlock
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  when:
+    - _sf_th_sa_secret_existing.resources | length == 0
+    - (_sf_th_sa_check.status | default(404)) == 200
+    - (_sf_th_sa_check.json.locked | default(false)) | bool
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - générer l'API key pour le compte de service
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user/{{ soc_foundations_thehive_sa_login }}/key/renew"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_sa_key
+  when: _sf_th_sa_secret_existing.resources | length == 0
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_th_sa_key.status == 200
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - extraire l'API key de la réponse
+  ansible.builtin.set_fact:
+    _sf_th_sa_api_key: >-
+      {{
+        _sf_th_sa_key.content
+        | trim
+        | regex_replace('^"', '')
+        | regex_replace('"$', '')
+      }}
+  when: _sf_th_sa_secret_existing.resources | length == 0
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - assert que l'API key n'est pas vide
+  ansible.builtin.assert:
+    that:
+      - _sf_th_sa_api_key | length > 0
+    fail_msg: >-
+      TheHive : la génération d'API key a retourné une valeur vide pour
+      login={{ soc_foundations_thehive_sa_login }}. Vérifier les credentials admin et l'API TheHive.
+  when: _sf_th_sa_secret_existing.resources | length == 0
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - stocker l'API key dans un K8s Secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_foundations_thehive_sa_secret_name }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-foundations
+          soc.lab/service: thehive
+          soc.lab/secret-type: service-account
+        annotations:
+          soc.lab/sa-login: "{{ soc_foundations_thehive_sa_login }}"
+          soc.lab/sa-profile: "{{ soc_foundations_thehive_sa_profile }}"
+          soc.lab/environment: "{{ soc_environment | default('dev') }}"
+      type: Opaque
+      stringData: >-
+        {{
+          {
+            soc_foundations_thehive_sa_secret_key_login: soc_foundations_thehive_sa_login,
+            soc_foundations_thehive_sa_secret_key_api: _sf_th_sa_api_key
+          }
+        }}
+  when: _sf_th_sa_secret_existing.resources | length == 0
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Réconciliation org TheHive (toujours exécuté) ────────────────
+# Garantit que svc-foundations est dans la bonne org et que c'est son org par défaut.
+# Corrige les comptes créés historiquement dans admin sans recréer le user ni la clé.
+
+- name: TheHive RBAC - lire l'état courant du compte SA
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user/{{ soc_foundations_thehive_sa_login }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code: [200, 404]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_sa_current
+  no_log: true
+  changed_when: false
+  when: soc_foundations_thehive_sa_organisation | length > 0
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# TheHive 5.x retourne le membership via 'organisation' (singulier) ET/OU
+# 'organisations' (tableau) ET/OU 'defaultOrganisation'. On vérifie les trois.
+# NOTE : POST /v1/organisation/{name}/user retourne NotFoundError (endpoint absent
+# dans cette version) — aucune correction automatique du membership n'est possible.
+# Si le SA n'est pas dans l'org cible → supprimer le Secret K8s + le user TheHive
+# et re-exécuter pour que la branche création le recrée avec l'org correcte.
+- name: TheHive RBAC - vérifier si le SA est dans l'org cible
+  ansible.builtin.set_fact:
+    _sf_th_sa_in_org: >-
+      {{
+        (
+          (_sf_th_sa_current.json.organisation | default('')) == soc_foundations_thehive_sa_organisation
+        ) or (
+          (_sf_th_sa_current.json.defaultOrganisation | default('')) == soc_foundations_thehive_sa_organisation
+        ) or (
+          soc_foundations_thehive_sa_organisation in (
+            _sf_th_sa_current.json.organisations
+            | default([])
+            | map(attribute='organisation')
+            | list
+          )
+        )
+      }}
+  when:
+    - soc_foundations_thehive_sa_organisation | length > 0
+    - (_sf_th_sa_current.status | default(404)) == 200
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - assert que le SA est dans l'org cible
+  ansible.builtin.assert:
+    that: _sf_th_sa_in_org | bool
+    fail_msg: >-
+      SA '{{ soc_foundations_thehive_sa_login }}' n'est pas dans l'org
+      '{{ soc_foundations_thehive_sa_organisation }}'. Les endpoints de membership
+      TheHive 5 ne permettent pas la correction automatique. Procédure manuelle :
+      1. kubectl delete secret -n {{ soc_namespaces.thehive }} {{ soc_foundations_thehive_sa_secret_name }}
+      2. Supprimer le user '{{ soc_foundations_thehive_sa_login }}' dans TheHive (UI ou DELETE /v1/user/{login})
+      3. Re-exécuter ce playbook — le user sera recréé dans la bonne org.
+  when:
+    - soc_foundations_thehive_sa_organisation | length > 0
+    - (_sf_th_sa_current.status | default(404)) == 200
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - définir l'org par défaut si nécessaire
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user/{{ soc_foundations_thehive_sa_login }}"
+    method: PATCH
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      defaultOrganisation: "{{ soc_foundations_thehive_sa_organisation }}"
+    status_code: [200]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  when:
+    - soc_foundations_thehive_sa_organisation | length > 0
+    - (_sf_th_sa_current.status | default(404)) == 200
+    - _sf_th_sa_in_org | default(false) | bool
+    - (_sf_th_sa_current.json.defaultOrganisation | default('')) != soc_foundations_thehive_sa_organisation
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Mettre à jour le profil analyst : ajouter manageAlert ────────
+# Idempotent : ne PATCH que si manageAlert/create est absent.
+# PATCH /v1/profile/{name} remplace la liste complète des permissions →
+# lire d'abord les permissions existantes, puis merger avec les nouvelles.
+# S'exécute TOUJOURS (hors marker create-once) pour corriger la config existante.
+
+- name: TheHive RBAC - lire les permissions actuelles du profil analyst
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/profile/analyst"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code: [200]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_analyst_profile
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# NOTE : PATCH /v1/profile/{id} requiert la licence users.customProfiles.
+# Le profil analyst de cette installation TheHive 5 contient déjà toutes les
+# permissions nécessaires au workflow (manageAnalyse, manageCase/*, manageAlert/*,
+# manageObservable, manageTask) — cette tâche est un filet de sécurité pour
+# les installations où des permissions seraient absentes.
+# La condition when utilise les noms RÉELS de cette version (manageObservable
+# et manageTask ne sont pas subdivisés en /create /update /delete ici).
+- name: TheHive RBAC - s'assurer que les permissions workflow sont dans le profil analyst
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/profile/analyst"
+    method: PATCH
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      permissions: >-
+        {{
+          (_sf_th_analyst_profile.json.permissions | default([]))
+          | union([
+              'manageAlert/create', 'manageAlert/update', 'manageAlert/import',
+              'manageAnalyse',
+              'manageCase/create', 'manageCase/update',
+              'manageObservable',
+              'manageTask'
+            ])
+          | list
+        }}
+    status_code: [200]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  when: >-
+    ('manageAlert/create' not in (_sf_th_analyst_profile.json.permissions | default([])))
+    or ('manageAlert/import' not in (_sf_th_analyst_profile.json.permissions | default([])))
+    or ('manageAnalyse' not in (_sf_th_analyst_profile.json.permissions | default([])))
+    or ('manageCase/update' not in (_sf_th_analyst_profile.json.permissions | default([])))
+    or ('manageObservable' not in (_sf_th_analyst_profile.json.permissions | default([])))
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - rapport de statut
+  ansible.builtin.debug:
+    msg: >-
+      TheHive SA '{{ soc_foundations_thehive_sa_login }}'
+      (profil={{ soc_foundations_thehive_sa_profile }}).
+      Secret : {{ soc_namespaces.thehive }}/{{ soc_foundations_thehive_sa_secret_name }}.
+      Action : {{ 'ignoré (déjà existant)' if _sf_th_sa_secret_existing.resources | length > 0 else 'créé' }}.
+  tags: [rbac, rbac_thehive, soc_foundations]

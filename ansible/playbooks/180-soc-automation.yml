@@ -1,0 +1,65 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# Playbook 180 — SOC Automation Core
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Crée les prérequis nécessaires à l'orchestration Shuffle SOAR (185).
+# L'orchestration elle-même est désormais déléguée à Shuffle (event-driven).
+#
+# Ce que ce playbook fait :
+#   1. Vérifier que les credentials SA de 170 sont fonctionnels
+#   2. Créer le Secret agrégé soc-automation-worker-creds (lu par Shuffle 185 + 190)
+#   3. Stocker la politique MISP push dans un ConfigMap (lu par les workflows Shuffle)
+#   4. Injecter le bloc integration Shuffle dans ossec.conf de Wazuh
+#
+# DÉPENDANCE CIRCULAIRE BRISÉE — séquence d'exécution en 2 passes :
+#   Passe 1 : 170 → 180  (crée soc-automation-worker-creds ; wazuh_webhook ignoré)
+#   Passe 2 : 185        (déploie Shuffle ; crée soc-shuffle-webhook-config)
+#   Passe 3 : 180        (wazuh_webhook s'exécute maintenant que le ConfigMap existe)
+#
+# Ordre d'exécution recommandé (complet) :
+#   170 → 180 → 185 → 180 (re-run) → 190 → 200 → 210
+#
+# Prérequis :
+#   - 130-soc-config doit avoir été exécuté
+#   - 170-soc-foundations doit avoir été exécuté
+#   - K8s Secrets: thehive-sa-foundations, cortex-sa-foundations,
+#                  misp-sa-foundations, wazuh-sa-foundations
+#   - Pour wazuh_webhook uniquement : 185-shuffle doit avoir été exécuté au préalable
+#     (le step est ignoré silencieusement si le ConfigMap est absent)
+#
+# Usage :
+#   ansible-playbook 180-soc-automation.yml
+#   ansible-playbook 180-soc-automation.yml --tags bootstrap
+#   ansible-playbook 180-soc-automation.yml --tags integration
+#   SOC_ENV=prod ansible-playbook 180-soc-automation.yml -e @envs/prod.yml
+#
+# Idempotence :
+#   Ré-exécution sûre. Chaque feature crée un marker ConfigMap et est skippée
+#   si le marker existe déjà.
+#
+# Tags :
+#   bootstrap      : preflight uniquement
+#   integration    : credentials + MISP policy + Wazuh webhook
+#   soc_automation : tout
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "180 | SOC Automation Core — Real integrations & automated response"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+
+  pre_tasks:
+    - name: "180 | Override soc_environment from SOC_ENV env var"
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+
+    - name: "180 | Show active environment"
+      ansible.builtin.debug:
+        msg: "SOC environment: {{ soc_environment | default('dev') }}"
+      changed_when: false
+
+  roles:
+    - role: soc_automation

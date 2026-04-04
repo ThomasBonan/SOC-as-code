@@ -195,9 +195,22 @@
         set_values:
           - value: "identifier.appName={{ wazuh_app_name }}"
           - value: "identifier.appId={{ wazuh_app_id }}"
+
+          # ✅ Indexer ON
+          - value: "indexer.enabled=true"
           - value: "indexer.deployment.enabled=true"
-          - value: "wazuh.deployment.enabled=false"
-          - value: "dashboard.deployment.enabled=false"
+
+          # ✅ Manager OFF (sinon il crée master/worker + PVC)
+          - value: "wazuh.enabled=true"              # laisse true si chart en dépend, mais on coupe master/worker
+          - value: "wazuh.master.enabled=false"
+          - value: "wazuh.worker.enabled=false"
+          - value: "wazuh.worker.replicas=0"
+
+          # ✅ Dashboard OFF
+          - value: "dashboard.enabled=false"
+
+          # Creds indexer
+          - value: "indexer.cred.username=admin"
           - value: "indexer.cred.password={{ wazuh_indexer_password }}"
           - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
         wait: false
@@ -289,27 +302,22 @@
 # -----------------------------
 - name: Deploy Wazuh - Phase 2 (Enable Manager)
   block:
-    - name: Helm upgrade (Phase 2) - enable Manager
+    - name: Helm upgrade/install (Phase 2) - Manager + Dashboard
       kubernetes.core.helm:
         name: "{{ wazuh_release_name }}"
         chart_ref: "{{ wazuh_chart_ref }}"
         chart_version: "{{ wazuh_chart_version }}"
         release_namespace: "{{ wazuh_namespace }}"
-        create_namespace: false
         kubeconfig: "{{ kubeconfig_path }}"
         values_files:
           - "{{ role_path }}/files/values/indexer.values.yml"
           - "{{ role_path }}/files/values/manager.values.yml"
+          # - "{{ role_path }}/files/values/dashboard.values.yml"  # si tu en as un
         set_values:
-          - value: "identifier.appName={{ wazuh_app_name }}"
-          - value: "identifier.appId={{ wazuh_app_id }}"
-          - value: "indexer.deployment.enabled=true"
-          - value: "wazuh.deployment.enabled=true"
-          - value: "dashboard.deployment.enabled=false"
-          - value: "indexer.cred.password={{ wazuh_indexer_password }}"
-          - value: "indexer.cred.passwordHash={{ wazuh_indexer_password_hash }}"
-        wait: false
-        atomic: false
+          - value: "wazuh.master.enabled=true"
+          - value: "wazuh.worker.enabled=true"
+          - value: "dashboard.enabled=true"
+        wait: true
         timeout: "30m0s"
         binary_path: "{{ helm_binary_path }}"
       delegate_to: localhost
@@ -500,6 +508,161 @@
       changed_when: false
       delegate_to: localhost
       run_once: true
+
+
+# --- Apply credentials for dashboard ---
+- name: Get current wazuh-dashboard deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ wazuh_namespace }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: wazuh-dashboard
+  register: dash_dep
+  delegate_to: localhost
+  run_once: true
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+
+- name: Build env list (dedupe by name) and set OPENSEARCH creds
+  ansible.builtin.set_fact:
+    dash_env_new: >-
+      {{
+        (
+          (dash_dep.resources[0].spec.template.spec.containers[0].env | default([]))
+          | rejectattr('name','equalto','OPENSEARCH_USERNAME')
+          | rejectattr('name','equalto','OPENSEARCH_PASSWORD')
+          | list
+        )
+        + [
+          {'name':'OPENSEARCH_USERNAME','value':'admin'},
+          {'name':'OPENSEARCH_PASSWORD','valueFrom':{'secretKeyRef':{'name':'wazuh-credentials','key':'indexer_password'}}}
+        ]
+      }}
+  delegate_to: localhost
+  run_once: true
+
+- name: Apply env vars to wazuh-dashboard (idempotent)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    namespace: "{{ wazuh_namespace }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: wazuh-dashboard
+      spec:
+        template:
+          spec:
+            containers:
+              - name: wazuh-dashboard
+                env: "{{ dash_env_new }}"
+  delegate_to: localhost
+  run_once: true
+  vars:
+    ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+
+- name: Restart wazuh-dashboard to pick env changes
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    rollout restart deploy/wazuh-dashboard
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
+- name: Wait wazuh-dashboard rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    rollout status deploy/wazuh-dashboard --timeout=5m
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+# --- Add template to dashboard ---
+- name: Ensure wazuh-alerts template matches wazuh-alerts-* and archives
+  ansible.builtin.shell: |
+    set -euo pipefail
+    NS="{{ wazuh_namespace }}"
+    K="kubectl --kubeconfig {{ kubeconfig_path }} -n ${NS}"
+
+    USER="$(${K} get secret indexer-cred -o jsonpath='{.data.INDEXER_USERNAME}' | base64 -d)"
+    PASS="$(${K} get secret indexer-cred -o jsonpath='{.data.INDEXER_PASSWORD}' | base64 -d)"
+
+    # Wait indexer API ready
+    ${K} exec -i sts/wazuh-indexer -- sh -lc "apk add --no-cache curl >/dev/null 2>&1 || true; \
+    i=0; \
+    while true; do \
+      if curl -sk -u '${USER}:${PASS}' https://localhost:9200 >/dev/null; then exit 0; fi; \
+      i=\$((i+1)); \
+      if [ \$i -ge 60 ]; then echo 'Indexer API not reachable'; exit 1; fi; \
+      sleep 2; \
+    done"
+
+    # Check if template already contains wazuh-alerts-*
+    has="$(${K} exec -i sts/wazuh-indexer -- sh -lc "apk add --no-cache curl >/dev/null 2>&1 || true; \
+      curl -sk -u '${USER}:${PASS}' 'https://localhost:9200/_template/wazuh-alerts' | grep -c 'wazuh-alerts-\*' || true")"
+
+    if [ "${has}" -ge 1 ]; then
+      echo "Template already patched (wazuh-alerts-*)"
+      exit 0
+    fi
+
+    echo "Patching wazuh-alerts template index_patterns..."
+    ${K} exec -i sts/wazuh-manager-master -- sh -lc "
+      set -e
+      apk add --no-cache curl >/dev/null 2>&1 || true
+      sed -e 's/\"wazuh-alerts-4.x-\\*\"/\"wazuh-alerts-4.x-*\",\"wazuh-alerts-*\"/g' \
+          -e 's/\"wazuh-archives-4.x-\\*\"/\"wazuh-archives-4.x-*\",\"wazuh-archives-*\"/g' \
+          /etc/filebeat/wazuh-template.json > /tmp/wazuh-template.patched.json
+
+      curl -sk -u '${USER}:${PASS}' -H 'Content-Type: application/json' \
+        -X PUT 'https://wazuh-indexer:9200/_template/wazuh-alerts' \
+        --data-binary '@/tmp/wazuh-template.patched.json' >/dev/null
+    "
+
+    echo "Template patched."
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
+
+- name: Ensure wazuh-alerts bootstrap index exists and replicas=0
+  ansible.builtin.shell: |
+    set -euo pipefail
+    NS="{{ wazuh_namespace }}"
+    K="kubectl --kubeconfig {{ kubeconfig_path }} -n ${NS}"
+
+    USER="$(${K} get secret indexer-cred -o jsonpath='{.data.INDEXER_USERNAME}' | base64 -d)"
+    PASS="$(${K} get secret indexer-cred -o jsonpath='{.data.INDEXER_PASSWORD}' | base64 -d)"
+
+    exists="$(${K} exec -i sts/wazuh-indexer -- sh -lc "apk add --no-cache curl >/dev/null 2>&1 || true; \
+      curl -sk -u '${USER}:${PASS}' -o /dev/null -w '%{http_code}' https://localhost:9200/wazuh-alerts-4.x-000001")"
+
+    if [ "${exists}" = "200" ]; then
+      echo "Index already exists"
+    else
+      echo "Creating bootstrap index wazuh-alerts-4.x-000001"
+      ${K} exec -i sts/wazuh-indexer -- sh -lc "apk add --no-cache curl >/dev/null 2>&1 || true; \
+        curl -sk -u '${USER}:${PASS}' -X PUT 'https://localhost:9200/wazuh-alerts-4.x-000001' \
+          -H 'Content-Type: application/json' -d '{}' >/dev/null"
+    fi
+
+    echo "Forcing replicas=0"
+    ${K} exec -i sts/wazuh-indexer -- sh -lc "apk add --no-cache curl >/dev/null 2>&1 || true; \
+      curl -sk -u '${USER}:${PASS}' -X PUT 'https://localhost:9200/wazuh-alerts-4.x-000001/_settings' \
+        -H 'Content-Type: application/json' -d '{\"index\":{\"number_of_replicas\":0}}' >/dev/null"
+
+    ${K} exec -i sts/wazuh-indexer -- sh -lc "apk add --no-cache curl >/dev/null 2>&1 || true; \
+      curl -sk -u '${USER}:${PASS}' 'https://localhost:9200/_cat/indices/wazuh-alerts*?v' || true"
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
 
 # --- Post Helm: Certificate + Ingress (cert-manager) ---
 - name: Create Certificate (kubectl apply)

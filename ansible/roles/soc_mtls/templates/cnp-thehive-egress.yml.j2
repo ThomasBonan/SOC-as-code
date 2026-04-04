@@ -1,0 +1,89 @@
+---
+# CiliumNetworkPolicy: TheHive egress
+# Enforces SPIFFE mTLS for TheHive → Cortex and preserves all other
+# required egress flows (intersection semantics with standard NetworkPolicy).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cnp-thehive-egress-mtls
+  namespace: {{ soc_namespaces.thehive }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    soc.lab/component: mtls
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  egress:
+
+    # ── mTLS required: TheHive → Cortex API ──────────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.cortex }}"
+            app.kubernetes.io/name: cortex
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.cortex }}"
+            app: cortex
+      authentication:
+        mode: required
+      toPorts:
+        - ports:
+            - port: "{{ soc_ports.cortex | string }}"
+              protocol: TCP
+
+    # ── DNS ───────────────────────────────────────────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: coredns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # ── Internal: Cassandra (case storage) ───────────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app.kubernetes.io/name: cassandra
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app: cassandra
+      toPorts:
+        - ports:
+            - port: "9042"
+              protocol: TCP
+
+    # ── Internal: Elasticsearch (case search index) ──────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app.kubernetes.io/name: elasticsearch
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app: elasticsearch
+      toPorts:
+        - ports:
+            - port: "9200"
+              protocol: TCP
+
+    # ── Internal: MinIO (attachments / file storage) ─────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app.kubernetes.io/name: minio
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app: minio
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP

@@ -1,0 +1,47 @@
+thehive:
+  # si tu as des OOM, baisse aussi jvmOpts
+  jvmOpts: "-Xms512m -Xmx512m -Xmn128m"
+  resources:
+    requests:
+      cpu: 100m
+      memory: 768Mi
+    limits:
+      cpu: 500m
+      memory: 1536Mi
+
+cassandra:
+  # Cassandra est lourd, on réduit pour POC
+  jvm:
+    extraOpts: "-Xms512m -Xmx512m -Xmn128m"
+    maxHeapSize: "512m"
+    newHeapSize: "128m"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 1Gi
+    limits:
+      cpu: 800m
+      memory: 2Gi
+
+elasticsearch:
+  master:
+    heapSize: "512m"
+    extraEnvVars:
+      - name: JVM_OPTS
+        value: "-Xms512m -Xmx512m -Xmn128m"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: 800m
+        memory: 2Gi
+
+minio:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 300m
+      memory: 512Mi

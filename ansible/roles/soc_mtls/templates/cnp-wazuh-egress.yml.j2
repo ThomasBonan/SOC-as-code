@@ -1,0 +1,76 @@
+---
+# CiliumNetworkPolicy: Wazuh Manager egress
+# Enforces SPIFFE mTLS for Wazuh → TheHive and preserves all other
+# required egress flows (intersection semantics with standard NetworkPolicy).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cnp-wazuh-egress-mtls
+  namespace: {{ soc_namespaces.wazuh }}
+  labels:
+    app.kubernetes.io/managed-by: ansible
+    soc.lab/component: mtls
+spec:
+  endpointSelector:
+    matchLabels:
+      app: wazuh-manager
+  egress:
+
+    # ── mTLS required: Wazuh Manager → TheHive API ───────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app.kubernetes.io/name: thehive
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.thehive }}"
+            app: thehive
+      authentication:
+        mode: required
+      toPorts:
+        - ports:
+            - port: "{{ soc_ports.thehive | string }}"
+              protocol: TCP
+
+    # ── DNS (cluster-internal name resolution) ───────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: coredns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # ── Internal: Wazuh Indexer (alert storage) ───────────────────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.wazuh }}"
+            app: wazuh-indexer
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.wazuh }}"
+            app.kubernetes.io/component: indexer
+      toPorts:
+        - ports:
+            - port: "9200"
+              protocol: TCP
+
+    # ── Internal: Wazuh Manager API (cluster coordination) ───────────────────
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.wazuh }}"
+            app: wazuh-manager
+        - matchLabels:
+            io.kubernetes.pod.namespace: "{{ soc_namespaces.wazuh }}"
+            app.kubernetes.io/component: wazuh-manager
+      toPorts:
+        - ports:
+            - port: "55000"
+              protocol: TCP

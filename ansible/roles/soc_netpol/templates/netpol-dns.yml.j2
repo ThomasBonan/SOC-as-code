@@ -1,0 +1,22 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "{{ netpol_name }}"
+  namespace: "{{ netpol_namespace }}"
+spec:
+  podSelector: {{ netpol_pod_selector | to_json }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+{% for sel in netpol_dns_pod_selectors %}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ netpol_dns_namespace }}"
+          podSelector: {{ sel | to_json }}
+{% endfor %}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

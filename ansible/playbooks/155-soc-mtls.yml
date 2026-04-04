@@ -1,0 +1,10 @@
+---
+- name: SOC mTLS – Cilium SPIRE mutual authentication (east-west)
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+
+  roles:
+    - role: soc_mtls
+      tags: [soc_mtls]

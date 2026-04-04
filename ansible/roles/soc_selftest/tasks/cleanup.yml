@@ -1,0 +1,84 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# cleanup.yml — Remove test artifacts created by the selftest
+# tag: cleanup
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Removes all test artifacts tagged "soc-selftest" for the current run_id.
+# This ensures no residual test data in the production SOC pipeline.
+#
+# All cleanup tasks use:
+#   ignore_errors: true — cleanup is best-effort; never blocks the report
+#   status_code: [200, 204, 404] — 404 is acceptable (already deleted)
+#   no_log: true — credentials in Authorization headers
+#
+# Artifacts deleted:
+#   1. TheHive alert  (identified by _st_alert_id set during inject/verify_thehive)
+#   2. TheHive case   (identified by _st_case_id set during verify_thehive)
+#   3. MISP event     (identified by _st_misp_event_id set during verify_misp)
+#
+# Each delete is conditional on the ID being non-empty (skip gracefully if the
+# artifact was never created, e.g., if the selftest failed during injection).
+
+# ── Delete TheHive alert ──────────────────────────────────────────
+
+- name: "cleanup | Delete selftest alert from TheHive"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/alert/{{ _st_alert_id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+    status_code:    [200, 204, 404]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stcl_alert_delete
+  no_log:        true
+  ignore_errors: true
+  changed_when:  _stcl_alert_delete.status | default(404) in [200, 204]
+  when: _st_alert_id | default('') | length > 0
+
+# ── Delete TheHive case (if promoted by Shuffle alert-triage) ─────
+
+- name: "cleanup | Delete selftest case from TheHive"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/case/{{ _st_case_id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+    status_code:    [200, 204, 404]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stcl_case_delete
+  no_log:        true
+  ignore_errors: true
+  changed_when:  _stcl_case_delete.status | default(404) in [200, 204]
+  when: _st_case_id | default('') | length > 0
+
+# ── Delete MISP event (if IOC was pushed by Shuffle alert-triage) ──
+
+- name: "cleanup | Delete selftest MISP event"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_misp_api_base }}/events/delete/{{ _st_misp_event_id }}"
+    method: DELETE
+    headers:
+      Authorization: "{{ _st_misp_key }}"
+      Accept:        "application/json"
+    status_code:    [200, 204, 404]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stcl_misp_delete
+  no_log:        true
+  ignore_errors: true
+  changed_when:  _stcl_misp_delete.status | default(404) in [200, 204]
+  when: _st_misp_event_id | default('') | length > 0
+
+# ── Cleanup summary ───────────────────────────────────────────────
+
+- name: "cleanup | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "=== Cleanup Summary — run_id={{ _st_run_id | default('?') }} ==="
+      - "Alert {{ _st_alert_id | default('(not created)') }}: {{ 'deleted' if (_stcl_alert_delete.status | default(404)) in [200, 204] else ('already gone' if (_stcl_alert_delete.status | default(404)) == 404 else ('skipped (no ID)' if _st_alert_id | default('') | length == 0 else 'error')) }}"
+      - "Case  {{ _st_case_id | default('(not created)') }}: {{ 'deleted' if (_stcl_case_delete.status | default(404)) in [200, 204] else ('already gone' if (_stcl_case_delete.status | default(404)) == 404 else ('skipped (no ID)' if _st_case_id | default('') | length == 0 else 'error')) }}"
+      - "MISP  {{ _st_misp_event_id | default('(not created)') }}: {{ 'deleted' if (_stcl_misp_delete.status | default(404)) in [200, 204] else ('already gone' if (_stcl_misp_delete.status | default(404)) == 404 else ('skipped (no ID)' if _st_misp_event_id | default('') | length == 0 else 'error')) }}"
+  changed_when: false

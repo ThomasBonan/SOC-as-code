@@ -1,0 +1,293 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# preflight.yml — Verify SA credentials from 170-soc-foundations
+# tag: bootstrap
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# This task file:
+#   1. Reads the 4 K8s Secrets created by soc_foundations (170)
+#   2. Extracts credentials into Ansible facts (no_log)
+#   3. Probes each service API with the SA credentials
+#   4. Fails clearly with actionable messages if any SA is broken
+#
+# Facts set (available to all subsequent task files):
+#   _sa_thehive_key   — TheHive Bearer token
+#   _sa_cortex_key    — Cortex Bearer token
+#   _sa_misp_key      — MISP Authorization key
+#   _sa_wazuh_user    — Wazuh SA username
+#   _sa_wazuh_pass    — Wazuh SA password
+
+# ── Read K8s Secrets ──────────────────────────────────────────────
+
+- name: "preflight | Read TheHive SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_automation_thehive_sa_secret_ns }}"
+    name: "{{ soc_automation_thehive_sa_secret_name }}"
+  register: _pf_thehive_secret
+  no_log: true
+
+- name: "preflight | Assert TheHive SA secret exists"
+  ansible.builtin.assert:
+    that: _pf_thehive_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_automation_thehive_sa_secret_name }}' not found in
+      namespace '{{ soc_automation_thehive_sa_secret_ns }}'.
+      Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read TheHive write SA secret (org-admin in SOC org)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_automation_thehive_write_sa_secret_ns }}"
+    name: "{{ soc_automation_thehive_write_sa_secret_name }}"
+  register: _pf_thehive_write_secret
+  no_log: true
+
+- name: "preflight | Assert TheHive write SA secret exists"
+  ansible.builtin.assert:
+    that: _pf_thehive_write_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_automation_thehive_write_sa_secret_name }}' not found in
+      namespace '{{ soc_automation_thehive_write_sa_secret_ns }}'.
+      Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read Cortex SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_automation_cortex_sa_secret_ns }}"
+    name: "{{ soc_automation_cortex_sa_secret_name }}"
+  register: _pf_cortex_secret
+  no_log: true
+
+- name: "preflight | Assert Cortex SA secret exists"
+  ansible.builtin.assert:
+    that: _pf_cortex_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_automation_cortex_sa_secret_name }}' not found in
+      namespace '{{ soc_automation_cortex_sa_secret_ns }}'.
+      Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read MISP SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_automation_misp_sa_secret_ns }}"
+    name: "{{ soc_automation_misp_sa_secret_name }}"
+  register: _pf_misp_secret
+  no_log: true
+
+- name: "preflight | Assert MISP SA secret exists"
+  ansible.builtin.assert:
+    that: _pf_misp_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_automation_misp_sa_secret_name }}' not found in
+      namespace '{{ soc_automation_misp_sa_secret_ns }}'.
+      Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read Wazuh SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_automation_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_automation_wazuh_sa_secret_ns }}"
+    name: "{{ soc_automation_wazuh_sa_secret_name }}"
+  register: _pf_wazuh_secret
+  no_log: true
+
+- name: "preflight | Assert Wazuh SA secret exists"
+  ansible.builtin.assert:
+    that: _pf_wazuh_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_automation_wazuh_sa_secret_name }}' not found in
+      namespace '{{ soc_automation_wazuh_sa_secret_ns }}'.
+      Run 170-soc-foundations first (--tags rbac).
+
+# ── Extract credentials into facts ───────────────────────────────
+
+- name: "preflight | Extract SA credentials"
+  ansible.builtin.set_fact:
+    _sa_thehive_key: >-
+      {{ _pf_thehive_secret.resources[0].data[soc_automation_thehive_sa_key] | b64decode }}
+    _sa_thehive_write_key: >-
+      {{ _pf_thehive_write_secret.resources[0].data[soc_automation_thehive_write_sa_key] | b64decode }}
+    _sa_cortex_key: >-
+      {{ _pf_cortex_secret.resources[0].data[soc_automation_cortex_sa_key] | b64decode }}
+    _sa_misp_key: >-
+      {{ _pf_misp_secret.resources[0].data[soc_automation_misp_sa_key] | b64decode }}
+    _sa_wazuh_user: >-
+      {{ _pf_wazuh_secret.resources[0].data[soc_automation_wazuh_sa_key_user] | b64decode }}
+    _sa_wazuh_pass: >-
+      {{ _pf_wazuh_secret.resources[0].data[soc_automation_wazuh_sa_key_pass] | b64decode }}
+  no_log: true
+
+# ── Resolve effective API base URLs (Ingress fallback) ───────────
+# If api_base contains '.svc' (in-cluster DNS), the management host cannot
+# reach it directly. Switch to the Ingress URL (e.g. thehive.apps.soc.lab)
+# using the apps_domain variable from group_vars.
+# This set_fact overwrites the variables for the entire play, so all
+# subsequent task files (thehive_to_cortex, auto_case_policies, etc.)
+# automatically use the correct URLs without any further changes.
+
+- name: "preflight | Resolve effective API base URLs (Ingress fallback for control host)"
+  ansible.builtin.set_fact:
+    soc_automation_thehive_api_base: >-
+      {{
+        (
+          '.svc' in soc_automation_thehive_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.thehive | default('thehive')) ~ '.' ~ apps_domain ~ '/api',
+            soc_automation_thehive_api_base
+          )
+      }}
+    soc_automation_cortex_api_base: >-
+      {{
+        (
+          '.svc' in soc_automation_cortex_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.cortex | default('cortex')) ~ '.' ~ apps_domain ~ '/api',
+            soc_automation_cortex_api_base
+          )
+      }}
+    soc_automation_misp_api_base: >-
+      {{
+        (
+          '.svc' in soc_automation_misp_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.misp | default('misp')) ~ '.' ~ apps_domain,
+            soc_automation_misp_api_base
+          )
+      }}
+  changed_when: false
+
+# ── Probe TheHive API ─────────────────────────────────────────────
+
+- name: "preflight | Show TheHive probe URL (no credentials)"
+  ansible.builtin.debug:
+    msg: "Probing TheHive at: {{ soc_automation_thehive_api_base }}/v1/user/current"
+  changed_when: false
+
+- name: "preflight | Probe TheHive API with SA key"
+  ansible.builtin.uri:
+    url:            "{{ soc_automation_thehive_api_base }}/v1/user/current"
+    method:         GET
+    headers:
+      Authorization: "Bearer {{ _sa_thehive_key }}"
+    status_code:    [200]
+    timeout:        "{{ soc_automation_http_timeout }}"
+    validate_certs: "{{ soc_automation_validate_certs }}"
+  register: _pf_thehive_probe
+  retries:      "{{ soc_automation_preflight_retries }}"
+  delay:        "{{ soc_automation_preflight_delay }}"
+  until:        _pf_thehive_probe.status == 200
+  no_log:       true
+  changed_when: false
+  failed_when:  _pf_thehive_probe.status != 200
+
+- name: "preflight | Assert TheHive SA has correct permissions"
+  ansible.builtin.assert:
+    that:
+      - _pf_thehive_probe.json.login is defined
+    fail_msg: "TheHive SA login not returned — SA may be disabled or misconfigured"
+
+# ── Probe Cortex API ──────────────────────────────────────────────
+
+- name: "preflight | Show Cortex probe URL (no credentials)"
+  ansible.builtin.debug:
+    msg: "Probing Cortex at: {{ soc_automation_cortex_api_base }}/status"
+  changed_when: false
+
+- name: "preflight | Probe Cortex API with SA key"
+  ansible.builtin.uri:
+    url:            "{{ soc_automation_cortex_api_base }}/status"
+    method:         GET
+    headers:
+      Authorization: "Bearer {{ _sa_cortex_key }}"
+    status_code:    [200]
+    timeout:        "{{ soc_automation_http_timeout }}"
+    validate_certs: "{{ soc_automation_validate_certs }}"
+  register: _pf_cortex_probe
+  retries:      "{{ soc_automation_preflight_retries }}"
+  delay:        "{{ soc_automation_preflight_delay }}"
+  until:        _pf_cortex_probe.status == 200
+  no_log:       true
+  changed_when: false
+  failed_when:  _pf_cortex_probe.status != 200
+
+# ── Probe MISP API ────────────────────────────────────────────────
+
+- name: "preflight | Show MISP probe URL (no credentials)"
+  ansible.builtin.debug:
+    msg: "Probing MISP at: {{ soc_automation_misp_api_base }}/servers/getVersion"
+  changed_when: false
+
+- name: "preflight | Probe MISP API with SA key"
+  ansible.builtin.uri:
+    url:            "{{ soc_automation_misp_api_base }}/servers/getVersion"
+    method:         GET
+    headers:
+      Authorization:  "{{ _sa_misp_key }}"
+      Accept:         "application/json"
+      Content-Type:   "application/json"
+    follow_redirects: none
+    status_code:    [200, 302]
+    timeout:        "{{ soc_automation_http_timeout }}"
+    validate_certs: "{{ soc_automation_validate_certs }}"
+  register: _pf_misp_probe
+  retries:      "{{ soc_automation_preflight_retries }}"
+  delay:        "{{ soc_automation_preflight_delay }}"
+  until:        _pf_misp_probe.status in [200, 302]
+  no_log:       true
+  changed_when: false
+  failed_when:  _pf_misp_probe.status not in [200, 302]
+
+# ── Probe Wazuh (kubectl exec — API not exposed via Ingress) ──────
+
+- name: "preflight | Show Wazuh probe target (no credentials)"
+  ansible.builtin.debug:
+    msg: "Probing Wazuh via kubectl exec on {{ soc_automation_wazuh_ns }}/{{ soc_automation_wazuh_manager_pod }} → https://localhost:55000/"
+  changed_when: false
+
+- name: "preflight | Probe Wazuh API via kubectl exec"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }}
+    {{ soc_automation_wazuh_manager_pod }} --
+    curl -sk -o /dev/null -w "%{http_code}"
+    -u {{ _sa_wazuh_user }}:{{ _sa_wazuh_pass }}
+    https://localhost:55000/
+  register: _pf_wazuh_probe
+  retries:      "{{ soc_automation_preflight_retries }}"
+  delay:        "{{ soc_automation_preflight_delay }}"
+  until:        _pf_wazuh_probe.rc == 0 and _pf_wazuh_probe.stdout in ['200', '401']
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  ignore_errors: true
+
+- name: "preflight | Set Wazuh reachability fact"
+  ansible.builtin.set_fact:
+    _pf_wazuh_reachable: >-
+      {{ _pf_wazuh_probe.rc is defined and
+         _pf_wazuh_probe.rc == 0 and
+         _pf_wazuh_probe.stdout | default('') in ['200', '401'] }}
+  changed_when: false
+
+# ── Status report (no credentials) ───────────────────────────────
+
+- name: "preflight | SA connectivity report"
+  ansible.builtin.debug:
+    msg:
+      - "=== SOC Automation Preflight ==="
+      - "TheHive SA : OK (login={{ _pf_thehive_probe.json.login | default('?') }}, profile={{ _pf_thehive_probe.json.profile | default('?') }})"
+      - "Cortex SA  : OK (status={{ _pf_cortex_probe.json.status | default('?') }})"
+      - "MISP SA    : OK (version={{ _pf_misp_probe.json.version | default('?') }})"
+      - "Wazuh SA   : {{ 'OK (HTTP ' + (_pf_wazuh_probe.stdout | default('?')) + ')' if _pf_wazuh_reachable | bool else 'WARN — unreachable (kubectl exec failed, active response will be skipped)' }}"
+  changed_when: false

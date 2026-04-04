@@ -1,0 +1,489 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# preflight.yml — Verify SOC deployment chain and probe all APIs
+# tag: bootstrap
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# This task file:
+#   1. Verifies K8s cluster is reachable (namespace probe)
+#   2. Verifies 170-soc-foundations ran (soc-vault-config ConfigMap)
+#   3. Verifies 180-soc-automation ran (soc-automation-worker-creds Secret)
+#   4. Verifies 190-soc-risk-engine ran (soc-risk-policy ConfigMap)
+#   5. Verifies 200-soc-compliance ran and is COMPLIANT (soc-compliance-report ConfigMap)
+#      This is the key addition over the compliance preflight — the SOC must be in a
+#      known-good state before test artifacts are injected into the live pipeline.
+#   6. Reads the 4 SA Secrets created by soc_foundations (170)
+#   7. Extracts credentials into Ansible facts (no_log, never logged)
+#   8. Resolves effective API base URLs (Ingress fallback for .svc addresses)
+#   9. Probes each service API with SA credentials
+#
+# Facts set (available to all subsequent task files in the play):
+#   _st_thehive_write_key — TheHive Bearer token (org-admin SA — for injection + cleanup)
+#   _st_thehive_key       — TheHive Bearer token (analyst SA — read-only verify tasks)
+#   _st_cortex_key        — Cortex Bearer token
+#   _st_misp_key          — MISP Authorization key
+#   _st_wazuh_user        — Wazuh SA username
+#   _st_wazuh_pass        — Wazuh SA password
+#
+# Also sets effective API URL overrides:
+#   soc_selftest_thehive_api_base  (may switch to Ingress URL)
+#   soc_selftest_cortex_api_base
+#   soc_selftest_misp_api_base
+
+# ── Verify K8s cluster is reachable ──────────────────────────────
+
+- name: "preflight | Verify K8s cluster is reachable (TheHive namespace probe)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Namespace
+    name: "{{ soc_namespaces.thehive }}"
+  register: _stpf_cluster_check
+  changed_when: false
+  failed_when: _stpf_cluster_check.resources | length == 0
+
+# ── Verify 170-soc-foundations has run ───────────────────────────
+
+- name: "preflight | Check 170 soc-vault-config ConfigMap exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "soc-vault-config"
+  register: _stpf_170_check
+  changed_when: false
+
+- name: "preflight | Assert 170-soc-foundations has run"
+  ansible.builtin.assert:
+    that: _stpf_170_check.resources | length > 0
+    fail_msg: >-
+      ConfigMap 'soc-vault-config' not found in namespace '{{ soc_namespaces.thehive }}'.
+      Run 170-soc-foundations first. Playbook 210 requires the full SOC stack (170→190).
+
+# ── Verify 180-soc-automation has run ────────────────────────────
+# 180 now creates soc-automation-worker-creds Secret (credentials.yml).
+# The old soc-automation-worker-script ConfigMap no longer exists (CronJob removed).
+
+- name: "preflight | Check 180 worker credentials Secret exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "soc-automation-worker-creds"
+  register: _stpf_180_check
+  no_log: true
+  changed_when: false
+
+- name: "preflight | Assert 180-soc-automation has run"
+  ansible.builtin.assert:
+    that: _stpf_180_check.resources | length > 0
+    fail_msg: >-
+      Secret 'soc-automation-worker-creds' not found in namespace
+      '{{ soc_namespaces.thehive }}'. Run 180-soc-automation first (--tags integration).
+
+# ── Verify 185-shuffle has run (Shuffle webhook ConfigMap) ────────
+
+- name: "preflight | Check 185 Shuffle webhook ConfigMap exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_selftest_shuffle_webhook_configmap }}"
+  register: _stpf_185_check
+  changed_when: false
+
+- name: "preflight | Assert 185-shuffle has run (Shuffle webhook configured)"
+  ansible.builtin.assert:
+    that: _stpf_185_check.resources | length > 0
+    fail_msg: >-
+      ConfigMap '{{ soc_selftest_shuffle_webhook_configmap }}' not found.
+      Run: 185-shuffle (--tags workflows), then 180-soc-automation (--tags integration)
+      to configure the Wazuh→Shuffle webhook. Playbook 210 requires the full SOC stack.
+
+# ── Verify 190-soc-risk-engine has run ───────────────────────────
+
+- name: "preflight | Check 190 soc-risk-policy ConfigMap exists"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "soc-risk-policy"
+  register: _stpf_190_check
+  changed_when: false
+
+- name: "preflight | Assert 190-soc-risk-engine has run"
+  ansible.builtin.assert:
+    that: _stpf_190_check.resources | length > 0
+    fail_msg: >-
+      ConfigMap 'soc-risk-policy' not found in namespace '{{ soc_namespaces.thehive }}'.
+      Run 190-soc-risk-engine first.
+
+- name: "preflight | Check 190 risk-engine Flask service is deployed"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_selftest_risk_engine_marker }}"
+  register: _stpf_190_svc_check
+  changed_when: false
+
+- name: "preflight | Assert 190 risk-engine HTTP service is running"
+  ansible.builtin.assert:
+    that: _stpf_190_svc_check.resources | length > 0
+    fail_msg: >-
+      ConfigMap '{{ soc_selftest_risk_engine_marker }}' not found.
+      Run 190-soc-risk-engine (--tags decision) to deploy the Flask POST /score service.
+      This is required for Shuffle to compute risk scores.
+
+# ── Compliance gate: verify 200 ran and reports compliant ────────
+# The SOC must be in a known-good state before we inject test artifacts.
+# A non-compliant SOC would produce unreliable selftest results.
+
+- name: "preflight | Read 200-soc-compliance report ConfigMap"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "soc-compliance-report"
+  register: _stpf_200_check
+  changed_when: false
+
+- name: "preflight | Assert 200-soc-compliance has run"
+  ansible.builtin.assert:
+    that: _stpf_200_check.resources | length > 0
+    fail_msg: >-
+      ConfigMap 'soc-compliance-report' not found in namespace '{{ soc_namespaces.thehive }}'.
+      Run 200-soc-compliance first. Playbook 210 requires a compliant SOC baseline.
+      ansible-playbook ansible/playbooks/200-soc-compliance.yml
+
+- name: "preflight | Assert SOC compliance status is compliant"
+  ansible.builtin.assert:
+    that: >-
+      (_stpf_200_check.resources[0].data.global_status | default('unknown')) == 'compliant'
+    fail_msg: >-
+      SOC compliance status is '{{ _stpf_200_check.resources[0].data.global_status | default('unknown') }}'
+      (expected: compliant). Resolve compliance drift before running the self-test.
+      ansible-playbook ansible/playbooks/200-soc-compliance.yml
+      Then re-run: ansible-playbook ansible/playbooks/210-soc-selftest.yml
+
+# ── Read SA Secrets (no_log on all reads) ────────────────────────
+
+- name: "preflight | Read TheHive write SA secret (thehive-selftest-foundations, org-admin)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_thehive_write_sa_secret_ns }}"
+    name: "{{ soc_selftest_thehive_write_sa_secret_name }}"
+  register: _stpf_thehive_write_secret
+  no_log: true
+
+- name: "preflight | Assert TheHive write SA secret exists"
+  ansible.builtin.assert:
+    that: _stpf_thehive_write_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_selftest_thehive_write_sa_secret_name }}' not found in namespace
+      '{{ soc_selftest_thehive_write_sa_secret_ns }}'.
+      Run 170-soc-foundations first: ansible-playbook ansible/playbooks/170-soc-foundations.yml --tags rbac
+
+- name: "preflight | Read TheHive SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_thehive_sa_secret_ns }}"
+    name: "{{ soc_selftest_thehive_sa_secret_name }}"
+  register: _stpf_thehive_secret
+  no_log: true
+
+- name: "preflight | Assert TheHive SA secret exists"
+  ansible.builtin.assert:
+    that: _stpf_thehive_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_selftest_thehive_sa_secret_name }}' not found in namespace
+      '{{ soc_selftest_thehive_sa_secret_ns }}'. Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read Cortex SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_cortex_sa_secret_ns }}"
+    name: "{{ soc_selftest_cortex_sa_secret_name }}"
+  register: _stpf_cortex_secret
+  no_log: true
+
+- name: "preflight | Assert Cortex SA secret exists"
+  ansible.builtin.assert:
+    that: _stpf_cortex_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_selftest_cortex_sa_secret_name }}' not found in namespace
+      '{{ soc_selftest_cortex_sa_secret_ns }}'. Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read MISP SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_misp_sa_secret_ns }}"
+    name: "{{ soc_selftest_misp_sa_secret_name }}"
+  register: _stpf_misp_secret
+  no_log: true
+
+- name: "preflight | Assert MISP SA secret exists"
+  ansible.builtin.assert:
+    that: _stpf_misp_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_selftest_misp_sa_secret_name }}' not found in namespace
+      '{{ soc_selftest_misp_sa_secret_ns }}'. Run 170-soc-foundations first (--tags rbac).
+
+- name: "preflight | Read Wazuh SA secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_wazuh_sa_secret_ns }}"
+    name: "{{ soc_selftest_wazuh_sa_secret_name }}"
+  register: _stpf_wazuh_secret
+  no_log: true
+
+- name: "preflight | Assert Wazuh SA secret exists"
+  ansible.builtin.assert:
+    that: _stpf_wazuh_secret.resources | length > 0
+    fail_msg: >-
+      Secret '{{ soc_selftest_wazuh_sa_secret_name }}' not found in namespace
+      '{{ soc_selftest_wazuh_sa_secret_ns }}'. Run 170-soc-foundations first (--tags rbac).
+
+# ── Extract credentials into Ansible facts ────────────────────────
+
+- name: "preflight | Extract SA credentials into facts"
+  ansible.builtin.set_fact:
+    _st_thehive_write_key: >-
+      {{ _stpf_thehive_write_secret.resources[0].data[soc_selftest_thehive_write_sa_key] | b64decode }}
+    _st_thehive_key: >-
+      {{ _stpf_thehive_secret.resources[0].data[soc_selftest_thehive_sa_key] | b64decode }}
+    _st_cortex_key: >-
+      {{ _stpf_cortex_secret.resources[0].data[soc_selftest_cortex_sa_key] | b64decode }}
+    _st_misp_key: >-
+      {{ _stpf_misp_secret.resources[0].data[soc_selftest_misp_sa_key] | b64decode }}
+    _st_wazuh_user: >-
+      {{ _stpf_wazuh_secret.resources[0].data[soc_selftest_wazuh_sa_key_user] | b64decode }}
+    _st_wazuh_pass: >-
+      {{ _stpf_wazuh_secret.resources[0].data[soc_selftest_wazuh_sa_key_pass] | b64decode }}
+  no_log: true
+
+# ── Resolve effective API base URLs (Ingress fallback) ────────────
+# If api_base contains '.svc' (in-cluster DNS), the control host cannot reach it
+# directly. Switch to the Ingress URL using apps_domain.
+
+- name: "preflight | Resolve effective API base URLs (Ingress fallback)"
+  ansible.builtin.set_fact:
+    soc_selftest_thehive_api_base: >-
+      {{
+        (
+          '.svc' in soc_selftest_thehive_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.thehive | default('thehive')) ~ '.' ~ apps_domain ~ '/api',
+            soc_selftest_thehive_api_base
+          )
+      }}
+    soc_selftest_cortex_api_base: >-
+      {{
+        (
+          '.svc' in soc_selftest_cortex_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.cortex | default('cortex')) ~ '.' ~ apps_domain ~ '/api',
+            soc_selftest_cortex_api_base
+          )
+      }}
+    soc_selftest_misp_api_base: >-
+      {{
+        (
+          '.svc' in soc_selftest_misp_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.misp | default('misp')) ~ '.' ~ apps_domain,
+            soc_selftest_misp_api_base
+          )
+      }}
+  changed_when: false
+
+# ── Vérifier la règle Wazuh selftest (inject_via_wazuh=true uniquement) ──────
+# Échoue vite si la règle 999999 est absente plutôt qu'après 300s de timeout.
+# La règle est déployée par 180-soc-automation (wazuh_webhook task).
+
+- name: "preflight | Check Wazuh selftest rule {{ soc_selftest_injection_rule_id }} exists"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+    grep -r "{{ soc_selftest_injection_rule_id }}" /var/ossec/etc/rules/
+  register: _stpf_wazuh_rule_check
+  changed_when: false
+  failed_when: false
+  ignore_errors: true
+  when: soc_selftest_inject_via_wazuh | bool
+
+- name: "preflight | Assert Wazuh selftest rule {{ soc_selftest_injection_rule_id }} is deployed"
+  ansible.builtin.assert:
+    that: _stpf_wazuh_rule_check.rc == 0
+    fail_msg: >-
+      Wazuh custom rule {{ soc_selftest_injection_rule_id }} not found on
+      {{ soc_selftest_wazuh_manager_pod }} (namespace: {{ soc_selftest_wazuh_ns }}).
+      Run 180-soc-automation to deploy it:
+        ansible-playbook ansible/playbooks/180-soc-automation.yml --tags integration
+      The rule is written to /var/ossec/etc/rules/soc_selftest_rules.xml by the
+      wazuh_webhook task alongside the Shuffle ossec.conf integration block.
+  when: soc_selftest_inject_via_wazuh | bool
+
+# ── Vérifier le bloc integration Shuffle dans ossec.conf ────────
+# Détecte si le pod Wazuh a redémarré depuis le dernier run de 180
+# (les modifications in-pod d'ossec.conf sont éphémères).
+# Échoue avec un message actionnable plutôt que d'attendre 90s.
+
+- name: "preflight | Check Shuffle integration block in Wazuh ossec.conf"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+    grep -q "name>shuffle</name" /var/ossec/etc/ossec.conf
+  register: _stpf_wazuh_integration_check
+  changed_when: false
+  failed_when: false
+  ignore_errors: true
+  when: soc_selftest_inject_via_wazuh | bool
+
+- name: "preflight | Assert Shuffle integration block is present in ossec.conf"
+  ansible.builtin.assert:
+    that: _stpf_wazuh_integration_check.rc == 0
+    fail_msg: >-
+      Bloc integration Shuffle ABSENT de /var/ossec/etc/ossec.conf.
+      Le pod Wazuh a probablement redémarré depuis le dernier run de 180
+      (les modifications in-pod sont éphémères et disparaissent au redémarrage).
+      Corriger en relançant :
+        ansible-playbook ansible/playbooks/180-soc-automation.yml --tags integration
+      Puis relancer : ansible-playbook ansible/playbooks/210-soc-selftest.yml
+  when: soc_selftest_inject_via_wazuh | bool
+
+# ── Probe TheHive API ─────────────────────────────────────────────
+
+- name: "preflight | Show TheHive probe URL"
+  ansible.builtin.debug:
+    msg: "Probing TheHive at: {{ soc_selftest_thehive_api_base }}/v1/user/current"
+  changed_when: false
+
+- name: "preflight | Probe TheHive API with SA key"
+  ansible.builtin.uri:
+    url:            "{{ soc_selftest_thehive_api_base }}/v1/user/current"
+    method:         GET
+    headers:
+      Authorization: "Bearer {{ _st_thehive_key }}"
+    status_code:    [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stpf_thehive_probe
+  retries:      3
+  delay:        5
+  until:        _stpf_thehive_probe.status == 200
+  no_log:       true
+  changed_when: false
+  failed_when:  _stpf_thehive_probe.status != 200
+
+# ── Probe Cortex API ──────────────────────────────────────────────
+
+- name: "preflight | Show Cortex probe URL"
+  ansible.builtin.debug:
+    msg: "Probing Cortex at: {{ soc_selftest_cortex_api_base }}/status"
+  changed_when: false
+
+- name: "preflight | Probe Cortex API with SA key"
+  ansible.builtin.uri:
+    url:            "{{ soc_selftest_cortex_api_base }}/status"
+    method:         GET
+    headers:
+      Authorization: "Bearer {{ _st_cortex_key }}"
+    status_code:    [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stpf_cortex_probe
+  retries:      3
+  delay:        5
+  until:        _stpf_cortex_probe.status == 200
+  no_log:       true
+  changed_when: false
+  failed_when:  _stpf_cortex_probe.status != 200
+
+# ── Probe MISP API ────────────────────────────────────────────────
+
+- name: "preflight | Show MISP probe URL"
+  ansible.builtin.debug:
+    msg: "Probing MISP at: {{ soc_selftest_misp_api_base }}/servers/getVersion"
+  changed_when: false
+
+- name: "preflight | Probe MISP API with SA key"
+  ansible.builtin.uri:
+    url:              "{{ soc_selftest_misp_api_base }}/servers/getVersion"
+    method:           GET
+    headers:
+      Authorization:  "{{ _st_misp_key }}"
+      Accept:         "application/json"
+      Content-Type:   "application/json"
+    follow_redirects: none
+    status_code:      [200, 302]
+    timeout:          "{{ soc_selftest_http_timeout }}"
+    validate_certs:   "{{ soc_selftest_validate_certs }}"
+  register: _stpf_misp_probe
+  retries:      3
+  delay:        5
+  until:        _stpf_misp_probe.status in [200, 302]
+  no_log:       true
+  changed_when: false
+  failed_when:  _stpf_misp_probe.status not in [200, 302]
+
+# ── Probe Wazuh (kubectl exec — API not exposed via Ingress) ──────
+
+- name: "preflight | Show Wazuh probe target"
+  ansible.builtin.debug:
+    msg: "Probing Wazuh via kubectl exec on {{ soc_selftest_wazuh_ns }}/{{ soc_selftest_wazuh_manager_pod }}"
+  changed_when: false
+
+- name: "preflight | Probe Wazuh API via kubectl exec"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }}
+    {{ soc_selftest_wazuh_manager_pod }} --
+    curl -sk -o /dev/null -w "%{http_code}"
+    -u {{ _st_wazuh_user }}:{{ _st_wazuh_pass }}
+    https://localhost:55000/
+  register: _stpf_wazuh_probe
+  retries:      3
+  delay:        5
+  until:        _stpf_wazuh_probe.rc == 0 and _stpf_wazuh_probe.stdout in ['200', '401']
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  ignore_errors: true
+
+- name: "preflight | Set Wazuh reachability fact"
+  ansible.builtin.set_fact:
+    _st_wazuh_reachable: >-
+      {{ _stpf_wazuh_probe.rc is defined and
+         _stpf_wazuh_probe.rc == 0 and
+         _stpf_wazuh_probe.stdout | default('') in ['200', '401'] }}
+  changed_when: false
+
+# ── Preflight summary ─────────────────────────────────────────────
+
+- name: "preflight | SOC Self-Test preflight — OK"
+  ansible.builtin.debug:
+    msg:
+      - "=== SOC Self-Test Preflight — OK ==="
+      - "170 foundations  : OK (soc-vault-config ConfigMap found)"
+      - "180 automation   : OK (soc-automation-worker-creds Secret found)"
+      - "185 shuffle      : OK ({{ soc_selftest_shuffle_webhook_configmap }} ConfigMap found)"
+      - "190 risk engine  : OK (soc-risk-policy + risk-engine service marker found)"
+      - "200 compliance   : OK (global_status={{ _stpf_200_check.resources[0].data.global_status | default('?') }})"
+      - "TheHive write SA  : OK (org-admin — manageAlert/create, used for injection + cleanup)"
+      - "TheHive read SA   : OK (login={{ _stpf_thehive_probe.json.login | default('?') }}, profile={{ _stpf_thehive_probe.json.profile | default('?') }})"
+      - "Cortex SA        : OK (status={{ _stpf_cortex_probe.json.status | default('?') }})"
+      - "MISP SA          : OK (version={{ _stpf_misp_probe.json.version | default('?') }})"
+      - "Wazuh SA         : {{ 'OK (HTTP ' + (_stpf_wazuh_probe.stdout | default('?')) + ')' if _st_wazuh_reachable | bool else 'WARN — unreachable, Active Response phase will be skipped' }}"
+      - "Injection mode   : {{ 'Full E2E (Wazuh logger → Shuffle webhook)' if soc_selftest_inject_via_wazuh | bool else 'Direct TheHive API [WARNING: Shuffle pipeline will not process this alert]' }}"
+  changed_when: false

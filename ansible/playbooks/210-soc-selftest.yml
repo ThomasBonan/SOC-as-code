@@ -1,0 +1,112 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# Playbook 210 — SOC Self-Test
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Provides continuous synthetic end-to-end validation of the complete SOC pipeline:
+#   - Injects a controlled test alert with a dedicated IOC (RFC 5737 TEST-NET-3)
+#   - Verifies propagation through every layer of the SOC chain:
+#       Injection → TheHive → Cortex (analyzers) → Risk Engine → MISP → Active Response
+#   - Measures propagation latency at each stage
+#   - Verifies risk scoring and decision coherence with declared thresholds
+#   - Cleans up all test artifacts after validation
+#   - Generates a structured JSON report (artifact + K8s ConfigMap)
+#
+# Complementary to 200-soc-compliance:
+#   200 audits STATIC configuration (drift detection against declared intent)
+#   210 tests RUNTIME behavior (does the live pipeline actually process alerts correctly?)
+#
+# Injection modes:
+#   Default (soc_selftest_inject_via_wazuh=true):
+#     kubectl exec logger on Wazuh manager — tests the complete pipeline:
+#     Wazuh → Shuffle webhook → TheHive → Cortex → Risk Engine (190) → MISP → AR.
+#     Wazuh rule {{ soc_selftest_injection_rule_id }} is deployed by 180-soc-automation
+#     (wazuh_webhook task). Preflight verifies the rule exists before injection.
+#   TheHive-only (soc_selftest_inject_via_wazuh=false):
+#     Direct TheHive API injection. Shuffle is NOT triggered. Only inject+verify_thehive
+#     phases are meaningful. Disable verify_cortex/risk/misp/ar when using this mode.
+#
+# Safety:
+#   - Test IOC: 203.0.113.250 (RFC 5737 TEST-NET-3 — never routable, documentation only)
+#   - soc_selftest_safe_mode=true (default): AR conditions evaluated but never executed
+#   - All test artifacts tagged "soc-selftest" + run_id for precise cleanup
+#   - Cleanup always runs (best-effort) to leave no residual test data
+#   - Secrets never logged (no_log: true on all credential reads and API calls)
+#
+# Usage:
+#   # Full self-test (safe mode, auto-cleanup)
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml
+#
+#   # Preflight only — verify APIs reachable and compliance gate passes
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml --tags bootstrap
+#
+#   # Injection only
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml --tags inject
+#
+#   # Verify pipeline (assumes injection already ran)
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml --tags verify
+#
+#   # Cleanup only (remove orphaned test artifacts)
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml --tags cleanup
+#
+#   # CI/CD strict mode — exit 1 if global_status != healthy
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml \
+#     -e soc_selftest_fail_on_error=true
+#
+#   # Full E2E including Wazuh injection (requires custom rule pre-deployed)
+#   ansible-playbook ansible/playbooks/210-soc-selftest.yml \
+#     -e soc_selftest_inject_via_wazuh=true
+#
+#   # Per-environment override
+#   SOC_ENV=prod ansible-playbook ansible/playbooks/210-soc-selftest.yml \
+#     -e @envs/prod.yml
+#
+# Tags:
+#   bootstrap    : preflight checks only (verify SOC chain + probe APIs + compliance gate)
+#   inject       : alert injection only
+#   verify       : all verify_* steps (thehive, cortex, risk_decision, misp, active_response)
+#   cleanup      : cleanup only (remove test artifacts)
+#   report       : generate report only (safe to combine with verify)
+#   soc_selftest : all of the above
+#
+# Output:
+#   - artifacts/soc-selftest-report.json  (local, CI/CD pipeline compatible)
+#   - ConfigMap soc-selftest-report        (K8s audit trail, namespace: soc-thehive)
+#   - Structured console report with box drawing and latency measurements
+#
+# Exit codes:
+#   0 : global_status=healthy (or soc_selftest_fail_on_error=false)
+#   1 : global_status=failed|degraded AND soc_selftest_fail_on_error=true
+#
+# Pre-requisites:
+#   - 170-soc-foundations completed successfully
+#   - 180-soc-automation completed successfully
+#   - 190-soc-risk-engine completed successfully
+#   - 200-soc-compliance ran and reported compliant (checked in preflight)
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "210 | SOC Self-Test — synthetic end-to-end pipeline validation"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+
+  pre_tasks:
+    - name: "210 | Override soc_environment from SOC_ENV env var"
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+
+    - name: "210 | Show active environment and selftest configuration"
+      ansible.builtin.debug:
+        msg:
+          - "SOC environment      : {{ soc_environment | default('dev') }}"
+          - "Safe mode            : {{ soc_selftest_safe_mode | default(true) }}"
+          - "Fail on error        : {{ soc_selftest_fail_on_error | default(true) }}"
+          - "Cleanup on exit      : {{ soc_selftest_cleanup | default(true) }}"
+          - "Inject via Wazuh     : {{ soc_selftest_inject_via_wazuh | default(true) }}"
+          - "Test IOC             : {{ soc_selftest_test_ip | default('203.0.113.250') }}"
+      changed_when: false
+
+  roles:
+    - role: soc_selftest

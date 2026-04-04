@@ -1,0 +1,131 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# verify_active_response.yml — Verify Active Response decision
+# tag: verify
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Verifies Active Response behavior for the selftest case.
+#
+# AR is only triggered when risk_score >= soc_risk_thresholds.auto_contain (default: 75).
+# If the test alert's risk score is below this threshold, this step is SKIPPED.
+#
+# Two modes (controlled by soc_selftest_safe_mode):
+#
+#   safe_mode=true (default):
+#     AR conditions are evaluated but AR is NOT actually executed.
+#     Logs what WOULD happen based on the risk score.
+#     Status: "ok" (expected behavior confirmed).
+#     This is the recommended default for CI/CD pipelines.
+#
+#   safe_mode=false (full validation):
+#     Checks the Wazuh active-responses.log file for the test IP.
+#     Verifies that the "firewall-drop" AR command was actually executed.
+#     Status: "ok" if AR log entry found, "fail" otherwise.
+#     WARNING: In non-safe mode, real firewall-drop rules may be applied.
+#     The test IP (203.0.113.250) is RFC 5737 non-routable, so this is safe,
+#     but review network policies before enabling.
+#
+# Facts set:
+#   _st_ar_triggered — true if AR was actually executed (non-safe mode only)
+#   _st_ar_status    — "ok" | "skipped" | "fail"
+
+# ── Skip if risk score below auto_contain threshold ───────────────
+# AR is only triggered at risk_score >= soc_risk_thresholds.auto_contain (default: 75)
+
+- name: "verify_active_response | Skip if risk_score below auto_contain threshold"
+  ansible.builtin.set_fact:
+    _st_ar_triggered: false
+    _st_ar_status:    "skipped"
+  changed_when: false
+  when: (_st_risk_score | default(-1) | int) < (soc_risk_thresholds.auto_contain | int)
+
+- name: "verify_active_response | Show skip reason"
+  ansible.builtin.debug:
+    msg:
+      - "Active Response verification SKIPPED."
+      - "risk_score={{ _st_risk_score | default(-1) }} < auto_contain={{ soc_risk_thresholds.auto_contain }}"
+      - "AR is only triggered at risk_score >= {{ soc_risk_thresholds.auto_contain }}."
+  changed_when: false
+  when: (_st_risk_score | default(-1) | int) < (soc_risk_thresholds.auto_contain | int)
+
+# ═══════════════════════════════════════════════════════════════════
+# Safe mode: evaluate expected AR behavior without executing it
+# ═══════════════════════════════════════════════════════════════════
+
+- name: "verify_active_response | [safe] Evaluate expected AR behavior (no execution)"
+  ansible.builtin.debug:
+    msg:
+      - "Safe mode active — Active Response NOT executed."
+      - "Conditions MET:"
+      - "  risk_score={{ _st_risk_score }} >= auto_contain={{ soc_risk_thresholds.auto_contain }}"
+      - "Expected AR action: firewall-drop on {{ soc_selftest_test_ip }}"
+      - "Expected scope: Wazuh active response rule 'firewall-drop' via ossec.conf"
+      - "To validate actual AR execution: set soc_selftest_safe_mode=false"
+      - "Note: test IP {{ soc_selftest_test_ip }} is RFC 5737 TEST-NET-3 (non-routable)"
+  changed_when: false
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - soc_selftest_safe_mode | bool
+
+- name: "verify_active_response | [safe] Mark AR status ok (expected behavior confirmed)"
+  ansible.builtin.set_fact:
+    _st_ar_triggered: false
+    _st_ar_status:    "ok"
+  changed_when: false
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - soc_selftest_safe_mode | bool
+
+# ═══════════════════════════════════════════════════════════════════
+# Full mode: check Wazuh AR log for actual execution (safe_mode=false)
+# ═══════════════════════════════════════════════════════════════════
+
+- name: "verify_active_response | [full] Check Wazuh AR log for selftest IP (kubectl exec)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+    grep -c "{{ soc_selftest_test_ip }}" /var/ossec/logs/active-responses.log
+  register: _stvr_ar_log_check
+  changed_when: false
+  failed_when:  false
+  no_log:       true
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - not soc_selftest_safe_mode | bool
+
+- name: "verify_active_response | [full] Assert AR was triggered in Wazuh log"
+  ansible.builtin.assert:
+    that:
+      - _stvr_ar_log_check.rc == 0
+      - _stvr_ar_log_check.stdout | int > 0
+    fail_msg: >-
+      Active Response entry for IP {{ soc_selftest_test_ip }} NOT found in
+      /var/ossec/logs/active-responses.log on {{ soc_selftest_wazuh_manager_pod }}.
+      risk_score={{ _st_risk_score }} >= auto_contain={{ soc_risk_thresholds.auto_contain }},
+      so AR should have been triggered.
+      kubectl exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+        grep "{{ soc_selftest_test_ip }}" /var/ossec/logs/active-responses.log
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - not soc_selftest_safe_mode | bool
+
+- name: "verify_active_response | [full] Mark AR status ok and record triggered"
+  ansible.builtin.set_fact:
+    _st_ar_triggered: true
+    _st_ar_status:    "ok"
+  changed_when: false
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - not soc_selftest_safe_mode | bool
+
+- name: "verify_active_response | [full] Show AR verification result"
+  ansible.builtin.debug:
+    msg:
+      - "Active Response execution confirmed in Wazuh AR log"
+      - "IP               : {{ soc_selftest_test_ip }}"
+      - "Log matches      : {{ _stvr_ar_log_check.stdout | default('?') }}"
+      - "AR log path      : /var/ossec/logs/active-responses.log"
+  changed_when: false
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - not soc_selftest_safe_mode | bool

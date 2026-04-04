@@ -1,0 +1,207 @@
+---
+# Build a DNS selector map with properly evaluated keys (Jinja2 dict literal evaluates
+# variable references in keys, unlike YAML mapping keys which stay as literal strings)
+- name: Build DNS selector map (evaluated keys)
+  ansible.builtin.set_fact:
+    _soc_netpol_dns_selectors_map: "{{ {
+        soc_netpol_namespaces.wazuh:  soc_netpol_wazuh_pod_selectors,
+        soc_netpol_namespaces.thehive: soc_netpol_thehive_pod_selectors,
+        soc_netpol_namespaces.cortex: soc_netpol_cortex_pod_selectors + soc_netpol_cortex_job_pod_selectors,
+        soc_netpol_namespaces.misp:   soc_netpol_misp_pod_selectors
+      } }}"
+  when: soc_netpol_enable_dns | bool
+
+# Note: dns_selectors (from vars:) is NOT available in the outer when: of include_tasks.
+# Use _soc_netpol_dns_selectors_map directly in when: to avoid the scoping issue.
+- name: Apply DNS egress policy per namespace/selector
+  ansible.builtin.include_tasks: dns_by_namespace.yml
+  vars:
+    dns_selectors: "{{ _soc_netpol_dns_selectors_map[dns_ns] | default([]) }}"
+  loop: "{{ soc_netpol_dns_namespaces }}"
+  loop_control:
+    loop_var: dns_ns
+  when:
+    - soc_netpol_enable_dns | bool
+    - _soc_netpol_dns_selectors_map[dns_ns] | default([]) | length > 0
+
+- name: Apply Wazuh -> TheHive egress policies
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-wazuh-egress-thehive.yml.j2
+  loop: "{{ soc_netpol_wazuh_pod_selectors }}"
+  loop_control:
+    index_var: wazuh_idx
+    loop_var: wazuh_selector
+  vars:
+    netpol_namespace: "{{ soc_netpol_namespaces.wazuh }}"
+    netpol_name: "{{ soc_netpol_wazuh_policy_name }}-{{ wazuh_idx }}"
+    netpol_pod_selector: "{{ wazuh_selector }}"
+    netpol_dest_namespace: "{{ soc_netpol_namespaces.thehive }}"
+    netpol_dest_pod_selectors: "{{ soc_netpol_thehive_dest_pod_selectors }}"
+    netpol_ports:
+      - protocol: TCP
+        port: "{{ soc_netpol_thehive_port }}"
+  when: soc_netpol_enable_wazuh_to_thehive | bool
+
+- name: Apply Wazuh internal egress policies
+  ansible.builtin.include_tasks: internal_egress_for_source.yml
+  vars:
+    wazuh_sources: "{{ soc_netpol_wazuh_pod_selectors }}"
+    wazuh_dests: "{{ soc_netpol_wazuh_internal_destinations }}"
+    internal_policy_prefix: "{{ soc_netpol_wazuh_internal_policy_name }}"
+    internal_namespace: "{{ soc_netpol_namespaces.wazuh }}"
+    internal_source_selector: "{{ wazuh_selector }}"
+    internal_source_idx: "{{ wazuh_idx }}"
+    internal_dests: "{{ wazuh_dests }}"
+  loop: "{{ wazuh_sources }}"
+  loop_control:
+    loop_var: wazuh_selector
+    index_var: wazuh_idx
+  when:
+    - soc_netpol_enable_internal_egress | bool
+    - wazuh_dests | length > 0
+
+- name: Remove legacy standard NetworkPolicy for TheHive K8s API (replaced by CiliumNetworkPolicy)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    api_version: networking.k8s.io/v1
+    kind: NetworkPolicy
+    name: "{{ soc_netpol_thehive_k8s_api_policy_name }}-{{ item }}"
+    namespace: "{{ soc_netpol_namespaces.thehive }}"
+    state: absent
+  loop: "{{ range(soc_netpol_thehive_pod_selectors | length) | list }}"
+  when: soc_netpol_enable_thehive_k8s_api_egress | bool
+
+- name: Apply TheHive -> K8s API egress policies (Pekko cluster bootstrap)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-thehive-egress-k8s-api.yml.j2
+  loop: "{{ soc_netpol_thehive_pod_selectors }}"
+  loop_control:
+    index_var: thehive_k8s_api_idx
+    loop_var: thehive_k8s_api_selector
+  vars:
+    netpol_namespace: "{{ soc_netpol_namespaces.thehive }}"
+    netpol_name: "{{ soc_netpol_thehive_k8s_api_policy_name }}-{{ thehive_k8s_api_idx }}"
+    netpol_pod_selector: "{{ thehive_k8s_api_selector }}"
+  when: soc_netpol_enable_thehive_k8s_api_egress | bool
+
+- name: Apply TheHive -> Cortex egress policies
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-thehive-egress-cortex.yml.j2
+  loop: "{{ soc_netpol_thehive_pod_selectors }}"
+  loop_control:
+    index_var: thehive_idx
+    loop_var: thehive_selector
+  vars:
+    netpol_namespace: "{{ soc_netpol_namespaces.thehive }}"
+    netpol_name: "{{ soc_netpol_thehive_policy_name }}-{{ thehive_idx }}"
+    netpol_pod_selector: "{{ thehive_selector }}"
+    netpol_dest_namespace: "{{ soc_netpol_namespaces.cortex }}"
+    netpol_dest_pod_selectors: "{{ soc_netpol_cortex_dest_pod_selectors }}"
+    netpol_ports:
+      - protocol: TCP
+        port: "{{ soc_netpol_cortex_port }}"
+  when: soc_netpol_enable_thehive_to_cortex | bool
+
+- name: Apply TheHive internal egress policies
+  ansible.builtin.include_tasks: internal_egress_for_source.yml
+  vars:
+    thehive_sources: "{{ soc_netpol_thehive_pod_selectors }}"
+    thehive_dests: "{{ soc_netpol_thehive_internal_destinations }}"
+    internal_policy_prefix: "{{ soc_netpol_thehive_internal_policy_name }}"
+    internal_namespace: "{{ soc_netpol_namespaces.thehive }}"
+    internal_source_selector: "{{ thehive_selector }}"
+    internal_source_idx: "{{ thehive_idx }}"
+    internal_dests: "{{ thehive_dests }}"
+  loop: "{{ thehive_sources }}"
+  loop_control:
+    loop_var: thehive_selector
+    index_var: thehive_idx
+  when:
+    - soc_netpol_enable_internal_egress | bool
+    - thehive_dests | length > 0
+
+- name: Build Cortex selectors (include jobs)
+  ansible.builtin.set_fact:
+    soc_netpol_cortex_all_selectors: "{{ soc_netpol_cortex_pod_selectors + soc_netpol_cortex_job_pod_selectors }}"
+
+- name: Apply Cortex internet egress policies (Cilium FQDN)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-cortex-egress-internet-fqdn.yml.j2
+  loop: "{{ soc_netpol_cortex_all_selectors }}"
+  loop_control:
+    index_var: cortex_inet_idx
+    loop_var: cortex_inet_selector
+  vars:
+    cnp_namespace: "{{ soc_netpol_namespaces.cortex }}"
+    cnp_name: "{{ soc_netpol_cortex_internet_policy_name }}-{{ cortex_inet_idx }}"
+    cnp_endpoint_selector: "{{ cortex_inet_selector }}"
+    cnp_fqdns: "{{ soc_netpol_cortex_internet_fqdns }}"
+    cnp_ports: "{{ soc_netpol_cortex_internet_ports }}"
+  when:
+    - soc_netpol_enable_cortex_internet_egress | bool
+    - (soc_netpol_cortex_internet_fqdns | default([]) | length) > 0
+    - (soc_netpol_cortex_internet_ports | default([]) | length) > 0
+
+- name: Apply Cortex -> MISP egress policies
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-cortex-egress-misp.yml.j2
+  loop: "{{ soc_netpol_cortex_all_selectors }}"
+  loop_control:
+    index_var: cortex_idx
+    loop_var: cortex_selector
+  vars:
+    netpol_namespace: "{{ soc_netpol_namespaces.cortex }}"
+    netpol_name: "{{ soc_netpol_cortex_policy_name }}-{{ cortex_idx }}"
+    netpol_pod_selector: "{{ cortex_selector }}"
+    netpol_dest_namespace: "{{ soc_netpol_namespaces.misp }}"
+    netpol_dest_pod_selectors: "{{ soc_netpol_misp_dest_pod_selectors }}"
+    netpol_ports:
+      - protocol: TCP
+        port: "{{ soc_netpol_misp_port }}"
+  when: soc_netpol_enable_cortex_to_misp | bool
+
+- name: Apply Cortex internal egress policies
+  ansible.builtin.include_tasks: internal_egress_for_source.yml
+  vars:
+    cortex_sources: "{{ soc_netpol_cortex_all_selectors }}"
+    cortex_dests: "{{ soc_netpol_cortex_internal_destinations }}"
+    internal_policy_prefix: "{{ soc_netpol_cortex_internal_policy_name }}"
+    internal_namespace: "{{ soc_netpol_namespaces.cortex }}"
+    internal_source_selector: "{{ cortex_selector }}"
+    internal_source_idx: "{{ cortex_idx }}"
+    internal_dests: "{{ cortex_dests }}"
+  loop: "{{ cortex_sources }}"
+  loop_control:
+    loop_var: cortex_selector
+    index_var: cortex_idx
+  when:
+    - soc_netpol_enable_internal_egress | bool
+    - cortex_dests | length > 0
+
+- name: Apply MISP internal egress policies
+  ansible.builtin.include_tasks: internal_egress_for_source.yml
+  vars:
+    misp_sources: "{{ soc_netpol_misp_pod_selectors }}"
+    misp_dests: "{{ soc_netpol_misp_internal_destinations }}"
+    internal_policy_prefix: "{{ soc_netpol_misp_internal_policy_name }}"
+    internal_namespace: "{{ soc_netpol_namespaces.misp }}"
+    internal_source_selector: "{{ misp_selector }}"
+    internal_source_idx: "{{ misp_idx }}"
+    internal_dests: "{{ misp_dests }}"
+  loop: "{{ misp_sources }}"
+  loop_control:
+    loop_var: misp_selector
+    index_var: misp_idx
+  when:
+    - soc_netpol_enable_internal_egress | bool
+    - misp_dests | length > 0

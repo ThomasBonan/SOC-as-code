@@ -1,0 +1,552 @@
+---
+- name: Resolve Cortex -> MISP API key from provided variable
+  ansible.builtin.set_fact:
+    soc_config_cortex_misp_api_key_resolved: "{{ soc_config_cortex_misp_api_key }}"
+  when: soc_config_cortex_misp_api_key | length > 0
+  no_log: true
+
+- name: Check Cortex -> MISP integration secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_config_cortex_namespace }}"
+    name: "{{ soc_config_cortex_misp_secret_name }}"
+  register: cortex_misp_secret_read
+  when: soc_config_cortex_misp_api_key | length == 0
+  no_log: true
+
+- name: Resolve Cortex -> MISP API key from existing integration secret
+  ansible.builtin.set_fact:
+    soc_config_cortex_misp_api_key_resolved: >-
+      {{
+        cortex_misp_secret_read.resources[0].data['misp_api_key']
+        | b64decode
+      }}
+  when:
+    - soc_config_cortex_misp_api_key | length == 0
+    - cortex_misp_secret_read.resources | length > 0
+    - "'misp_api_key' in (cortex_misp_secret_read.resources[0].data | default({}))"
+  no_log: true
+
+- name: Read MISP admin secret for API key bootstrap
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.misp }}"
+    name: "{{ soc_config_cortex_misp_admin_secret_name }}"
+  register: misp_admin_secret
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+  no_log: true
+
+- name: Fail when MISP admin secret is missing for API key bootstrap
+  ansible.builtin.fail:
+    msg: >-
+      Missing Secret {{ soc_namespaces.misp }}/{{ soc_config_cortex_misp_admin_secret_name }}.
+      Unable to auto-bootstrap Cortex -> MISP API key.
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_admin_secret.resources | length == 0
+
+- name: Resolve MISP admin email for API key bootstrap
+  ansible.builtin.set_fact:
+    misp_admin_email_resolved: >-
+      {{
+        misp_admin_secret.resources[0].data[soc_config_cortex_misp_admin_email_secret_key]
+        | b64decode
+      }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_admin_secret.resources | length > 0
+    - soc_config_cortex_misp_admin_email_secret_key in (misp_admin_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: Fail when MISP admin email key is missing in admin secret
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.misp }}/{{ soc_config_cortex_misp_admin_secret_name }}
+      does not contain key {{ soc_config_cortex_misp_admin_email_secret_key }}.
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_admin_secret.resources | length > 0
+    - soc_config_cortex_misp_admin_email_secret_key not in (misp_admin_secret.resources[0].data | default({}))
+
+- name: Read MISP MariaDB secret for API key bootstrap
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.misp }}"
+    name: "{{ soc_config_cortex_misp_db_secret_name }}"
+  register: misp_db_secret
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+  no_log: true
+
+- name: Fail when MISP MariaDB secret is missing for API key bootstrap
+  ansible.builtin.fail:
+    msg: >-
+      Missing Secret {{ soc_namespaces.misp }}/{{ soc_config_cortex_misp_db_secret_name }}.
+      Unable to auto-resolve Cortex -> MISP API key from database.
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_db_secret.resources | length == 0
+
+- name: Resolve MISP MariaDB password for API key bootstrap
+  ansible.builtin.set_fact:
+    misp_db_password_resolved: >-
+      {{
+        misp_db_secret.resources[0].data[soc_config_cortex_misp_db_password_secret_key]
+        | b64decode
+      }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_db_secret.resources | length > 0
+    - soc_config_cortex_misp_db_password_secret_key in (misp_db_secret.resources[0].data | default({}))
+  no_log: true
+
+- name: Fail when MISP MariaDB password key is missing in secret
+  ansible.builtin.fail:
+    msg: >-
+      Secret {{ soc_namespaces.misp }}/{{ soc_config_cortex_misp_db_secret_name }}
+      does not contain key {{ soc_config_cortex_misp_db_password_secret_key }}.
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_db_secret.resources | length > 0
+    - soc_config_cortex_misp_db_password_secret_key not in (misp_db_secret.resources[0].data | default({}))
+
+- name: Wait for MISP MariaDB pod ready
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_namespaces.misp }}
+    wait --for=condition=Ready pod/{{ soc_config_cortex_misp_db_pod_name }} --timeout=5m
+  changed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+
+- name: Detect MISP DB CLI (mariadb)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - mariadb
+      - --version
+  register: misp_db_cli_mariadb
+  changed_when: false
+  failed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+
+- name: Detect MISP DB CLI (mysql fallback)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - mysql
+      - --version
+  register: misp_db_cli_mysql
+  changed_when: false
+  failed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_db_cli_mariadb.rc | default(1)) != 0
+
+- name: Resolve MISP DB CLI
+  ansible.builtin.set_fact:
+    misp_db_cli_bin: >-
+      {{
+        'mariadb'
+        if (misp_db_cli_mariadb.rc | default(1)) == 0
+        else (
+          'mysql'
+          if (misp_db_cli_mysql.rc | default(1)) == 0
+          else ''
+        )
+      }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+
+- name: Fail when no SQL client is available in MISP DB pod
+  ansible.builtin.fail:
+    msg: >-
+      No SQL client detected in pod {{ soc_namespaces.misp }}/{{ soc_config_cortex_misp_db_pod_name }}.
+      mariadb_rc={{ misp_db_cli_mariadb.rc | default('n/a') }}
+      mysql_rc={{ misp_db_cli_mysql.rc | default('n/a') }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_db_cli_bin | default('') | length) == 0
+
+- name: Resolve MISP admin user ID from admin email in database
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - "{{ misp_db_cli_bin }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_config_cortex_misp_db_user }}"
+      - "-p{{ misp_db_password_resolved }}"
+      - "{{ soc_config_cortex_misp_db_name }}"
+      - -e
+      - "SELECT id FROM users WHERE email='{{ misp_admin_email_resolved }}' ORDER BY id ASC LIMIT 1;"
+  register: misp_admin_user_id_query
+  changed_when: false
+  failed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - misp_admin_email_resolved is defined
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+  no_log: true
+
+- name: Resolve MISP admin user ID from first admin role account (fallback)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - "{{ misp_db_cli_bin }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_config_cortex_misp_db_user }}"
+      - "-p{{ misp_db_password_resolved }}"
+      - "{{ soc_config_cortex_misp_db_name }}"
+      - -e
+      - "SELECT id FROM users WHERE role_id = 1 ORDER BY id ASC LIMIT 1;"
+  register: misp_admin_user_id_query_fallback
+  changed_when: false
+  failed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_admin_user_id_query.stdout | default('') | trim | length) == 0
+  no_log: true
+
+- name: Fail when MISP admin user ID query cannot run
+  ansible.builtin.fail:
+    msg: >-
+      Unable to query MISP DB for admin user ID.
+      primary_rc={{ misp_admin_user_id_query.rc | default('n/a') }}
+      primary_stderr={{ misp_admin_user_id_query.stderr | default('') | trim }}
+      fallback_rc={{ misp_admin_user_id_query_fallback.rc | default('n/a') }}
+      fallback_stderr={{ misp_admin_user_id_query_fallback.stderr | default('') | trim }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_admin_user_id_query.rc | default(1)) != 0
+    - (misp_admin_user_id_query_fallback is not defined) or ((misp_admin_user_id_query_fallback.rc | default(1)) != 0)
+
+- name: Resolve MISP admin user ID for API key bootstrap
+  ansible.builtin.set_fact:
+    misp_admin_user_id_resolved: >-
+      {{
+        (
+          (misp_admin_user_id_query.stdout | default('') | trim)
+          if (misp_admin_user_id_query.stdout | default('') | trim | length) > 0
+          else (misp_admin_user_id_query_fallback.stdout | default('') | trim)
+        )
+      }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+  no_log: true
+
+- name: Fail when no MISP admin user is found for API key bootstrap
+  ansible.builtin.fail:
+    msg: >-
+      Could not find a MISP admin user in database {{ soc_config_cortex_misp_db_name }}.
+      Ensure MISP initialization completed (user table populated).
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_admin_user_id_resolved | default('') | length) == 0
+
+- name: Resolve MISP API key from resolved admin user in database
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - "{{ misp_db_cli_bin }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_config_cortex_misp_db_user }}"
+      - "-p{{ misp_db_password_resolved }}"
+      - "{{ soc_config_cortex_misp_db_name }}"
+      - -e
+      - "SELECT authkey FROM users WHERE id={{ misp_admin_user_id_resolved | int }} AND authkey IS NOT NULL AND authkey <> '' LIMIT 1;"
+  register: misp_authkey_query
+  changed_when: false
+  failed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_admin_user_id_resolved | default('') | length) > 0
+  no_log: true
+
+- name: Fail when MISP API key query cannot run
+  ansible.builtin.fail:
+    msg: >-
+      Unable to query MISP DB for authkey of admin user id {{ misp_admin_user_id_resolved | default('') }}.
+      rc={{ misp_authkey_query.rc | default('n/a') }}
+      stderr={{ misp_authkey_query.stderr | default('') | trim }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_admin_user_id_resolved | default('') | length) > 0
+    - (misp_authkey_query.rc | default(1)) != 0
+
+- name: Generate MISP API key for admin user when missing
+  ansible.builtin.set_fact:
+    misp_authkey_generated: "{{ lookup('password', '/dev/null length=40 chars=ascii_letters,digits') }}"
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - (misp_admin_user_id_resolved | default('') | length) > 0
+    - (misp_authkey_query.stdout | default('') | trim | length) == 0
+  no_log: true
+
+- name: Persist generated MISP API key in database for admin user
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - "{{ misp_db_cli_bin }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_config_cortex_misp_db_user }}"
+      - "-p{{ misp_db_password_resolved }}"
+      - "{{ soc_config_cortex_misp_db_name }}"
+      - -e
+      - "UPDATE users SET authkey='{{ misp_authkey_generated }}' WHERE id={{ misp_admin_user_id_resolved | int }};"
+  register: misp_authkey_update
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_authkey_generated is defined
+  changed_when: true
+  no_log: true
+
+- name: Re-read MISP API key after database update
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_config_kubeconfig_path }}"
+      - -n
+      - "{{ soc_namespaces.misp }}"
+      - exec
+      - "pod/{{ soc_config_cortex_misp_db_pod_name }}"
+      - --
+      - "{{ misp_db_cli_bin }}"
+      - -N
+      - -B
+      - -u
+      - "{{ soc_config_cortex_misp_db_user }}"
+      - "-p{{ misp_db_password_resolved }}"
+      - "{{ soc_config_cortex_misp_db_name }}"
+      - -e
+      - "SELECT authkey FROM users WHERE id={{ misp_admin_user_id_resolved | int }} AND authkey IS NOT NULL AND authkey <> '' LIMIT 1;"
+  register: misp_authkey_query_after
+  changed_when: false
+  failed_when: false
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_authkey_generated is defined
+  no_log: true
+
+- name: Fail when MISP API key re-read cannot run after update
+  ansible.builtin.fail:
+    msg: >-
+      Unable to re-read MISP authkey after update.
+      rc={{ misp_authkey_query_after.rc | default('n/a') }}
+      stderr={{ misp_authkey_query_after.stderr | default('') | trim }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+    - misp_authkey_generated is defined
+    - (misp_authkey_query_after.rc | default(1)) != 0
+
+- name: Set bootstrapped Cortex -> MISP API key from database
+  ansible.builtin.set_fact:
+    soc_config_cortex_misp_api_key_resolved: >-
+      {{
+        (
+          (misp_authkey_query.stdout | default('') | trim)
+          if (misp_authkey_query.stdout | default('') | trim | length) > 0
+          else (misp_authkey_query_after.stdout | default('') | trim)
+        )
+      }}
+  when:
+    - soc_config_cortex_misp_api_key_auto_bootstrap | bool
+    - soc_config_cortex_misp_api_key | length == 0
+    - (soc_config_cortex_misp_api_key_resolved | default('')) | length == 0
+  no_log: true
+
+- name: Assert Cortex -> MISP inputs
+  ansible.builtin.assert:
+    that:
+      - soc_config_cortex_misp_url | length > 0
+      - soc_config_cortex_misp_api_key_resolved | default('') | length > 0
+    fail_msg: >-
+      soc_config_cortex_misp_url and a resolved Cortex -> MISP API key are required.
+      Set soc_config_cortex_misp_api_key or enable bootstrap
+      (soc_config_cortex_misp_api_key_auto_bootstrap=true).
+
+- name: Create or update Cortex MISP integration secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_config_cortex_misp_secret_name }}"
+        namespace: "{{ soc_config_cortex_namespace }}"
+      type: Opaque
+      stringData:
+        misp_url: "{{ soc_config_cortex_misp_url }}"
+        misp_api_key: "{{ soc_config_cortex_misp_api_key_resolved }}"
+        misp_verify_tls: "{{ soc_config_cortex_misp_verify_tls | bool | lower }}"
+  register: cortex_misp_secret
+  no_log: true
+
+- name: Read Cortex deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ soc_config_cortex_namespace }}"
+    name: "{{ soc_config_cortex_deployment_name }}"
+  register: cortex_deployment
+
+- name: Fail if Cortex deployment is missing
+  ansible.builtin.fail:
+    msg: "Deployment {{ soc_config_cortex_namespace }}/{{ soc_config_cortex_deployment_name }} not found."
+  when: cortex_deployment.resources | length == 0
+
+- name: Build Cortex container env list (deduplicated)
+  ansible.builtin.set_fact:
+    cortex_container_name: "{{ cortex_deployment.resources[0].spec.template.spec.containers[0].name }}"
+    cortex_env_new: >-
+      {{
+        (
+          cortex_deployment.resources[0].spec.template.spec.containers[0].env | default([])
+          | rejectattr('name', 'equalto', soc_config_cortex_misp_env_url_name)
+          | rejectattr('name', 'equalto', soc_config_cortex_misp_env_key_name)
+          | rejectattr('name', 'equalto', soc_config_cortex_misp_env_tls_name)
+          | list
+        )
+        + [
+            {'name': soc_config_cortex_misp_env_url_name, 'valueFrom': {'secretKeyRef': {'name': soc_config_cortex_misp_secret_name, 'key': 'misp_url'}}},
+            {'name': soc_config_cortex_misp_env_key_name, 'valueFrom': {'secretKeyRef': {'name': soc_config_cortex_misp_secret_name, 'key': 'misp_api_key'}}},
+            {'name': soc_config_cortex_misp_env_tls_name, 'valueFrom': {'secretKeyRef': {'name': soc_config_cortex_misp_secret_name, 'key': 'misp_verify_tls'}}}
+          ]
+      }}
+
+- name: Patch Cortex deployment with MISP env vars
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_config_kubeconfig_path }}"
+    namespace: "{{ soc_config_cortex_namespace }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ soc_config_cortex_deployment_name }}"
+      spec:
+        template:
+          spec:
+            containers:
+              - name: "{{ cortex_container_name }}"
+                env: "{{ cortex_env_new }}"
+  register: cortex_env_patch
+
+- name: Restart Cortex deployment when MISP integration changed
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_config_cortex_namespace }}
+    rollout restart deploy/{{ soc_config_cortex_deployment_name }}
+  when: cortex_misp_secret.changed or cortex_env_patch.changed
+  changed_when: true
+
+- name: Wait Cortex deployment rollout
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_config_kubeconfig_path }}
+    -n {{ soc_config_cortex_namespace }}
+    rollout status deploy/{{ soc_config_cortex_deployment_name }} --timeout=10m
+  changed_when: false

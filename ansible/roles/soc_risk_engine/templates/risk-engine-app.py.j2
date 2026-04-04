@@ -1,0 +1,161 @@
+# ════════════════════════════════════════════════════════════════════════════════
+# risk-engine-app.py — SOC Risk Engine Flask HTTP service
+# Deployed by: 190-soc-risk-engine → tasks/risk_engine_service.yml
+# Endpoints  : POST /score   — compute 5-dim risk score from Shuffle case context
+#              GET  /health  — return policy version + weights + thresholds
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Ansible-injected constants (rendered at deploy time — no runtime env vars needed)
+# ── Scoring weights ─────────────────────────────────────────────────────────────
+WEIGHTS = {
+    "wazuh":     {{ soc_risk_weights.wazuh }},
+    "cortex":    {{ soc_risk_weights.cortex }},
+    "misp":      {{ soc_risk_weights.misp }},
+    "asset":     {{ soc_risk_weights.asset }},
+    "frequency": {{ soc_risk_weights.frequency }},
+}
+# ── Decision thresholds (0-100 scale, top-down first-match) ─────────────────────
+THRESHOLDS = {
+    "auto_close":   {{ soc_risk_thresholds.auto_close }},
+    "auto_promote": {{ soc_risk_thresholds.auto_promote }},
+    "auto_contain": {{ soc_risk_thresholds.auto_contain }},
+    "escalate":     {{ soc_risk_thresholds.escalate }},
+}
+POLICY_VERSION       = "2.0"
+ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
+LISTEN_PORT          = 8080
+
+{% raw %}
+import json
+import logging
+import sys
+from flask import Flask, request, jsonify
+
+logging.basicConfig(
+    stream=sys.stderr,
+    level=logging.INFO,
+    format='{"ts":"%(asctime)s","level":"%(levelname)s","msg":"%(message)s"}',
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
+)
+logger = logging.getLogger("risk-engine")
+
+app = Flask(__name__)
+
+# ── Load asset weights from mounted ConfigMap ─────────────────────────────────
+try:
+    with open(ASSET_WEIGHTS_PATH) as f:
+        _aw = json.load(f)
+    ASSET_WEIGHTS = _aw.get("weights", {})
+    logger.info("Asset weights loaded from %s: %s", ASSET_WEIGHTS_PATH, ASSET_WEIGHTS)
+except Exception as exc:
+    logger.warning("Cannot load %s: %s — using built-in defaults", ASSET_WEIGHTS_PATH, exc)
+    ASSET_WEIGHTS = {"server-prod": 5, "server-internal": 3, "workstation": 2, "lab": 1, "default": 1}
+
+
+# ── Scoring formula ───────────────────────────────────────────────────────────
+def _compute(wazuh_severity: int, cortex_max_level: int, misp_hit: bool,
+             asset_type: str, frequency: int) -> dict:
+    """
+    5-dim weighted score (0-100):
+      wazuh     : (severity[1-4] - 1) / 3 * 100
+      cortex    : (max_level[0-3] / 3) * 100
+      misp      : 100 if hit else 0  (binary)
+      asset     : (weight[1-5] - 1) / 4 * 100
+      frequency : min(100, (count[1+] - 1) / 9 * 100)
+    score = sum(dim * weight) / sum(weights)
+    """
+    dim_wazuh     = (max(1, min(4, wazuh_severity)) - 1) / 3 * 100.0
+    dim_cortex    = (max(0, min(3, cortex_max_level)) / 3) * 100.0
+    dim_misp      = 100.0 if misp_hit else 0.0
+    aw            = ASSET_WEIGHTS.get(asset_type, ASSET_WEIGHTS.get("default", 1))
+    dim_asset     = (max(1, min(5, int(aw))) - 1) / 4 * 100.0
+    dim_frequency = min(100.0, max(0.0, (max(1, frequency) - 1) / 9 * 100.0))
+
+    dims = {
+        "wazuh":     round(dim_wazuh,     2),
+        "cortex":    round(dim_cortex,    2),
+        "misp":      round(dim_misp,      2),
+        "asset":     round(dim_asset,     2),
+        "frequency": round(dim_frequency, 2),
+    }
+    total_w = sum(WEIGHTS.values())
+    score   = sum(dims[d] * WEIGHTS[d] for d in dims) / total_w
+    return {"score": round(score, 2), "dimensions": dims}
+
+
+def _decide(score: float) -> str:
+    """Top-down threshold evaluation — first match wins."""
+    if score >= THRESHOLDS["escalate"]:
+        return "escalated"
+    if score >= THRESHOLDS["auto_contain"]:
+        return "contained"
+    if score >= THRESHOLDS["auto_promote"]:
+        return "auto_promoted"
+    if score < THRESHOLDS["auto_close"]:
+        return "auto_closed"
+    return "reviewed"
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────────────
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status":         "ok",
+        "policy_version": POLICY_VERSION,
+        "weights":        WEIGHTS,
+        "thresholds":     THRESHOLDS,
+        "asset_weights":  ASSET_WEIGHTS,
+    }), 200
+
+
+@app.route("/score", methods=["POST"])
+def score():
+    """
+    Request body (JSON):
+      case_id         : str   — TheHive case ID (e.g. "~123456")
+      wazuh_severity  : int   — TheHive severity 1-4 (mapped from Wazuh level)
+      cortex_max_level: int   — Max Cortex analyzer taxonomy level 0-3
+      misp_hit        : bool  — True if any MISP IOC matched
+      asset_type      : str   — Asset type tag (e.g. "server-prod")
+      frequency       : int   — Similar alert count in window (>=1)
+
+    Response body (JSON):
+      case_id       : str
+      risk_score    : float  [0-100]
+      risk_decision : str    auto_closed | reviewed | auto_promoted | contained | escalated
+      dimensions    : dict   per-dimension normalized scores
+      policy_version: str
+    """
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({"error": "JSON body required"}), 400
+
+    try:
+        wazuh_severity    = int(body.get("wazuh_severity",    1))
+        cortex_max_level  = int(body.get("cortex_max_level",  0))
+        misp_hit          = bool(body.get("misp_hit",         False))
+        asset_type        = str(body.get("asset_type",        "default"))
+        frequency         = int(body.get("frequency",         1))
+    except (TypeError, ValueError) as exc:
+        return jsonify({"error": f"Invalid input: {exc}"}), 400
+
+    result   = _compute(wazuh_severity, cortex_max_level, misp_hit, asset_type, frequency)
+    decision = _decide(result["score"])
+
+    resp = {
+        "case_id":        body.get("case_id", ""),
+        "risk_score":     result["score"],
+        "risk_decision":  decision,
+        "dimensions":     result["dimensions"],
+        "policy_version": POLICY_VERSION,
+    }
+    logger.info("case=%s score=%.1f decision=%s asset=%s freq=%d",
+                resp["case_id"], resp["risk_score"], decision, asset_type, frequency)
+    return jsonify(resp), 200
+
+
+if __name__ == "__main__":
+    logger.info("Starting risk-engine service on port %d", LISTEN_PORT)
+    app.run(host="0.0.0.0", port=LISTEN_PORT, debug=False)
+{% endraw %}

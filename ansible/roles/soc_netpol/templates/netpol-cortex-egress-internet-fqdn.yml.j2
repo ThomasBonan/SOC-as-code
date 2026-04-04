@@ -1,0 +1,18 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: "{{ cnp_name }}"
+  namespace: "{{ cnp_namespace }}"
+spec:
+  endpointSelector: {{ cnp_endpoint_selector | to_json }}
+  egress:
+    - toFQDNs:
+{% for fqdn in cnp_fqdns %}
+        - {{ fqdn | to_json }}
+{% endfor %}
+      toPorts:
+        - ports:
+{% for p in cnp_ports %}
+            - port: "{{ p.port | string }}"
+              protocol: "{{ p.protocol }}"
+{% endfor %}

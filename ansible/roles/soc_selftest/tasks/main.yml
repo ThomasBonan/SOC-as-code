@@ -1,0 +1,57 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_selftest — Task orchestrator
+# Playbook 210 | Synthetic end-to-end pipeline validation
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Static import_tasks (not include_tasks) ensures tags propagate correctly to
+# all child tasks. The when: guard on each import applies to every task inside
+# the imported file.
+#
+# Execution order:
+#   1. preflight         — verify SOC chain, probe APIs, compliance gate
+#   2. inject_wazuh_alert — create synthetic alert (TheHive API or Wazuh logger)
+#   3. verify_thehive    — poll for alert + case promotion by Shuffle
+#   4. verify_cortex     — poll for risk_engine:processed tag (Cortex + risk engine via Shuffle)
+#   5. verify_risk_decision — poll for risk_decision custom field (Shuffle → POST /score)
+#   6. verify_misp       — check IOC push to MISP (skipped if below auto_contain)
+#   7. verify_active_response — check AR decision (safe_mode logs only)
+#   8. cleanup           — delete test artifacts (best-effort, ignore_errors)
+#   9. report            — assemble JSON report + ConfigMap + console summary
+# ════════════════════════════════════════════════════════════════════════════════
+
+- import_tasks: preflight.yml
+  tags: [bootstrap, soc_selftest]
+  when: soc_selftest_enable_preflight | bool
+
+- import_tasks: inject_wazuh_alert.yml
+  tags: [inject, soc_selftest]
+  when: soc_selftest_enable_inject | bool
+
+- import_tasks: verify_thehive.yml
+  tags: [verify, soc_selftest]
+  when: soc_selftest_enable_verify_thehive | bool
+
+- import_tasks: verify_cortex.yml
+  tags: [verify, soc_selftest]
+  when: soc_selftest_enable_verify_cortex | bool
+
+- import_tasks: verify_risk_decision.yml
+  tags: [verify, soc_selftest]
+  when: soc_selftest_enable_verify_risk_decision | bool
+
+- import_tasks: verify_misp.yml
+  tags: [verify, soc_selftest]
+  when: soc_selftest_enable_verify_misp | bool
+
+- import_tasks: verify_active_response.yml
+  tags: [verify, soc_selftest]
+  when: soc_selftest_enable_verify_active_response | bool
+
+- import_tasks: cleanup.yml
+  tags: [cleanup, soc_selftest]
+  when: soc_selftest_enable_cleanup | bool and soc_selftest_cleanup | bool
+
+- import_tasks: report.yml
+  tags: [report, soc_selftest]
+  when: soc_selftest_enable_report | bool

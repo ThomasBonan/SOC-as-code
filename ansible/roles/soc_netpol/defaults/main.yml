@@ -1,0 +1,191 @@
+---
+# Enable/disable specific policies
+soc_netpol_enable_dns: true
+soc_netpol_enable_wazuh_to_thehive: true
+soc_netpol_enable_thehive_to_cortex: true
+soc_netpol_enable_cortex_to_misp: true
+soc_netpol_enable_internal_egress: true
+soc_netpol_enable_cortex_internet_egress: true
+
+# Kubeconfig
+soc_netpol_kubeconfig_path: "{{ kubeconfig_path }}"
+
+# Namespaces
+soc_netpol_namespaces:
+  wazuh: "{{ soc_namespaces.wazuh }}"
+  thehive: "{{ soc_namespaces.thehive }}"
+  cortex: "{{ soc_namespaces.cortex }}"
+  misp: "{{ soc_namespaces.misp }}"
+
+# DNS egress policy (applied per namespace)
+soc_netpol_dns_namespace: "kube-system"
+soc_netpol_dns_policy_name: "egress-dns"
+soc_netpol_dns_namespaces:
+  - "{{ soc_netpol_namespaces.wazuh }}"
+  - "{{ soc_netpol_namespaces.thehive }}"
+  - "{{ soc_netpol_namespaces.cortex }}"
+  - "{{ soc_netpol_namespaces.misp }}"
+# podSelectors for DNS sources per namespace
+soc_netpol_dns_pod_selectors_by_ns:
+  "{{ soc_netpol_namespaces.wazuh }}": "{{ soc_netpol_wazuh_pod_selectors }}"
+  "{{ soc_netpol_namespaces.thehive }}": "{{ soc_netpol_thehive_pod_selectors }}"
+  "{{ soc_netpol_namespaces.cortex }}": "{{ soc_netpol_cortex_pod_selectors + soc_netpol_cortex_job_pod_selectors }}"
+  "{{ soc_netpol_namespaces.misp }}": "{{ soc_netpol_misp_pod_selectors }}"
+soc_netpol_dns_pod_selectors:
+  - matchLabels:
+      k8s-app: kube-dns
+  - matchLabels:
+      k8s-app: coredns
+  - matchLabels:
+      app.kubernetes.io/name: coredns
+
+# Wazuh -> TheHive
+soc_netpol_wazuh_policy_name: "egress-thehive"
+soc_netpol_wazuh_pod_selectors:
+  - matchLabels:
+      app: wazuh-manager
+  - matchLabels:
+      app.kubernetes.io/component: wazuh-manager
+soc_netpol_wazuh_internal_policy_name: "egress-wazuh-internal"
+soc_netpol_wazuh_internal_destinations:
+  - name: manager-api
+    pod_selectors:
+      - matchLabels:
+          app: wazuh-manager
+      - matchLabels:
+          app.kubernetes.io/component: wazuh-manager
+    ports:
+      - protocol: TCP
+        port: 55000
+  - name: indexer
+    pod_selectors:
+      - matchLabels:
+          app: wazuh-indexer
+      - matchLabels:
+          app.kubernetes.io/component: indexer
+    ports:
+      - protocol: TCP
+        port: 9200
+soc_netpol_thehive_dest_pod_selectors:
+  - matchLabels:
+      app.kubernetes.io/name: thehive
+  - matchLabels:
+      app: thehive
+soc_netpol_thehive_port: "{{ soc_ports.thehive }}"
+
+# TheHive -> Cortex
+soc_netpol_thehive_policy_name: "egress-cortex"
+soc_netpol_thehive_pod_selectors:
+  - matchLabels:
+      app.kubernetes.io/name: thehive
+  - matchLabels:
+      app: thehive
+soc_netpol_thehive_internal_policy_name: "egress-thehive-internal"
+soc_netpol_thehive_internal_destinations:
+  - name: cassandra
+    pod_selectors:
+      - matchLabels:
+          app.kubernetes.io/name: cassandra
+      - matchLabels:
+          app: cassandra
+    ports:
+      - protocol: TCP
+        port: 9042
+  - name: elasticsearch
+    pod_selectors:
+      - matchLabels:
+          app.kubernetes.io/name: elasticsearch
+      - matchLabels:
+          app: elasticsearch
+    ports:
+      - protocol: TCP
+        port: 9200
+  - name: minio
+    pod_selectors:
+      - matchLabels:
+          app.kubernetes.io/name: minio
+      - matchLabels:
+          app: minio
+    ports:
+      - protocol: TCP
+        port: 9000
+soc_netpol_cortex_dest_pod_selectors:
+  - matchLabels:
+      app.kubernetes.io/name: cortex
+  - matchLabels:
+      app: cortex
+soc_netpol_cortex_port: "{{ soc_ports.cortex }}"
+
+# Cortex -> MISP (include Cortex Jobs labels if different)
+soc_netpol_cortex_policy_name: "egress-misp"
+soc_netpol_cortex_internet_policy_name: "egress-internet-fqdn"
+soc_netpol_cortex_pod_selectors:
+  - matchLabels:
+      app.kubernetes.io/name: cortex
+  - matchLabels:
+      app: cortex
+soc_netpol_cortex_job_pod_selectors: []
+soc_netpol_cortex_internet_ports:
+  - protocol: TCP
+    port: "443"
+soc_netpol_cortex_internet_fqdns:
+  - matchName: "github.com"
+  - matchName: "api.github.com"
+  - matchName: "raw.githubusercontent.com"
+  - matchName: "objects.githubusercontent.com"
+  - matchName: "pypi.org"
+  - matchName: "files.pythonhosted.org"
+  - matchName: "auth.docker.io"
+  - matchName: "registry-1.docker.io"
+  - matchName: "ghcr.io"
+soc_netpol_cortex_internal_policy_name: "egress-cortex-internal"
+soc_netpol_cortex_internal_destinations:
+  - name: elasticsearch
+    pod_selectors:
+      - matchLabels:
+          app.kubernetes.io/name: elasticsearch
+      - matchLabels:
+          app: elasticsearch
+    ports:
+      - protocol: TCP
+        port: 9200
+
+soc_netpol_misp_pod_selectors:
+  - matchLabels:
+      app: misp
+soc_netpol_misp_internal_policy_name: "egress-misp-internal"
+soc_netpol_misp_internal_destinations:
+  - name: mariadb
+    pod_selectors:
+      - matchLabels:
+          app.kubernetes.io/name: mariadb
+      - matchLabels:
+          app: mariadb
+    ports:
+      - protocol: TCP
+        port: 3306
+  - name: redis
+    pod_selectors:
+      - matchLabels:
+          app.kubernetes.io/name: redis
+      - matchLabels:
+          app: redis
+    ports:
+      - protocol: TCP
+        port: 6379
+  - name: misp-modules
+    pod_selectors:
+      - matchLabels:
+          app: misp-modules
+    ports:
+      - protocol: TCP
+        port: 6666
+soc_netpol_misp_dest_pod_selectors:
+  - matchLabels:
+      app: misp
+soc_netpol_misp_port: "{{ soc_ports.misp }}"
+
+# TheHive -> Kubernetes API server (Pekko Cluster Bootstrap / pod discovery)
+# Uses CiliumNetworkPolicy toEntities: kube-apiserver (works regardless of ClusterIP DNAT)
+soc_netpol_enable_thehive_k8s_api_egress: true
+soc_netpol_thehive_k8s_api_policy_name: "egress-k8s-api"

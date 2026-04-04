@@ -1,0 +1,130 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# risk_engine_service.yml — Deploy Flask HTTP service (Deployment + ClusterIP)
+# tag: decision
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Replaces the old CronJob worker with a long-running HTTP service callable by
+# Shuffle via POST /score.
+#
+# What this task does:
+#   1. Deploys a ConfigMap containing the rendered Flask app script
+#   2. Deploys the K8s Deployment (init container installs Flask, main container
+#      runs the app with readOnlyRootFilesystem: true)
+#   3. Deploys a ClusterIP Service (risk-engine-svc:8080)
+#   4. Waits for the Deployment rollout to complete (readinessProbe gates this)
+#   5. Creates an idempotence marker ConfigMap
+#
+# Prerequisites (checked by preflight.yml):
+#   - soc-asset-criticality ConfigMap must exist (deployed by asset_criticality.yml)
+#   - soc-risk-policy ConfigMap must exist (deployed by scoring_model.yml)
+#
+# Idempotence: marker ConfigMap soc_risk_engine_marker_service
+
+# ── Check idempotence marker ──────────────────────────────────────
+
+- name: "risk_engine_service | Check idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_risk_engine_service_namespace }}"
+    name: "{{ soc_risk_engine_marker_service }}"
+  register: _res_marker
+  changed_when: false
+
+- name: "risk_engine_service | Already deployed — skip"
+  ansible.builtin.debug:
+    msg: "Risk engine service already deployed (marker exists) — skipping."
+  when: _res_marker.resources | length > 0
+  changed_when: false
+
+# ── Deploy block ──────────────────────────────────────────────────
+
+- name: "risk_engine_service | Deploy Risk Engine HTTP service"
+  when: _res_marker.resources | length == 0
+  block:
+
+    - name: "risk_engine_service | Load app script from template"
+      ansible.builtin.set_fact:
+        _res_app_script: "{{ lookup('template', 'risk-engine-app.py.j2') }}"
+      no_log: false
+
+    - name: "risk_engine_service | Deploy app script ConfigMap"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_risk_engine_service_script_configmap }}"
+            namespace: "{{ soc_risk_engine_service_namespace }}"
+            labels: "{{ soc_risk_engine_labels }}"
+            annotations:
+              soc.lab/managed-by:  "190-soc-risk-engine"
+              soc.lab/description: "Flask app script for risk-engine HTTP service"
+          data:
+            risk-engine-app.py: "{{ _res_app_script }}"
+
+    - name: "risk_engine_service | Deploy Deployment"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition: "{{ lookup('template', 'deployment-risk-engine.yml.j2') | from_yaml }}"
+
+    - name: "risk_engine_service | Deploy Service (ClusterIP)"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition: "{{ lookup('template', 'service-risk-engine.yml.j2') | from_yaml }}"
+
+    - name: "risk_engine_service | Wait for Deployment rollout"
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ soc_risk_engine_kubeconfig_path }}
+        rollout status deployment/risk-engine
+        -n {{ soc_risk_engine_service_namespace }}
+        --timeout=180s
+      register: _res_rollout
+      changed_when: false
+
+    - name: "risk_engine_service | Rollout status"
+      ansible.builtin.debug:
+        msg: "{{ _res_rollout.stdout | default('Rollout complete') }}"
+      changed_when: false
+
+    - name: "risk_engine_service | Create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ soc_risk_engine_marker_service }}"
+            namespace: "{{ soc_risk_engine_service_namespace }}"
+            labels: "{{ soc_risk_engine_labels }}"
+            annotations:
+              soc.lab/feature:     "risk_engine_service"
+              soc.lab/deployed-at: "{{ now(utc=True).isoformat() }}"
+          data:
+            feature:         "risk_engine_service"
+            status:          "active"
+            service_name:    "{{ soc_risk_engine_service_name }}"
+            service_port:    "{{ soc_risk_engine_service_port | string }}"
+            service_url:     "http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}"
+            policy_version:  "2.0"
+            image:           "{{ soc_risk_engine_service_image }}"
+            environment:     "{{ soc_environment | default('dev') }}"
+
+    - name: "risk_engine_service | Deployment report"
+      ansible.builtin.debug:
+        msg:
+          - "=== Risk Engine Service Deployed ==="
+          - "Deployment : risk-engine ({{ soc_risk_engine_service_replicas }} replica)"
+          - "Service    : {{ soc_risk_engine_service_name }}:{{ soc_risk_engine_service_port }} (ClusterIP)"
+          - "URL        : http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}"
+          - "Endpoints  : POST /score, GET /health"
+          - "Image      : {{ soc_risk_engine_service_image }} (Flask via init container)"
+          - "Security   : readOnlyRootFilesystem=true, runAsUser=1000"
+          - "Policy     : v2.0 — wazuh={{ soc_risk_weights.wazuh }}, cortex={{ soc_risk_weights.cortex }}, misp={{ soc_risk_weights.misp }}, asset={{ soc_risk_weights.asset }}, freq={{ soc_risk_weights.frequency }}"
+      changed_when: false

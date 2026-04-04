@@ -1,0 +1,108 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# verify_misp.yml — Verify IOC push to MISP by Shuffle alert-triage workflow
+# tag: verify
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Checks whether the test IOC (203.0.113.250) was pushed to MISP by the
+# Shuffle alert-triage workflow (action_misp_push).
+#
+# Shuffle pushes IOCs to MISP only on auto_contain and escalate decision
+# branches (risk_score >= auto_contain threshold, default: 75). If the test
+# alert's risk score is below this threshold, this step is SKIPPED (not failed).
+#
+# MISP events created by the Shuffle workflow are tagged with "source:thehive",
+# "soc:automated", and "tlp:amber". Search filter uses "source:thehive" to
+# identify Shuffle-originated events, combined with the test IOC value.
+#
+# Facts set:
+#   _st_misp_event_id — MISP event ID containing the test attribute (for cleanup)
+#   _st_misp_hit      — true if IOC was found in MISP
+#   _st_misp_status   — "ok" | "skipped" | "fail"
+
+# ── Skip if risk score below auto_contain threshold ───────────────
+# Shuffle pushes to MISP only on auto_contain/escalate branches (>= auto_contain, default: 75)
+
+- name: "verify_misp | Skip if risk_score below auto_contain threshold (MISP push not expected)"
+  ansible.builtin.set_fact:
+    _st_misp_status:   "skipped"
+    _st_misp_hit:      false
+    _st_misp_event_id: ""
+  changed_when: false
+  when: (_st_risk_score | default(-1) | int) < (soc_risk_thresholds.auto_contain | int)
+
+- name: "verify_misp | Show skip reason"
+  ansible.builtin.debug:
+    msg:
+      - "MISP verification SKIPPED."
+      - "risk_score={{ _st_risk_score | default(-1) }} < auto_contain={{ soc_risk_thresholds.auto_contain }}"
+      - "Shuffle only pushes to MISP on auto_contain/escalate branches (score >= {{ soc_risk_thresholds.auto_contain }})."
+  changed_when: false
+  when: (_st_risk_score | default(-1) | int) < (soc_risk_thresholds.auto_contain | int)
+
+# ── Search MISP for selftest IOC ──────────────────────────────────
+# MISP restSearch by value + tag. Shuffle alert-triage tags MISP events with
+# "source:thehive", "soc:automated", "tlp:amber" (action_misp_push).
+# Poll with retries to allow for MISP sync latency.
+
+- name: "verify_misp | Search MISP for selftest IOC {{ soc_selftest_test_ip }}"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_misp_api_base }}/attributes/restSearch"
+    method: POST
+    headers:
+      Authorization: "{{ _st_misp_key }}"
+      Accept:        "application/json"
+      Content-Type:  "application/json"
+    body_format: json
+    body:
+      returnFormat: "json"
+      value:        "{{ soc_selftest_test_ip }}"
+      tags:
+        - "source:thehive"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvm_misp_search
+  retries:      "{{ (soc_selftest_automation_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvm_misp_search.status == 200 and
+    (_stvm_misp_search.json.response.Attribute | default([]) | length) > 0
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when: (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+
+- name: "verify_misp | Assert IOC was found in MISP"
+  ansible.builtin.assert:
+    that: (_stvm_misp_search.json.response.Attribute | default([]) | length) > 0
+    fail_msg: >-
+      IOC {{ soc_selftest_test_ip }} with tag 'source:thehive' not found in MISP
+      after {{ soc_selftest_automation_timeout_seconds }}s.
+      risk_score={{ _st_risk_score }} >= auto_contain={{ soc_risk_thresholds.auto_contain }},
+      so the Shuffle alert-triage workflow should have pushed this IOC (action_misp_push).
+      Check Shuffle workflow execution in the UI and MISP server logs.
+  when: (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+
+# ── Capture MISP event ID (for cleanup) ──────────────────────────
+
+- name: "verify_misp | Capture MISP event ID and mark MISP status ok"
+  ansible.builtin.set_fact:
+    _st_misp_event_id: "{{ _stvm_misp_search.json.response.Attribute[0].event_id | default('') }}"
+    _st_misp_hit:      true
+    _st_misp_status:   "ok"
+  no_log: true
+  changed_when: false
+  when:
+    - (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)
+    - _stvm_misp_search.json.response.Attribute | default([]) | length > 0
+
+- name: "verify_misp | Show MISP result"
+  ansible.builtin.debug:
+    msg:
+      - "MISP IOC push confirmed"
+      - "IOC              : {{ soc_selftest_test_ip }}"
+      - "MISP event ID    : {{ _st_misp_event_id }}"
+      - "Attribute count  : {{ _stvm_misp_search.json.response.Attribute | default([]) | length }}"
+  changed_when: false
+  when: (_st_risk_score | default(-1) | int) >= (soc_risk_thresholds.auto_contain | int)

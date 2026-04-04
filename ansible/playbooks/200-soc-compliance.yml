@@ -1,0 +1,91 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# Playbook 200 — SOC Drift & Compliance
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Provides continuous drift detection and compliance validation for the complete
+# SOC deployment chain:
+#   - 170-soc-foundations : RBAC, Secrets, NetworkPolicies
+#   - 180-soc-automation  : Integrations, CronJobs, Analyzer policies
+#   - 190-soc-risk-engine : Scoring model, Decision thresholds
+#
+# What this playbook audits:
+#   1. Preflight     — verify 170/180/190 chain is operational, probe all APIs
+#   2. RBAC          — service accounts, role bindings, privilege escalation
+#   3. Integrations  — webhooks, CronJobs (active/suspended), analyzer policies
+#   4. Risk model    — scoring weights and thresholds (deployed vs group_vars)
+#   5. Network       — NetworkPolicy presence, CIDR conformance, wildcard detection
+#   6. Secrets       — SA secrets existence and key completeness (values never shown)
+#   7. Report        — structured JSON artifact + K8s ConfigMap audit trail
+#
+# Architecture:
+#   200 is a read-only post-processing layer. It NEVER modifies resources
+#   created by 170, 180, or 190. All audit tasks set changed_when: false.
+#   The only write operations are:
+#     - artifacts/soc-compliance-report.json (local file, CI/CD consumable)
+#     - ConfigMap soc-compliance-report (K8s audit trail, idempotent overwrite)
+#
+# Usage:
+#   # Full audit (read-only, safe to run anytime)
+#   ansible-playbook ansible/playbooks/200-soc-compliance.yml
+#
+#   # Fail CI/CD pipeline on drift
+#   ansible-playbook ansible/playbooks/200-soc-compliance.yml \
+#     -e soc_compliance_fail_on_drift=true
+#
+#   # Audit specific domain only
+#   ansible-playbook ansible/playbooks/200-soc-compliance.yml --tags audit
+#   ansible-playbook ansible/playbooks/200-soc-compliance.yml --tags report
+#
+#   # Per-environment override
+#   SOC_ENV=prod ansible-playbook ansible/playbooks/200-soc-compliance.yml \
+#     -e @envs/prod.yml
+#
+# Tags:
+#   bootstrap      : preflight checks only (verify chain + probe APIs)
+#   audit          : all audit modules (rbac, integrations, risk_model, network, secrets)
+#   report         : generate report (safe to combine with audit)
+#   soc_compliance : all of the above
+#
+# Output:
+#   - artifacts/soc-compliance-report.json  (local, CI/CD pipeline compatible)
+#   - ConfigMap soc-compliance-report        (K8s audit trail, namespace: soc-thehive)
+#   - Structured console report with box drawing
+#
+# Exit codes:
+#   0 : compliant (or soc_compliance_fail_on_drift=false)
+#   1 : drift detected AND soc_compliance_fail_on_drift=true
+#
+# Idempotence:
+#   Re-running is always safe. All reads use changed_when: false.
+#   The report artifact and ConfigMap are refreshed on every run.
+#
+# Pre-requisites:
+#   - 170-soc-foundations completed successfully
+#   - 180-soc-automation completed successfully
+#   - 190-soc-risk-engine completed successfully
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "200 | SOC Drift & Compliance — continuous audit and conformance validation"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+
+  pre_tasks:
+    - name: "200 | Override soc_environment from SOC_ENV env var"
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+
+    - name: "200 | Show active environment and compliance configuration"
+      ansible.builtin.debug:
+        msg:
+          - "SOC environment  : {{ soc_environment | default('dev') }}"
+          - "Compliance mode  : {{ soc_compliance_mode | default('audit') | upper }}"
+          - "Fail on drift    : {{ soc_compliance_fail_on_drift | default(true) }}"
+          - "Generate artifact: {{ soc_compliance_generate_artifact | default(true) }}"
+      changed_when: false
+
+  roles:
+    - role: soc_compliance

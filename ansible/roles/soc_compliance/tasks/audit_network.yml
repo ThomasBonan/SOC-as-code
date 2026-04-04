@@ -1,0 +1,310 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# audit_network.yml — Audit NetworkPolicy presence and CIDR conformance
+# tag: audit
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Checks (in order):
+#   1. All 4 API ingress NetworkPolicies exist (one per SOC service)
+#   2. Each present policy has at least one ingress rule
+#   3. Ingress CIDRs in each policy are a subset of soc_allowed_api_sources
+#   4. No wildcard CIDR (0.0.0.0/0) in any SOC-service ingress policy
+#   5. Total NetworkPolicy count per namespace (informational)
+#
+# All tasks are read-only (changed_when: false).
+# Findings accumulate in _net_findings[] and are exposed via _comp_net_result.
+
+# ── Initialize audit state ────────────────────────────────────────
+
+- name: "audit_network | Initialize network audit state"
+  ansible.builtin.set_fact:
+    _net_findings: []
+    _net_status:   "ok"
+  changed_when: false
+
+# ── Check expected API ingress NetworkPolicies ────────────────────
+
+- name: "audit_network | Gather expected API ingress NetworkPolicies"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: NetworkPolicy
+    namespace: "{{ item.ns }}"
+    name: "{{ item.name }}"
+  register: _net_np_results
+  loop:
+    - { name: "{{ soc_compliance_netpol_thehive }}", ns: "{{ soc_namespaces.thehive }}", service: "thehive", port: "{{ soc_ports.thehive | default(9000) }}" }
+    - { name: "{{ soc_compliance_netpol_cortex  }}", ns: "{{ soc_namespaces.cortex  }}", service: "cortex",  port: "{{ soc_ports.cortex  | default(9001) }}" }
+    - { name: "{{ soc_compliance_netpol_misp    }}", ns: "{{ soc_namespaces.misp    }}", service: "misp",    port: "{{ soc_ports.misp    | default(443)  }}" }
+    - { name: "{{ soc_compliance_netpol_wazuh   }}", ns: "{{ soc_namespaces.wazuh   }}", service: "wazuh",   port: "55000" }
+  changed_when: false
+
+- name: "audit_network | Record NetworkPolicy presence per service"
+  ansible.builtin.set_fact:
+    _net_np_present:
+      thehive: "{{ (_net_np_results.results[0].resources | default([])) | length > 0 }}"
+      cortex:  "{{ (_net_np_results.results[1].resources | default([])) | length > 0 }}"
+      misp:    "{{ (_net_np_results.results[2].resources | default([])) | length > 0 }}"
+      wazuh:   "{{ (_net_np_results.results[3].resources | default([])) | length > 0 }}"
+  changed_when: false
+
+- name: "audit_network | DRIFT — missing API ingress NetworkPolicies"
+  ansible.builtin.set_fact:
+    _net_status: "drift"
+    _net_findings: >-
+      {{ _net_findings + [
+        {
+          'type': 'missing_networkpolicy',
+          'component': item.item.service ~ '_api_ingress',
+          'severity': 'critical',
+          'resource': item.item.name,
+          'namespace': item.item.ns,
+          'message': 'API ingress NetworkPolicy missing for ' ~ item.item.service ~ ' (port ' ~ item.item.port ~ ') — API access is uncontrolled'
+        }
+      ] }}
+  loop: "{{ _net_np_results.results }}"
+  when: item.resources | length == 0
+  changed_when: false
+
+# ── Extract and validate ingress CIDRs ────────────────────────────
+# We check each present policy for wildcard CIDRs and undeclared CIDRs.
+# Uses a loop over the 4 results with inline extraction.
+
+- name: "audit_network | Extract ingress CIDRs from present NetworkPolicies"
+  ansible.builtin.set_fact:
+    _net_np_cidrs: >-
+      {{
+        dict(
+          ['thehive', 'cortex', 'misp', 'wazuh']
+          | zip([
+              (_net_np_results.results[0].resources[0].spec.ingress | default([]))
+                | map(attribute='from') | flatten
+                | selectattr('ipBlock', 'defined')
+                | map(attribute='ipBlock.cidr') | list
+              if (_net_np_results.results[0].resources | length > 0) else [],
+
+              (_net_np_results.results[1].resources[0].spec.ingress | default([]))
+                | map(attribute='from') | flatten
+                | selectattr('ipBlock', 'defined')
+                | map(attribute='ipBlock.cidr') | list
+              if (_net_np_results.results[1].resources | length > 0) else [],
+
+              (_net_np_results.results[2].resources[0].spec.ingress | default([]))
+                | map(attribute='from') | flatten
+                | selectattr('ipBlock', 'defined')
+                | map(attribute='ipBlock.cidr') | list
+              if (_net_np_results.results[2].resources | length > 0) else [],
+
+              (_net_np_results.results[3].resources[0].spec.ingress | default([]))
+                | map(attribute='from') | flatten
+                | selectattr('ipBlock', 'defined')
+                | map(attribute='ipBlock.cidr') | list
+              if (_net_np_results.results[3].resources | length > 0) else []
+            ])
+        )
+      }}
+  changed_when: false
+
+# ── Detect wildcard CIDRs ─────────────────────────────────────────
+
+- name: "audit_network | Detect wildcard CIDR (0.0.0.0/0) in any API ingress policy"
+  ansible.builtin.set_fact:
+    _net_wildcard_services: >-
+      {{
+        [
+          'thehive' if '0.0.0.0/0' in (_net_np_cidrs.thehive | default([])) else none,
+          'cortex'  if '0.0.0.0/0' in (_net_np_cidrs.cortex  | default([])) else none,
+          'misp'    if '0.0.0.0/0' in (_net_np_cidrs.misp    | default([])) else none,
+          'wazuh'   if '0.0.0.0/0' in (_net_np_cidrs.wazuh   | default([])) else none
+        ]
+        | select('string')
+        | list
+      }}
+  changed_when: false
+
+- name: "audit_network | DRIFT — wildcard CIDR found in API ingress NetworkPolicies"
+  ansible.builtin.debug:
+    msg:
+      - "=== NETWORK CRITICAL DRIFT: Wildcard CIDR 0.0.0.0/0 detected ==="
+      - "Services with unrestricted API access: {{ _net_wildcard_services }}"
+      - "Remove 0.0.0.0/0 and restrict to soc_allowed_api_sources."
+  when: _net_wildcard_services | length > 0
+  changed_when: false
+
+- name: "audit_network | Update status — wildcard CIDRs found"
+  ansible.builtin.set_fact:
+    _net_status: "drift"
+    _net_findings: >-
+      {{ _net_findings + [
+        {
+          'type': 'wildcard_cidr',
+          'component': 'api_ingress_networkpolicies',
+          'severity': 'critical',
+          'affected_services': _net_wildcard_services,
+          'message': 'NetworkPolicy allows 0.0.0.0/0 — unrestricted API access detected. Restrict to soc_allowed_api_sources.'
+        }
+      ] }}
+  when: _net_wildcard_services | length > 0
+  changed_when: false
+
+# ── Detect undeclared CIDRs ───────────────────────────────────────
+
+- name: "audit_network | Detect CIDRs not declared in soc_allowed_api_sources"
+  ansible.builtin.set_fact:
+    _net_undeclared_cidrs:
+      thehive: "{{ (_net_np_cidrs.thehive | default([])) | difference(soc_allowed_api_sources) }}"
+      cortex:  "{{ (_net_np_cidrs.cortex  | default([])) | difference(soc_allowed_api_sources) }}"
+      misp:    "{{ (_net_np_cidrs.misp    | default([])) | difference(soc_allowed_api_sources) }}"
+      wazuh:   "{{ (_net_np_cidrs.wazuh   | default([])) | difference(soc_allowed_api_sources) }}"
+  changed_when: false
+
+- name: "audit_network | Compute whether any undeclared CIDRs exist"
+  ansible.builtin.set_fact:
+    _net_has_undeclared: >-
+      {{
+        (_net_undeclared_cidrs.thehive | length > 0)
+        or (_net_undeclared_cidrs.cortex  | length > 0)
+        or (_net_undeclared_cidrs.misp    | length > 0)
+        or (_net_undeclared_cidrs.wazuh   | length > 0)
+      }}
+  changed_when: false
+
+- name: "audit_network | DRIFT — undeclared CIDRs found in API ingress NetworkPolicies"
+  ansible.builtin.debug:
+    msg:
+      - "=== NETWORK DRIFT: Undeclared source CIDRs in API ingress policies ==="
+      - "CIDRs not in soc_allowed_api_sources:"
+      - "  thehive: {{ _net_undeclared_cidrs.thehive }}"
+      - "  cortex : {{ _net_undeclared_cidrs.cortex  }}"
+      - "  misp   : {{ _net_undeclared_cidrs.misp    }}"
+      - "  wazuh  : {{ _net_undeclared_cidrs.wazuh   }}"
+  when: _net_has_undeclared | bool
+  changed_when: false
+
+- name: "audit_network | Update status — undeclared CIDRs found"
+  ansible.builtin.set_fact:
+    _net_status: "{{ 'drift' if _net_status == 'ok' else _net_status }}"
+    _net_findings: >-
+      {{ _net_findings + [
+        {
+          'type': 'undeclared_cidr',
+          'component': 'api_ingress_networkpolicies',
+          'severity': 'high',
+          'undeclared': _net_undeclared_cidrs,
+          'message': 'API ingress NetworkPolicies contain CIDRs not in soc_allowed_api_sources — manual change suspected'
+        }
+      ] }}
+  when: _net_has_undeclared | bool
+  changed_when: false
+
+# ── Check ingress rules exist in each present policy ──────────────
+
+- name: "audit_network | Detect NetworkPolicies with empty ingress rules"
+  ansible.builtin.set_fact:
+    _net_empty_ingress_services: >-
+      {{
+        [
+          'thehive' if (
+            (_net_np_results.results[0].resources | length > 0)
+            and ((_net_np_results.results[0].resources[0].spec.ingress | default([])) | length == 0)
+          ) else none,
+          'cortex' if (
+            (_net_np_results.results[1].resources | length > 0)
+            and ((_net_np_results.results[1].resources[0].spec.ingress | default([])) | length == 0)
+          ) else none,
+          'misp' if (
+            (_net_np_results.results[2].resources | length > 0)
+            and ((_net_np_results.results[2].resources[0].spec.ingress | default([])) | length == 0)
+          ) else none,
+          'wazuh' if (
+            (_net_np_results.results[3].resources | length > 0)
+            and ((_net_np_results.results[3].resources[0].spec.ingress | default([])) | length == 0)
+          ) else none
+        ]
+        | select('string')
+        | list
+      }}
+  changed_when: false
+
+- name: "audit_network | DRIFT — NetworkPolicy with no ingress rules (blocks all traffic)"
+  ansible.builtin.debug:
+    msg:
+      - "=== NETWORK DRIFT: NetworkPolicy has no ingress rules — blocks all access ==="
+      - "Affected services: {{ _net_empty_ingress_services }}"
+  when: _net_empty_ingress_services | length > 0
+  changed_when: false
+
+- name: "audit_network | Update status — empty ingress rules found"
+  ansible.builtin.set_fact:
+    _net_status: "{{ 'drift' if _net_status == 'ok' else _net_status }}"
+    _net_findings: >-
+      {{ _net_findings + [
+        {
+          'type': 'empty_ingress_rules',
+          'component': 'api_ingress_networkpolicies',
+          'severity': 'high',
+          'affected_services': _net_empty_ingress_services,
+          'message': 'NetworkPolicy has no ingress rules — blocks all API access to affected services'
+        }
+      ] }}
+  when: _net_empty_ingress_services | length > 0
+  changed_when: false
+
+# ── Total NetworkPolicy count per SOC namespace ───────────────────
+
+- name: "audit_network | Gather total NetworkPolicy count in TheHive namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: NetworkPolicy
+    namespace: "{{ soc_namespaces.thehive }}"
+  register: _net_all_np_thehive
+  changed_when: false
+
+- name: "audit_network | Gather total NetworkPolicy count in Wazuh namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: NetworkPolicy
+    namespace: "{{ soc_namespaces.wazuh }}"
+  register: _net_all_np_wazuh
+  changed_when: false
+
+- name: "audit_network | Record total NetworkPolicy counts"
+  ansible.builtin.set_fact:
+    _net_total_nps:
+      thehive: "{{ _net_all_np_thehive.resources | default([]) | length }}"
+      wazuh:   "{{ _net_all_np_wazuh.resources   | default([]) | length }}"
+  changed_when: false
+
+# ── Summary ───────────────────────────────────────────────────────
+
+- name: "audit_network | Network audit summary"
+  ansible.builtin.debug:
+    msg:
+      - "=== Network Audit Summary ==="
+      - "Status             : {{ _net_status | upper }}"
+      - "TheHive NetPol     : {{ 'OK' if _net_np_present.thehive | bool else 'MISSING' }}"
+      - "Cortex NetPol      : {{ 'OK' if _net_np_present.cortex  | bool else 'MISSING' }}"
+      - "MISP NetPol        : {{ 'OK' if _net_np_present.misp    | bool else 'MISSING' }}"
+      - "Wazuh NetPol       : {{ 'OK' if _net_np_present.wazuh   | bool else 'MISSING' }}"
+      - "Wildcard CIDRs     : {{ _net_wildcard_services | length }} service(s)"
+      - "Undeclared CIDRs   : {{ 'YES' if _net_has_undeclared | bool else 'NO' }}"
+      - "Empty ingress rules: {{ _net_empty_ingress_services | length }} service(s)"
+      - "Total NPs (thehive): {{ _net_total_nps.thehive }} | (wazuh): {{ _net_total_nps.wazuh }}"
+      - "Total findings     : {{ _net_findings | length }}"
+  changed_when: false
+
+# ── Expose results for report.yml ────────────────────────────────
+
+- name: "audit_network | Expose results for report"
+  ansible.builtin.set_fact:
+    _comp_net_result:
+      status:                   "{{ _net_status }}"
+      netpolicies_present:      "{{ _net_np_present }}"
+      ingress_cidrs:            "{{ _net_np_cidrs }}"
+      wildcard_cidrs_detected:  "{{ (_net_wildcard_services | length) > 0 }}"
+      wildcard_services:        "{{ _net_wildcard_services }}"
+      undeclared_cidrs_detected: "{{ _net_has_undeclared | bool }}"
+      undeclared_cidrs:         "{{ _net_undeclared_cidrs }}"
+      empty_ingress_services:   "{{ _net_empty_ingress_services }}"
+      total_policies:           "{{ _net_total_nps }}"
+      findings:                 "{{ _net_findings }}"
+  changed_when: false

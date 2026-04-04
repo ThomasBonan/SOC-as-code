@@ -1,0 +1,136 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# verify_cortex.yml — Verify Cortex analyzer execution and risk_engine:processed tag
+# tag: verify
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Verifies that the Shuffle alert-triage workflow ran Cortex analyzers on the
+# selftest case's observables and tagged the case with "risk_engine:processed".
+#
+# The Shuffle alert-triage workflow (action_update_case_risk):
+#   1. Triggers Cortex analyzers (action_trigger_cortex → AbuseIPDB_1_0)
+#   2. Waits 60s for analyzer completion (action_wait_cortex)
+#   3. Calls risk engine POST /score (action_call_risk_engine)
+#   4. Sets risk_score_v2 + risk_decision custom fields on the case
+#   5. Tags the case with "risk_engine:processed"
+#
+# This step also extracts the cortex_score from the case custom fields, which
+# is used by verify_risk_decision to validate scoring coherence.
+#
+# Facts set:
+#   _st_cortex_score  — Cortex analyzer score from case custom fields (-1 if not set)
+#   _st_cortex_epoch  — Unix timestamp when Cortex processing was confirmed
+#   _st_cortex_status — "ok" | "fail"
+#
+# Timeout: soc_selftest_automation_timeout_seconds (default: 120s)
+# Covers: Shuffle workflow execution (Cortex + risk engine + case update)
+
+# ── Guard: skip if no case was promoted ──────────────────────────
+
+- name: "verify_cortex | Skip if no case ID (case not yet promoted)"
+  ansible.builtin.set_fact:
+    _st_cortex_status: "fail"
+    _st_cortex_score:  -1
+    _st_cortex_epoch:  "{{ now(utc=True).strftime('%s') | int }}"
+  changed_when: false
+  when: _st_case_id | default('') | length == 0
+
+- name: "verify_cortex | Fail if no case found (prerequisite check)"
+  ansible.builtin.fail:
+    msg: >-
+      verify_cortex requires a case ID from verify_thehive.
+      No case was promoted from the selftest alert. Check verify_thehive logs.
+  when: _st_case_id | default('') | length == 0
+
+# ── Poll case for risk_engine:processed tag ──────────────────────────────
+
+- name: "verify_cortex | Poll case for risk_engine:processed tag (Shuffle alert-triage)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/case/{{ _st_case_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvcx_case_detail
+  retries:      "{{ (soc_selftest_automation_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvcx_case_detail.status == 200 and
+    'risk_engine:processed' in (_stvcx_case_detail.json.tags | default([]))
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when: _st_case_id | default('') | length > 0
+
+# ── DIAG: show case state when risk_engine:processed still missing ───────
+# Runs only when the poll exhausted its retries (risk_engine:processed not found).
+# Shows tags/status/customFields so we can diagnose without re-running.
+
+- name: "verify_cortex | DIAG — fetch case state (write SA)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/case/{{ _st_case_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Accept:        "application/json"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvcx_diag_case
+  no_log:       false
+  changed_when: false
+  ignore_errors: true
+  when:
+    - _st_case_id | default('') | length > 0
+    - "'risk_engine:processed' not in (_stvcx_case_detail.json.tags | default([]))"
+
+- name: "verify_cortex | DIAG — show case state"
+  ansible.builtin.debug:
+    msg:
+      - "Case ID     : {{ _st_case_id }}"
+      - "Status      : {{ _stvcx_diag_case.json.status | default('?') }}"
+      - "Tags        : {{ _stvcx_diag_case.json.tags | default([]) | join(', ') }}"
+      - "CustomFields: {{ _stvcx_diag_case.json.customFields | default({}) | to_json }}"
+      - "Severity    : {{ _stvcx_diag_case.json.severity | default('?') }}"
+  changed_when: false
+  when:
+    - _st_case_id | default('') | length > 0
+    - _stvcx_diag_case is defined
+    - not _stvcx_diag_case.failed | default(false)
+    - "'risk_engine:processed' not in (_stvcx_case_detail.json.tags | default([]))"
+
+# ── Assert processing completed ───────────────────────────────────
+
+- name: "verify_cortex | Assert risk_engine:processed tag present on case"
+  ansible.builtin.assert:
+    that: "'risk_engine:processed' in (_stvcx_case_detail.json.tags | default([]))"
+    fail_msg: >-
+      Tag 'risk_engine:processed' not found on case {{ _st_case_id }} after
+      {{ soc_selftest_automation_timeout_seconds }}s.
+      Shuffle alert-triage workflow did not reach action_update_case_risk.
+      Check Shuffle workflow execution in the Shuffle UI (alert-triage workflow run).
+      Check Shuffle backend: kubectl logs -n soc-shuffle -l app=shuffle-backend --tail=60
+      Possible causes: Cortex analyzer timeout, risk-engine unreachable, Shuffle workflow error.
+  when: _st_case_id | default('') | length > 0
+
+# ── Extract Cortex score from case custom fields ──────────────────
+
+- name: "verify_cortex | Extract cortex_score and record Cortex confirmation timestamp"
+  ansible.builtin.set_fact:
+    _st_cortex_score:  "{{ _stvcx_case_detail.json.customFields.cortex_score.number | default(-1) }}"
+    _st_cortex_epoch:  "{{ now(utc=True).strftime('%s') | int }}"
+    _st_cortex_status: "ok"
+  changed_when: false
+  when: _st_case_id | default('') | length > 0
+
+- name: "verify_cortex | Show Cortex result"
+  ansible.builtin.debug:
+    msg:
+      - "Cortex processing confirmed (risk_engine:processed tag present)"
+      - "cortex_score : {{ _st_cortex_score }}"
+      - "Case tags    : {{ _stvcx_case_detail.json.tags | default([]) | join(', ') }}"
+      - "Latency thehive→cortex : {{ (_st_cortex_epoch | int) - (_st_thehive_epoch | int | default(0)) }}s"
+  changed_when: false
+  when: _st_case_id | default('') | length > 0

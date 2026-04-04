@@ -1,0 +1,27 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# service-risk-engine.yml.j2 — ClusterIP Service for the SOC Risk Engine
+# Deployed by: 190-soc-risk-engine → tasks/risk_engine_service.yml
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Reachable from Shuffle (soc-shuffle namespace) via NetworkPolicy egress rule.
+# URL: http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}
+#
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ soc_risk_engine_service_name }}
+  namespace: {{ soc_risk_engine_service_namespace }}
+  labels: {{ soc_risk_engine_labels | combine({'app': 'risk-engine'}) | to_json }}
+  annotations:
+    soc.lab/managed-by:  "190-soc-risk-engine"
+    soc.lab/description: "ClusterIP for risk-engine Deployment — POST /score, GET /health"
+spec:
+  type: ClusterIP
+  selector:
+    app: risk-engine
+  ports:
+    - name:       http
+      port:       {{ soc_risk_engine_service_port }}
+      targetPort: {{ soc_risk_engine_service_port }}
+      protocol:   TCP

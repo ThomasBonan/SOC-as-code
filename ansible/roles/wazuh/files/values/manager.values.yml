@@ -1,15 +1,14 @@
 ---
 # Wazuh Manager
 wazuh:
-  deployment:
-    enabled: true
+  master:
+    storageSize: 10Gi
+    storageClassName: longhorn
 
-  master_replicas: 1
-  worker_replicas: 0
-
-  # Storage master (Longhorn)
-  storageClassNameMaster: "longhorn"
-  storageSizeMaster: "10Gi"
+  worker:
+    replicas: 0
+    storageSize: 10Gi
+    storageClassName: longhorn
 
   # Ne pas exposer publiquement
   service:

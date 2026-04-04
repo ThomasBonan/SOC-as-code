@@ -1,0 +1,131 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# soc_selftest — Role defaults
+# Playbook 210 | Synthetic end-to-end pipeline validation for the full SOC stack.
+# All variables prefixed soc_selftest_ per project convention.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# ── Feature toggles ───────────────────────────────────────────────
+soc_selftest_enable_preflight:              true
+soc_selftest_enable_inject:                 true
+soc_selftest_enable_verify_thehive:         true
+soc_selftest_enable_verify_cortex:          true
+soc_selftest_enable_verify_risk_decision:   true
+soc_selftest_enable_verify_misp:            true
+soc_selftest_enable_verify_active_response: true
+soc_selftest_enable_cleanup:                true
+soc_selftest_enable_report:                 true
+
+# ── Runtime behavior ──────────────────────────────────────────────
+# safe_mode=true  : AR conditions evaluated, but never executed (default)
+# safe_mode=false : actual Wazuh AR log checked via kubectl exec
+soc_selftest_safe_mode:        true
+
+# fail_on_error=true : fail the Ansible run if global_status != healthy (CI/CD gate)
+soc_selftest_fail_on_error:    true
+
+# cleanup=true : delete test artifacts (alert, case, MISP event) after verification
+soc_selftest_cleanup:          true
+
+# inject_via_wazuh=true  : write to Wazuh manager syslog via kubectl exec logger. REQUIRED for
+#                          full E2E: Wazuh → Shuffle webhook → TheHive → Cortex → risk engine.
+#                          Requires Wazuh custom rule soc_selftest_injection_rule_id pre-deployed.
+#                          Since 185 (Shuffle SOAR), Shuffle is the sole orchestrator — there is
+#                          no CronJob fallback. Direct TheHive injection (false) skips Shuffle and
+#                          leaves the alert at status "New" indefinitely.
+# inject_via_wazuh=false : inject directly into TheHive API only. Shuffle is NOT triggered.
+#                          Phases after inject+verify_thehive will fail. Only use for isolated
+#                          TheHive API testing (disable verify_cortex/risk/misp/ar features).
+soc_selftest_inject_via_wazuh:  true
+
+# Wazuh custom rule ID used when inject_via_wazuh=true
+soc_selftest_injection_rule_id: 999999
+
+# ── Shuffle webhook reference (read by preflight) ─────────────────
+soc_selftest_shuffle_webhook_configmap:    "soc-shuffle-webhook-config"
+soc_selftest_shuffle_webhook_configmap_ns: "{{ soc_namespaces.thehive }}"
+
+# ── Risk engine service marker (checked by preflight) ─────────────
+soc_selftest_risk_engine_marker: "soc-risk-marker-service"
+
+# ── Timeouts & polling ────────────────────────────────────────────
+# verify_thehive     : 150s covers Wazuh→Shuffle→TheHive pipeline latency (observed ~103s)
+soc_selftest_timeout_seconds:            150
+
+# verify_cortex      : Shuffle triggers Cortex synchronously (event-driven, not 2-min CronJob)
+# 120s covers Shuffle processing + Cortex analysis latency
+soc_selftest_automation_timeout_seconds: 120
+
+# verify_risk_decision : Shuffle calls risk engine synchronously via HTTP POST /score
+# 120s covers Shuffle post-Cortex processing + risk engine response + custom field update
+soc_selftest_risk_timeout_seconds:       120
+
+# Polling interval between retries (all async waits)
+soc_selftest_poll_interval:              5
+
+# ── Test IOC ──────────────────────────────────────────────────────
+# 203.0.113.250 = RFC 5737 TEST-NET-3 — never routable, safe for lab use
+soc_selftest_test_ip:    "203.0.113.250"
+soc_selftest_test_tag:   "soc-selftest"
+soc_selftest_test_title: "SOC Self-Test Synthetic Alert"
+soc_selftest_alert_type:   "soc-selftest"
+soc_selftest_alert_source: "soc-selftest"
+
+# ── Runtime settings ──────────────────────────────────────────────
+soc_selftest_kubeconfig_path: "{{ kubeconfig_path }}"
+soc_selftest_validate_certs:  false
+soc_selftest_http_timeout:    "{{ soc_http.timeout | default(10) }}"
+
+# ── Write SA for injection, verify and cleanup (created by 170-soc-foundations) ──
+# Uses the same svc-foundations SA secret as the read SA.
+# Reason: svc-selftest (thehive-selftest-foundations) is locked due to TheHive free-tier
+# license limit (users.normal 0/0 quota). svc-foundations (analyst profile, all workflow
+# permissions added by rbac_thehive.yml) handles both write and read operations.
+# Both write and read keys resolve to the same org, so org isolation is not an issue.
+# no_log: true applied everywhere this key is used.
+soc_selftest_thehive_write_sa_secret_name: "thehive-sa-foundations"
+soc_selftest_thehive_write_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
+soc_selftest_thehive_write_sa_key:         "api_key"
+
+# ── SA Secrets (created by 170-soc-foundations) ───────────────────
+# Used for READ-ONLY operations: verify_thehive (alert/case search), verify_cortex,
+# verify_risk_decision, verify_misp, verify_active_response.
+# Profile: analyst (all permissions added by rbac_thehive.yml).
+soc_selftest_thehive_sa_secret_name: "thehive-sa-foundations"
+soc_selftest_thehive_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
+soc_selftest_thehive_sa_key:         "api_key"
+
+soc_selftest_cortex_sa_secret_name:  "cortex-sa-foundations"
+soc_selftest_cortex_sa_secret_ns:    "{{ soc_namespaces.cortex }}"
+soc_selftest_cortex_sa_key:          "api_key"
+
+soc_selftest_misp_sa_secret_name:    "misp-sa-foundations"
+soc_selftest_misp_sa_secret_ns:      "{{ soc_namespaces.misp }}"
+soc_selftest_misp_sa_key:            "authkey"
+
+soc_selftest_wazuh_sa_secret_name:   "wazuh-sa-foundations"
+soc_selftest_wazuh_sa_secret_ns:     "{{ soc_namespaces.wazuh }}"
+soc_selftest_wazuh_sa_key_user:      "username"
+soc_selftest_wazuh_sa_key_pass:      "password"
+
+# ── API base URLs (resolved to Ingress URLs in preflight if .svc not reachable) ──
+soc_selftest_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"
+soc_selftest_cortex_api_base:  "{{ soc_endpoints.cortex.api_base  }}"
+soc_selftest_misp_api_base:    "{{ soc_endpoints.misp.api_base    }}"
+
+# ── Wazuh in-cluster probe ────────────────────────────────────────
+soc_selftest_wazuh_ns:          "{{ soc_namespaces.wazuh }}"
+soc_selftest_wazuh_manager_pod: "wazuh-manager-master-0"
+
+# ── Report output ─────────────────────────────────────────────────
+soc_selftest_artifact_dir:     "{{ playbook_dir }}/artifacts"
+soc_selftest_artifact_file:    "{{ soc_selftest_artifact_dir }}/soc-selftest-report.json"
+soc_selftest_report_configmap: "soc-selftest-report"
+soc_selftest_report_ns:        "{{ soc_namespaces.thehive }}"
+
+# ── K8s resource labels ───────────────────────────────────────────
+soc_selftest_labels:
+  app.kubernetes.io/managed-by: soc-selftest
+  app.kubernetes.io/component:  soc-selftest
+  soc.lab/playbook:             "210-soc-selftest"
+  soc.lab/environment:          "{{ soc_environment | default('dev') }}"

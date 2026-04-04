@@ -1,0 +1,214 @@
+{
+  "name": "SOC Self-Test",
+  "description": "Injection d'alerte de test synthetique et verification du pipeline SOC | IOC: 203.0.113.250 (RFC 5737)",
+  "start": "trigger_manual",
+  "tags": ["soc", "selftest", "validation"],
+
+  "triggers": [
+    {
+      "trigger_type": "WEBHOOK",
+      "id": "trigger_manual",
+      "name": "trigger_manual",
+      "status": "running",
+      "parameters": [
+        {
+          "name": "info",
+          "value": "Declenchement par 210-soc-selftest.yml ou manuellement depuis l'UI Shuffle"
+        }
+      ],
+      "position": {"x": -400, "y": 0}
+    }
+  ],
+
+  "actions": [
+
+    {
+      "id": "action_inject_test_alert",
+      "label": "action_inject_test_alert",
+      "app_name": "HTTP",
+      "app_version": "1.0.0",
+      "name": "inject_test_alert",
+      "parameters": [
+        {"name": "url",         "value": "$ENV_THEHIVE_URL/api/v1/alert"},
+        {"name": "method",      "value": "POST"},
+        {"name": "headers",     "value": "{\"Authorization\": \"Bearer $ENV_THEHIVE_APIKEY\", \"Content-Type\": \"application/json\"}"},
+        {
+          "name": "body",
+          "value": "{\"title\": \"[SOC-SELFTEST] Multiple failed logins from test IOC\", \"type\": \"External\", \"source\": \"wazuh\", \"sourceRef\": \"selftest-$exec.run_id\", \"description\": \"Alerte synthetique generee par SOC Self-Test (210). IOC: 203.0.113.250 (RFC 5737 TEST-NET-3 non routable)\", \"severity\": 2, \"tags\": [\"source:wazuh\", \"soc-selftest\", \"run:$exec.run_id\"], \"observables\": [{\"dataType\": \"ip\", \"data\": \"203.0.113.250\", \"tags\": [\"source:wazuh\", \"soc-selftest\"]}]}"
+        },
+        {"name": "ssl_verify", "value": "false"}
+      ],
+      "position": {"x": -150, "y": 0}
+    },
+
+    {
+      "id": "action_promote_test_case",
+      "label": "action_promote_test_case",
+      "app_name": "HTTP",
+      "app_version": "1.0.0",
+      "name": "action_promote_test_case",
+      "parameters": [
+        {"name": "url",          "value": "$ENV_THEHIVE_URL/api/v1/alert/$action_inject_test_alert.body._id/case"},
+        {"name": "method",       "value": "POST"},
+        {"name": "headers",      "value": "{\"Authorization\": \"Bearer $ENV_THEHIVE_APIKEY\", \"Content-Type\": \"application/json\"}"},
+        {"name": "body",         "value": "{}"},
+        {"name": "ssl_verify", "value": "false"}
+      ],
+      "position": {"x": 100, "y": 0}
+    },
+
+    {
+      "id": "action_wait_pipeline",
+      "label": "action_wait_pipeline",
+      "app_name": "Shuffle Tools",
+      "app_version": "1.0.0",
+      "name": "action_wait_pipeline",
+      "parameters": [
+        {"name": "time", "value": "90"},
+        {"name": "unit", "value": "seconds"}
+      ],
+      "position": {"x": 350, "y": 0}
+    },
+
+    {
+      "id": "action_verify_case",
+      "label": "action_verify_case",
+      "app_name": "HTTP",
+      "app_version": "1.0.0",
+      "name": "action_verify_case",
+      "parameters": [
+        {"name": "url",          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_test_case.body._id"},
+        {"name": "method",       "value": "GET"},
+        {"name": "headers",      "value": "{\"Authorization\": \"Bearer $ENV_THEHIVE_APIKEY\"}"},
+        {"name": "ssl_verify", "value": "false"}
+      ],
+      "position": {"x": 600, "y": 0}
+    },
+
+    {
+      "id": "action_check_risk_engine",
+      "label": "action_check_risk_engine",
+      "app_name": "HTTP",
+      "app_version": "1.0.0",
+      "name": "action_check_risk_engine",
+      "parameters": [
+        {"name": "url",          "value": "$ENV_RISK_ENGINE_URL/health"},
+        {"name": "method",       "value": "GET"},
+        {"name": "ssl_verify", "value": "false"}
+      ],
+      "position": {"x": 850, "y": -100}
+    },
+
+    {
+      "id": "action_evaluate_status",
+      "label": "action_evaluate_status",
+      "app_name": "Shuffle Tools",
+      "app_version": "1.0.0",
+      "name": "action_evaluate_status",
+      "parameters": [
+        {
+          "name": "code",
+          "value": "import json\n\ntry:\n    case_raw = \"\"\"$action_verify_case\"\"\"\n    case_data = json.loads(case_raw) if isinstance(case_raw, str) else case_raw\n    case_tags = case_data.get('tags', []) if isinstance(case_data, dict) else []\n    custom_fields = case_data.get('customFields', {}) if isinstance(case_data, dict) else {}\n    risk_score = custom_fields.get('risk_score_v2', {}).get('float') if isinstance(custom_fields, dict) else None\nexcept Exception:\n    case_tags = []\n    risk_score = None\n\nrisk_processed = 'risk_engine:processed' in case_tags\nrisk_engine_ok = '$action_check_risk_engine.status_code' == '200'\n\nif risk_engine_ok and risk_processed and risk_score is not None:\n    status = 'healthy'\nelif risk_engine_ok:\n    status = 'degraded'\nelse:\n    status = 'failed'\n\nprint(json.dumps({\n    'global_status': status,\n    'risk_engine_health': risk_engine_ok,\n    'risk_engine_processed': risk_processed,\n    'risk_score_v2': risk_score,\n    'case_tags': case_tags\n}))"
+        }
+      ],
+      "position": {"x": 1100, "y": 0}
+    },
+
+    {
+      "id": "action_cleanup",
+      "label": "action_cleanup",
+      "app_name": "HTTP",
+      "app_version": "1.0.0",
+      "name": "action_cleanup",
+      "parameters": [
+        {"name": "url",          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_test_case.body._id"},
+        {"name": "method",       "value": "DELETE"},
+        {"name": "headers",      "value": "{\"Authorization\": \"Bearer $ENV_THEHIVE_APIKEY\"}"},
+        {"name": "ssl_verify", "value": "false"}
+      ],
+      "position": {"x": 1350, "y": 0}
+    },
+
+    {
+      "id": "action_report",
+      "label": "action_report",
+      "app_name": "HTTP",
+      "app_version": "1.0.0",
+      "name": "action_report",
+      "parameters": [
+        {"name": "url",          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_test_case.body._id/log"},
+        {"name": "method",       "value": "POST"},
+        {"name": "headers",      "value": "{\"Authorization\": \"Bearer $ENV_THEHIVE_APIKEY\", \"Content-Type\": \"application/json\"}"},
+        {
+          "name": "body",
+          "value": "{\"message\": \"SOC Self-Test completed | Status: $action_evaluate_status.global_status | Risk Engine: $action_evaluate_status.risk_engine_health | Score: $action_evaluate_status.risk_score_v2\", \"startDate\": 0, \"includeInTimeline\": false}"
+        },
+        {"name": "ssl_verify", "value": "false"}
+      ],
+      "position": {"x": 1350, "y": 200}
+    }
+
+  ],
+
+  "branches": [
+    {
+      "source_id": "trigger_manual",
+      "destination_id": "action_inject_test_alert",
+      "conditions": []
+    },
+    {
+      "source_id": "action_inject_test_alert",
+      "destination_id": "action_promote_test_case",
+      "conditions": [
+        {
+          "condition": {
+            "source":      {"type": "action", "value": "$action_inject_test_alert.status_code"},
+            "comparison":  "equals",
+            "destination": {"type": "value",  "value": "201"}
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_promote_test_case",
+      "destination_id": "action_wait_pipeline",
+      "conditions": []
+    },
+    {
+      "source_id": "action_wait_pipeline",
+      "destination_id": "action_verify_case",
+      "conditions": []
+    },
+    {
+      "source_id": "action_wait_pipeline",
+      "destination_id": "action_check_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_verify_case",
+      "destination_id": "action_evaluate_status",
+      "conditions": []
+    },
+    {
+      "source_id": "action_check_risk_engine",
+      "destination_id": "action_evaluate_status",
+      "conditions": []
+    },
+    {
+      "source_id": "action_evaluate_status",
+      "destination_id": "action_cleanup",
+      "conditions": []
+    },
+    {
+      "source_id": "action_evaluate_status",
+      "destination_id": "action_report",
+      "conditions": []
+    }
+  ],
+
+  "workflow_variables": [
+    {"name": "ENV_THEHIVE_URL",     "value": "", "description": "URL TheHive"},
+    {"name": "ENV_THEHIVE_APIKEY",  "value": "", "description": "API key TheHive"},
+    {"name": "ENV_RISK_ENGINE_URL", "value": "http://risk-engine-svc.soc-thehive.svc:8080", "description": "URL Risk Engine HTTP service (190)"}
+  ]
+}

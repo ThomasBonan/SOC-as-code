@@ -1,0 +1,432 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# verify_thehive.yml — Verify alert reception and case promotion in TheHive
+# tag: verify
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Verifies two things:
+#   Phase 1 — TheHive artifact exists.
+#             Direct mode: search alert by sourceRef (near-instant).
+#             Wazuh mode: search alert by source="wazuh" + tag rule:999999.
+#             If Shuffle already promoted the alert before polling catches it,
+#             fall back to the freshly created case.
+#
+#   IMPORTANT: The search phase uses the org-admin write SA, not the analyst SA.
+#   In this stack, listAlert/listCase are org-scoped and the analyst foundations
+#   account may see 0 results even when the workflow completed successfully.
+#
+#   Phase 2 — Case was promoted from the alert by the Shuffle alert-triage workflow.
+#             Shuffle promotes synchronously within the same workflow execution.
+#             Phase 2a: poll GET /v1/alert/{id} (org-admin SA) until status=="Imported".
+#             Phase 2b: traverse getAlert→cases to retrieve the case _id.
+#
+# NOTE: TheHive 5 search API — correct endpoint is POST /v1/query (not /v1/alert/_search
+# or /v1/case/_search which do not exist in all 5.x versions).
+# Query format: {"query": [{"_name": "listAlert"|"listCase"}, {filter_op}]}
+# Response: a JSON array of matching resources (or "OK" string when no results/bad filter).
+#
+# IMPORTANT: TheHive 5 returns HTTP 200 with body "OK" (a string, not []) when a query
+# filter matches no results or uses an unsupported operation on a field type.
+# The `until` condition MUST check `type_debug == 'list'` to avoid treating "OK" as data.
+# Do NOT use `failed_when: status != 200` with `retries/until` — it overrides retry
+# exhaustion and lets the task pass with garbage data.
+#
+# Facts set:
+#   _st_alert_id     — TheHive alert ID (updated if not already set by inject)
+#   _st_case_id      — TheHive case ID (empty if case not yet promoted / not found)
+#   _st_thehive_epoch — Unix timestamp when alert was confirmed in TheHive
+#   _st_thehive_status — "ok" | "fail"
+
+# ── Phase 1: Poll for alert ──────────────────────────────────────
+# - Direct mode: search by sourceRef = "soc-selftest-{{ run_id }}" (set by inject [A])
+# - Wazuh mode: Shuffle alert-triage creates the alert with source="wazuh" and
+#   tag rule:$exec.rule.id. sourceRef is $exec.id (Wazuh event ID, unknown to Ansible).
+#   Filter by source="wazuh" (string field), then match tag rule:{{ injection_rule_id }}
+#   in Jinja2 post-filter. Pick the most recent match.
+
+- name: "verify_thehive | Poll for alert by sourceRef (direct injection mode)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/query"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Content-Type:  "application/json"
+      Accept:        "application/json"
+    body_format: json
+    body:
+      query:
+        - _name: "listAlert"
+        - _name: "filter"
+          _eq:
+            _field: "sourceRef"
+            _value: "soc-selftest-{{ _st_run_id }}"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvth_alert_search
+  retries:      "{{ (soc_selftest_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvth_alert_search.status == 200
+    and (_stvth_alert_search.json | default('') | type_debug == 'list')
+    and (_stvth_alert_search.json | length > 0)
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when: not soc_selftest_inject_via_wazuh | bool
+
+- name: "verify_thehive | Poll for alert from Shuffle (Wazuh/Shuffle injection mode)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/query"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Content-Type:  "application/json"
+      Accept:        "application/json"
+    body_format: json
+    body:
+      query:
+        - _name: "listAlert"
+        - _name: "filter"
+          _eq:
+            _field: "source"
+            _value: "wazuh"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvth_alert_search
+  retries:      "{{ (soc_selftest_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvth_alert_search.status == 200
+    and (_stvth_alert_search.json | default('') | type_debug == 'list')
+    and (_stvth_alert_search.json | length > 0)
+    and (
+      _stvth_alert_search.json | default([])
+      | selectattr('_createdAt', 'defined')
+      | selectattr('_createdAt', 'ge', (_st_inject_epoch | int) * 1000)
+      | selectattr('tags', 'defined')
+      | list
+      | map(attribute='tags') | sum(start=[])
+      | select('equalto', 'rule:' ~ (soc_selftest_injection_rule_id | string))
+      | list | length
+    ) > 0
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when: soc_selftest_inject_via_wazuh | bool
+
+- name: "verify_thehive | Poll for promoted case from Shuffle (Wazuh fallback)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/query"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Content-Type:  "application/json"
+      Accept:        "application/json"
+    body_format: json
+    body:
+      query:
+        - _name: "listCase"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvth_case_search
+  retries:      "{{ (soc_selftest_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvth_case_search.status == 200
+    and (_stvth_case_search.json | default('') | type_debug == 'list')
+    and (_stvth_case_search.json | length > 0)
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when: soc_selftest_inject_via_wazuh | bool
+
+- name: "verify_thehive | Compute Wazuh fallback case candidate"
+  vars:
+    _matched_case_id: >-
+      {%- set ns = namespace(found='') -%}
+      {%- for c in (_stvth_case_search.json | default([])) | reverse -%}
+        {%- set _case_ts = (
+              c._createdAt
+              | default(
+                  c.createdAt
+                  | default(
+                      c._updatedAt
+                      | default(
+                          c.updatedAt
+                          | default(0)
+                      )
+                  )
+              )
+            ) | int -%}
+        {%- set _case_title = c.title | default('') -%}
+        {%- set _case_desc = c.description | default('') -%}
+        {%- if
+          ns.found == ''
+          and _case_ts >= ((_st_inject_epoch | int) * 1000)
+          and (
+            (_case_title is search('SOC Self-Test synthetic alert injection'))
+            or (_case_desc is search('SOC Self-Test synthetic alert injection'))
+            or (_case_title is search('^\\[Wazuh\\]'))
+          )
+        -%}
+          {%- set ns.found = c._id | default('') -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {%- if ns.found == '' -%}
+        {%- for c in (_stvth_case_search.json | default([])) | reverse -%}
+          {%- set _case_ts = (c._createdAt | default(c.createdAt | default(0))) | int -%}
+          {%- if ns.found == '' and _case_ts >= ((_st_inject_epoch | int) * 1000) -%}
+            {%- set ns.found = c._id | default('') -%}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- endif -%}
+      {{ ns.found }}
+  ansible.builtin.set_fact:
+    _st_case_fallback_id: "{{ _matched_case_id | trim }}"
+  changed_when: false
+  when: soc_selftest_inject_via_wazuh | bool
+
+# ── Assert query returned valid data ───────────────────────────
+# TheHive 5 returns "OK" (string) instead of [] when no results match.
+# With failed_when: false, the retry loop completes silently.
+# This assert catches the failure with an actionable message.
+
+- name: "verify_thehive | Assert TheHive query returned valid results"
+  vars:
+    _response_type: "{{ _stvth_alert_search.json | default('N/A') | type_debug }}"
+    _response_len:  "{{ _stvth_alert_search.json | default([]) | length }}"
+    _case_response_type: "{{ _stvth_case_search.json | default('N/A') | type_debug }}"
+    _case_response_len:  "{{ _stvth_case_search.json | default([]) | length }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          not (soc_selftest_inject_via_wazuh | bool)
+          and (_stvth_alert_search.json | default('') | type_debug == 'list')
+          and (_stvth_alert_search.json | default([]) | length > 0)
+        )
+        or
+        (
+          soc_selftest_inject_via_wazuh | bool
+          and (
+            (
+              (_stvth_alert_search.json | default('') | type_debug == 'list')
+              and (_stvth_alert_search.json | default([]) | length > 0)
+            )
+            or
+            (
+              (_stvth_case_search.json | default('') | type_debug == 'list')
+              and (_st_case_fallback_id | default('') | length > 0)
+            )
+          )
+        )
+    fail_msg: >-
+      No alert or promoted case found in TheHive after {{ soc_selftest_timeout_seconds }}s polling.
+      alert_query: type={{ _response_type }} length={{ _response_len }}.
+      case_query: type={{ _case_response_type }} length={{ _case_response_len }}.
+      {% if _response_type != 'list' %}
+      TheHive returned "OK" instead of a JSON array — the Shuffle pipeline
+      has not created any searchable alert for this injection.
+      {% endif %}
+      Root cause candidates:
+        1. Deploy 185-shuffle.yml first (PSS privileged, RBAC, OpenSearch repair)
+        2. Deploy 180-soc-automation.yml (wazuh_webhook — rule 999999, ossec.conf integration)
+        3. kubectl get pods -n soc-shuffle -l app.kubernetes.io/component=backend (must NOT be in CrashLoopBackOff)
+        4. kubectl logs -n soc-shuffle -l app.kubernetes.io/component=backend --tail=60
+        5. Verify soc-shuffle-webhook-config ConfigMap exists in soc-thehive namespace
+        6. Verify rule 999999 is deployed: kubectl exec -n soc-wazuh wazuh-manager-master-0 -- grep -r 999999 /var/ossec/etc/rules/
+
+# ── Capture alert ID and timestamp ───────────────────────────────
+
+- name: "verify_thehive | Capture alert ID and record TheHive confirmation timestamp"
+  vars:
+    # In Wazuh mode: find the most recent alert with rule:<injection_rule_id> tag.
+    # In direct mode: sourceRef is unique — take the last (only) result.
+    _rule_tag: "rule:{{ soc_selftest_injection_rule_id }}"
+    _matched_id: >-
+      {%- if soc_selftest_inject_via_wazuh | bool -%}
+        {%- set ns = namespace(found='') -%}
+        {%- for a in (_stvth_alert_search.json | default([])) | reverse -%}
+          {%- if ns.found == '' and a.tags is defined and _rule_tag in a.tags
+                 and ((a._createdAt | default(0)) | int) >= ((_st_inject_epoch | int) * 1000) -%}
+            {%- set ns.found = a._id | default('') -%}
+          {%- endif -%}
+        {%- endfor -%}
+        {{ ns.found }}
+      {%- elif (_stvth_alert_search.json | default([]) | length) > 0 -%}
+        {{ (_stvth_alert_search.json | default([]))[-1]._id | default('') }}
+      {%- else -%}
+        {{ '' }}
+      {%- endif -%}
+  ansible.builtin.set_fact:
+    _st_alert_id:       "{{ _matched_id | trim }}"
+    _st_thehive_epoch:  "{{ now(utc=True).strftime('%s') | int }}"
+    _st_thehive_status: "ok"
+  no_log: true
+  changed_when: false
+
+- name: "verify_thehive | Capture promoted case ID from direct case search fallback"
+  ansible.builtin.set_fact:
+    _st_case_id:        "{{ _st_case_fallback_id | default('') | trim }}"
+    _st_thehive_epoch:  "{{ now(utc=True).strftime('%s') | int }}"
+    _st_thehive_status: "ok"
+  no_log: true
+  changed_when: false
+  when:
+    - soc_selftest_inject_via_wazuh | bool
+    - (_st_alert_id | default('') | length) == 0
+    - (_st_case_fallback_id | default('') | length) > 0
+
+- name: "verify_thehive | TheHive artifact confirmed"
+  ansible.builtin.debug:
+    msg:
+      - >-
+        {{ 'Alert confirmed : ID=' ~ _st_alert_id
+           if (_st_alert_id | default('') | length > 0)
+           else 'Case already promoted before alert polling: ID=' ~ (_st_case_id | default('missing')) }}
+      - "Latency inject→thehive : {{ (_st_thehive_epoch | int) - (_st_inject_epoch | int | default(0)) }}s"
+  changed_when: false
+
+
+# ── Phase 2a: Poll until alert status == Imported ────────────────
+# TheHive does NOT return caseId/case._id in GET /v1/alert/{id}.
+# The only observable change after promotion by Shuffle alert-triage is:
+#   alert.status "New" → "Imported"
+# We poll GET /v1/alert/{id} with the org-admin write SA (analyst returns
+# 404 for Imported alerts) until status is "Imported".
+# This is a direct DB lookup — unaffected by search indexing delays.
+#
+# Requires inject_via_wazuh=true: Shuffle is the sole orchestrator since 185.
+# Direct TheHive injection (inject_via_wazuh=false) bypasses Shuffle entirely —
+# the alert stays "New" indefinitely (no CronJob fallback exists in 180).
+# Allow up to soc_selftest_automation_timeout_seconds (default 120s) for:
+#   Wazuh rule match → Shuffle webhook → triage workflow → TheHive promotion.
+
+- name: "verify_thehive | Poll until alert status is Imported (promoted by Shuffle)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/alert/{{ _st_alert_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Accept:        "application/json"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvth_case_poll
+  retries:      "{{ (soc_selftest_automation_timeout_seconds / soc_selftest_poll_interval) | int }}"
+  delay:        "{{ soc_selftest_poll_interval }}"
+  until: >-
+    _stvth_case_poll.status == 200 and
+    (_stvth_case_poll.json.status | default('') == 'Imported')
+  no_log:       true
+  changed_when: false
+  failed_when:  false
+  when:
+    - _st_alert_id | length > 0
+    - _st_case_id | default('') | length == 0
+
+# ── Phase 2b: Retrieve the case ID via query traversal ───────────
+# TheHive 5 graph traversal: getAlert → cases returns the case(s)
+# linked to this alert after promotion.
+
+- name: "verify_thehive | Fetch case linked to alert via query traversal"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/query"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Content-Type:  "application/json"
+      Accept:        "application/json"
+    body_format: json
+    body:
+      query:
+        - _name: "getAlert"
+          idOrName: "{{ _st_alert_id }}"
+        - _name: "case"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvth_case_result
+  no_log:       true
+  changed_when: false
+  ignore_errors: true
+  when:
+    - _st_alert_id | length > 0
+    - _st_case_id | default('') | length == 0
+
+- name: "verify_thehive | Capture case ID from linked case"
+  ansible.builtin.set_fact:
+    _st_case_id: >-
+      {%- if _stvth_case_result is not defined or _stvth_case_result is skipped -%}
+        {{ '' }}
+      {%- elif _stvth_case_result.json is mapping -%}
+        {{ _stvth_case_result.json._id | default('') }}
+      {%- elif _stvth_case_result.json is iterable and (_stvth_case_result.json | length) > 0 -%}
+        {{ _stvth_case_result.json[0]._id | default('') }}
+      {%- else -%}
+        {{ '' }}
+      {%- endif -%}
+  no_log: true
+  changed_when: false
+  when: _st_case_id | default('') | length == 0
+
+# ── Diagnostic: inspect alert state when promotion timed out ─────
+# Runs only when _st_case_id is still empty after full timeout.
+# alert.status == "New" → Shuffle has not processed the alert; check backend logs
+
+- name: "verify_thehive | Diagnostic — fetch alert status after automation timeout"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/alert/{{ _st_alert_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Accept:        "application/json"
+    status_code: [200]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _stvth_alert_direct
+  no_log:       true
+  changed_when: false
+  ignore_errors: true
+  when:
+    - _st_case_id | length == 0
+    - _st_alert_id | length > 0
+
+- name: "verify_thehive | Diagnostic — show alert state and investigation commands"
+  ansible.builtin.debug:
+    msg:
+      - "DIAGNOSTIC: alert not promoted within {{ soc_selftest_automation_timeout_seconds }}s"
+      - "Alert ID     : {{ _st_alert_id }}"
+      - "Alert status : {{ _stvth_alert_direct.json.status | default('(not accessible)') }} (expected: Imported)"
+      - "Alert tags   : {{ _stvth_alert_direct.json.tags | default([]) | join(', ') }}"
+      - "--- Shuffle is the sole orchestrator (185). Check it first ---"
+      - "kubectl get pods -n soc-shuffle -l app.kubernetes.io/component=backend"
+      - "kubectl logs -n soc-shuffle -l app.kubernetes.io/component=backend --tail=60"
+      - "If inject_via_wazuh=false: Shuffle is never triggered — this failure is expected."
+      - "Set soc_selftest_inject_via_wazuh=true (default) for full E2E."
+  changed_when: false
+  when:
+    - _st_case_id | length == 0
+    - _stvth_alert_direct is defined
+
+- name: "verify_thehive | Assert case was promoted from alert"
+  ansible.builtin.assert:
+    that: _st_case_id | length > 0
+    fail_msg: >-
+      Alert was not promoted to a case within {{ soc_selftest_automation_timeout_seconds }}s.
+      Shuffle (sole orchestrator since 185) did not promote the alert. Possible causes:
+        1. inject_via_wazuh=false — Shuffle is webhook-driven and never fires for direct injection.
+           Ensure soc_selftest_inject_via_wazuh=true (default since this fix).
+        2. Shuffle backend is not running: kubectl get pods -n soc-shuffle -l app.kubernetes.io/component=backend
+        3. Wazuh webhook not configured: verify soc-shuffle-webhook-config ConfigMap exists.
+        4. Wazuh custom rule {{ soc_selftest_injection_rule_id }} not deployed on the manager.
+
+- name: "verify_thehive | Case promotion confirmed"
+  ansible.builtin.debug:
+    msg:
+      - "Case promoted : ID={{ _st_case_id }}"
+      - "Shuffle alert-triage workflow promoted the alert to a case successfully."
+  changed_when: false

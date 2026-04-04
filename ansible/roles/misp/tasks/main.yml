@@ -46,8 +46,33 @@
       type: Opaque
       stringData:
         mariadb-root-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+        # IMPORTANT: alpha-num only (pas de chars spéciaux) -> OK avec chars=ascii_letters,digits
         mariadb-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
   when: (misp_mariadb_secret.resources | length) == 0
+
+- name: Check Redis auth secret exists
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    name: misp-redis
+    namespace: "{{ soc_core_namespace }}"
+  register: misp_redis_secret
+
+- name: Create Redis auth secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: misp-redis
+        namespace: "{{ soc_core_namespace }}"
+      type: Opaque
+      stringData:
+        redis-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  when: (misp_redis_secret.resources | length) == 0
 
 - name: Check MISP app secret exists
   kubernetes.core.k8s_info:
@@ -77,23 +102,21 @@
   when: (misp_app_secret.resources | length) == 0
 
 # -------------------------
-# DB (MariaDB) via Helm
+# DB exists check (MariaDB already deployed)
 # -------------------------
-- name: Deploy MISP MariaDB
-  kubernetes.core.helm:
-    name: "{{ misp_db_release }}"
-    chart_ref: "{{ mariadb_chart_ref }}"
-    chart_version: "{{ mariadb_chart_version }}"
-    release_namespace: "{{ soc_core_namespace }}"
-    create_namespace: false
+- name: Check MariaDB StatefulSet exists (DB managed elsewhere)
+  kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
-    values_files:
-      - "{{ role_path }}/files/values/misp-mariadb.values.yml"
-    wait: true
-    atomic: true
-    timeout: "30m0s"
-    binary_path: "{{ helm_binary_path }}"
-  run_once: true
+    api_version: apps/v1
+    kind: StatefulSet
+    name: misp-mariadb
+    namespace: "{{ soc_core_namespace }}"
+  register: misp_db_sts
+
+- name: Fail if MariaDB is missing
+  ansible.builtin.fail:
+    msg: "MariaDB (misp-mariadb) not found in {{ soc_core_namespace }}. Deploy DB first."
+  when: (misp_db_sts.resources | length) == 0
 
 # -------------------------
 # Redis via Helm
@@ -108,14 +131,18 @@
     kubeconfig: "{{ kubeconfig_path }}"
     values_files:
       - "{{ role_path }}/files/values/misp-redis.values.yml"
+    values:
+      image:
+        registry: "{{ misp_redis_image_registry }}"
+        repository: "{{ misp_redis_image_repository }}"
+        tag: "{{ misp_redis_image_tag }}"
     wait: true
-    atomic: true
-    timeout: "30m0s"
+    atomic: false
+    timeout: "60m0s"
     binary_path: "{{ helm_binary_path }}"
-  run_once: true
 
 # -------------------------
-# MISP ConfigMap (env)
+# MISP ConfigMap (ENV attendu par misp-core officiel)
 # -------------------------
 - name: Apply MISP configmap
   kubernetes.core.k8s:
@@ -128,20 +155,102 @@
         name: misp-config
         namespace: "{{ soc_core_namespace }}"
       data:
-        # endpoints internes k8s
-        DB_HOST: "{{ misp_db_host }}"
-        DB_NAME: "{{ misp_db_name }}"
-        DB_USER: "{{ misp_db_user }}"
+        # MySQL/MariaDB
+        MYSQL_HOST: "{{ misp_db_host }}"
+        MYSQL_USER: "{{ misp_db_user }}"
+        MYSQL_DATABASE: "{{ misp_db_name }}"
+
+        # Redis
         REDIS_HOST: "{{ misp_redis_host }}"
-        REDIS_PORT: "6379"
+        REDIS_PORT: "{{ misp_redis_port | string }}"
 
-        # hostname externe MISP (ingress)
+        # Modules
+        MISP_MODULES_FQDN: "{{ misp_modules_fqdn }}"
+
+        # BaseURL externe (plusieurs alias au cas où l'image n'écoute pas MISP_BASEURL)
         MISP_BASEURL: "https://{{ misp_fqdn }}"
+        BASE_URL: "https://{{ misp_fqdn }}"
+        BASEURL: "https://{{ misp_fqdn }}"
+
+        # SMTP
+        SMTP_PORT: "{{ misp_smtp_port }}"
+
+        # Workers
+        WORKERS: "{{ misp_workers }}"
+        NUM_WORKERS_DEFAULT: "{{ misp_num_workers_default }}"
+        NUM_WORKERS_PRIO: "{{ misp_num_workers_prio }}"
+        NUM_WORKERS_EMAIL: "{{ misp_num_workers_email }}"
+        NUM_WORKERS_UPDATE: "{{ misp_num_workers_update }}"
+        NUM_WORKERS_CACHE: "{{ misp_num_workers_cache }}"
 
 # -------------------------
-# MISP Deployment + Service
+# MISP Modules (service + deployment)
 # -------------------------
-- name: Apply MISP deployment/service
+- name: Apply MISP modules service/deployment
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: misp-modules
+            namespace: "{{ soc_core_namespace }}"
+            labels:
+              app: misp-modules
+          spec:
+            type: ClusterIP
+            selector:
+              app: misp-modules
+            ports:
+              - name: http
+                port: "{{ misp_modules_service_port }}"
+                targetPort: "{{ misp_modules_container_port }}"
+
+        - apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: misp-modules
+            namespace: "{{ soc_core_namespace }}"
+            labels:
+              app: misp-modules
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: misp-modules
+            template:
+              metadata:
+                labels:
+                  app: misp-modules
+              spec:
+                imagePullSecrets: "{{ misp_image_pull_secrets }}"
+                containers:
+                  - name: misp-modules
+                    image: "{{ misp_modules_image }}"
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: "{{ misp_modules_container_port }}"
+                        name: http
+                    readinessProbe:
+                      tcpSocket:
+                        port: "{{ misp_modules_container_port }}"
+                      initialDelaySeconds: 10
+                      periodSeconds: 10
+                    livenessProbe:
+                      tcpSocket:
+                        port: "{{ misp_modules_container_port }}"
+                      initialDelaySeconds: 30
+                      periodSeconds: 20
+
+
+# -------------------------
+# MISP Core (service + deployment)
+# -------------------------
+- name: Apply MISP core service/deployment
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
@@ -161,7 +270,10 @@
             ports:
               - name: http
                 port: 80
-                targetPort: 8080
+                targetPort: 80
+              - name: https
+                port: 443
+                targetPort: 443
 
         - apiVersion: apps/v1
           kind: Deployment
@@ -172,6 +284,8 @@
               app: misp
           spec:
             replicas: 1
+            strategy:
+              type: Recreate
             selector:
               matchLabels:
                 app: misp
@@ -180,31 +294,74 @@
                 labels:
                   app: misp
               spec:
-                securityContext:
-                  fsGroup: 2000
+                imagePullSecrets: "{{ misp_image_pull_secrets }}"
+
+                volumes:
+                  - name: misp-tmp
+                    emptyDir: {}
+
                 initContainers:
+                  - name: fix-tmp-perms
+                    image: docker.io/library/busybox:1.36
+                    command:
+                      - sh
+                      - -lc
+                      - |
+                        set -e
+                        mkdir -p \
+                          /var/www/MISP/app/tmp/cache/persistent \
+                          /var/www/MISP/app/tmp/cache/models \
+                          /var/www/MISP/app/tmp/cache/views \
+                          /var/www/MISP/app/tmp/sessions \
+                          /var/www/MISP/app/tmp/logs
+                        # Fichiers attendus par supervisord / MISP
+                        touch \
+                          /var/www/MISP/app/tmp/logs/misp-workers.log \
+                          /var/www/MISP/app/tmp/logs/error.log \
+                          /var/www/MISP/app/tmp/logs/debug.log || true
+                        chmod -R 0777 /var/www/MISP/app/tmp
+                        chown -R 33:33 /var/www/MISP/app/tmp || true
+                    volumeMounts:
+                      - name: misp-tmp
+                        mountPath: /var/www/MISP/app/tmp
+
                   - name: wait-db
-                    image: busybox:1.36
+                    image: docker.io/library/busybox:1.36
                     command: ["sh","-lc","until nc -z {{ misp_db_host }} 3306; do echo waiting db; sleep 2; done"]
+
                   - name: wait-redis
-                    image: busybox:1.36
-                    command: ["sh","-lc","until nc -z {{ misp_redis_host }} 6379; do echo waiting redis; sleep 2; done"]
+                    image: docker.io/library/busybox:1.36
+                    command: ["sh","-lc","until nc -z {{ misp_redis_host }} {{ misp_redis_port }}; do echo waiting redis; sleep 2; done"]
+
+                  - name: wait-modules
+                    image: docker.io/library/busybox:1.36
+                    command: ["sh","-lc","until nc -z misp-modules {{ misp_modules_service_port }}; do echo waiting modules; sleep 2; done"]
+
                 containers:
                   - name: misp
-                    image: "{{ misp_image }}"
+                    image: "{{ misp_core_image }}"
                     imagePullPolicy: IfNotPresent
                     ports:
-                      - containerPort: 8080
+                      - containerPort: 80
                         name: http
+                      - containerPort: 443
+                        name: https
+
+                    volumeMounts:
+                      - name: misp-tmp
+                        mountPath: /var/www/MISP/app/tmp
+
                     envFrom:
                       - configMapRef:
                           name: misp-config
+
                     env:
-                      - name: DB_PASSWORD
+                      - name: MYSQL_PASSWORD
                         valueFrom:
                           secretKeyRef:
                             name: misp-mariadb-auth
                             key: mariadb-password
+
                       - name: ADMIN_EMAIL
                         valueFrom:
                           secretKeyRef:
@@ -225,18 +382,153 @@
                           secretKeyRef:
                             name: misp-app-secret
                             key: gpg_passphrase
+
+                      - name: REDIS_PASSWORD
+                        valueFrom:
+                          secretKeyRef:
+                            name: misp-redis
+                            key: redis-password
+
+                      - name: TRUSTED_PROXIES
+                        value: "0.0.0.0/0"
+                      - name: CAKEPHP_TRUSTED_PROXIES
+                        value: "0.0.0.0/0"
+
+                    lifecycle:
+                      postStart:
+                        exec:
+                          command:
+                            - sh
+                            - -lc
+                            - |
+                              # PostStart ne doit JAMAIS tuer le conteneur
+                              (
+                                sleep 60
+                                cd /var/www/MISP || exit 0
+                                BASE="https://{{ misp_fqdn }}"
+                                run() { su -s /bin/sh www-data -c "$*"; }
+                                run "./app/Console/cake Admin setSetting \"MISP.baseurl\" \"$BASE\"" || true
+                                run "./app/Console/cake Admin setSetting \"MISP.external_baseurl\" \"$BASE\"" || true
+                                rm -rf /var/www/MISP/app/tmp/cache/* || true
+                              ) || true
+
                     readinessProbe:
                       httpGet:
-                        path: /
-                        port: 8080
-                      initialDelaySeconds: 20
-                      periodSeconds: 10
+                        path: /users/login
+                        port: 80
+                      initialDelaySeconds: 30
+                      periodSeconds: 5
+                      timeoutSeconds: 2
+                      failureThreshold: 180
+
                     livenessProbe:
                       httpGet:
-                        path: /
-                        port: 8080
-                      initialDelaySeconds: 60
+                        path: /users/login
+                        port: 80
+                      initialDelaySeconds: 600
                       periodSeconds: 20
+                      timeoutSeconds: 2
+                      failureThreshold: 3
+
+- name: Delete baseurl job if exists (so it reruns)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    name: misp-set-baseurl
+    namespace: "{{ soc_core_namespace }}"
+
+- name: Set MISP baseurl via Job (persistent)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: misp-set-baseurl
+        namespace: "{{ soc_core_namespace }}"
+      spec:
+        ttlSecondsAfterFinished: 300
+        backoffLimit: 6
+        template:
+          spec:
+            restartPolicy: OnFailure
+            containers:
+              - name: set-baseurl
+                image: "{{ misp_core_image }}"
+                imagePullPolicy: IfNotPresent
+                envFrom:
+                  - configMapRef:
+                      name: misp-config
+                env:
+                  - name: MYSQL_PASSWORD
+                    valueFrom:
+                      secretKeyRef:
+                        name: misp-mariadb-auth
+                        key: mariadb-password
+                command: ["sh","-lc"]
+                args:
+                  - |
+                    set -e
+                    cd /var/www/MISP
+                    BASE="https://{{ misp_fqdn }}"
+
+                    # attendre DB
+                    for i in $(seq 1 180); do
+                      nc -z "{{ misp_db_host }}" 3306 && break || true
+                      sleep 2
+                    done
+
+                    run() { su -s /bin/sh www-data -c "$*"; }
+
+                    run "./app/Console/cake Admin setSetting \"MISP.baseurl\" \"$BASE\"" || true
+                    run "./app/Console/cake Admin setSetting \"MISP.external_baseurl\" \"$BASE\"" || true
+
+                    rm -rf /var/www/MISP/app/tmp/cache/* || true
+
+- name: Wait for misp deployment ready (kubectl rollout)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ soc_core_namespace }}
+    rollout status deploy/misp --timeout=10m
+  changed_when: false
+
+- name: Check MISP pod is Ready
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ soc_core_namespace }}
+    wait --for=condition=ready pod -l app=misp --timeout=5m
+  changed_when: false
+
+- name: Bootstrap MISP core (init user, DB updates, base settings)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }}
+    -n {{ soc_core_namespace }}
+    exec deploy/misp -- sh -lc
+    "set -e;
+    cd /var/www/MISP;
+    mkdir -p app/tmp/cache/persistent app/tmp/cache/models app/tmp/cache/views app/tmp/sessions app/tmp/logs;
+    chmod -R 0777 app/tmp || true;
+    chown -R 33:33 app/tmp || true;
+    run() { su -s /bin/sh www-data -c \"$1\" 2>/dev/null || sh -lc \"$1\"; };
+    run './app/Console/cake User init' || run './app/Console/cake userInit -q' || true;
+    run './app/Console/cake Admin runUpdates';
+    run './app/Console/cake Admin setSetting \"MISP.baseurl\" \"https://{{ misp_fqdn }}\"' || true;
+    run './app/Console/cake Admin setSetting \"MISP.external_baseurl\" \"https://{{ misp_fqdn }}\"' || true;
+    run './app/Console/cake Admin live 1' || true"
+  register: misp_core_bootstrap
+  changed_when: false
+  failed_when: false
+
+- name: Warn when MISP core bootstrap command reports errors
+  ansible.builtin.debug:
+    msg: >-
+      MISP core bootstrap command returned rc={{ misp_core_bootstrap.rc }}.
+      stdout={{ misp_core_bootstrap.stdout | default('') | trim }}
+      stderr={{ misp_core_bootstrap.stderr | default('') | trim }}
+  when: (misp_core_bootstrap.rc | default(0)) != 0
 
 # -------------------------
 # Ingress
@@ -253,12 +545,20 @@
         namespace: "{{ soc_core_namespace }}"
         annotations:
           kubernetes.io/ingress.class: nginx
+
+          # Client -> Ingress : HTTPS only
           nginx.ingress.kubernetes.io/ssl-redirect: "true"
+
+          # Ingress -> Backend : HTTPS (sinon boucle 301)
+          nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+
           nginx.ingress.kubernetes.io/proxy-body-size: "50m"
           nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
           nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
-          # si tu fais du TLS cert-manager plus tard :
-          # cert-manager.io/cluster-issuer: "{{ misp_cluster_issuer }}"
+
+          # SNI/Host côté upstream (utile si le backend fait du vhost)
+          nginx.ingress.kubernetes.io/upstream-vhost: "{{ misp_fqdn }}"
+          nginx.ingress.kubernetes.io/proxy-ssl-server-name: "true"
       spec:
         rules:
           - host: "{{ misp_fqdn }}"
@@ -270,13 +570,10 @@
                     service:
                       name: misp
                       port:
-                        number: 80
-        # tls:
-        #   - hosts: ["{{ misp_fqdn }}"]
-        #     secretName: misp-tls
+                        number: 443
 
 # -------------------------
-# (Option) NetworkPolicy basique
+# (Option) NetworkPolicy basique (tu peux la remettre plus tard)
 # -------------------------
 - name: Apply minimal NetworkPolicies for MISP
   kubernetes.core.k8s:
@@ -296,7 +593,9 @@
         ingress:
           - ports:
               - protocol: TCP
-                port: 8080
+                port: 80
+              - protocol: TCP
+                port: 443
         egress:
           - to:
               - podSelector:
@@ -311,14 +610,20 @@
                     app.kubernetes.io/name: redis
             ports:
               - protocol: TCP
-                port: 6379
+                port: "{{ misp_redis_port }}"
+          - to:
+              - podSelector:
+                  matchLabels:
+                    app: misp-modules
+            ports:
+              - protocol: TCP
+                port: "{{ misp_modules_service_port }}"
           - to:
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: kube-system
-                podSelector:
-                  matchLabels:
-                    k8s-app: coredns
             ports:
               - protocol: UDP
+                port: 53
+              - protocol: TCP
                 port: 53

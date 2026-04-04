@@ -1,0 +1,443 @@
+---
+# shuffle/tasks/deploy.yml
+# Deploy Shuffle via Helm in the soc-shuffle namespace.
+# Idempotent via marker ConfigMap soc-shuffle-marker-deploy.
+
+- name: "shuffle | Deploy - verify idempotence marker"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ shuffle_marker_ns }}"
+    name: "{{ shuffle_marker_deploy }}"
+  register: _sh_deploy_marker
+  changed_when: false
+
+- name: "shuffle | Deploy - Helm and NetworkPolicy block"
+  when: _sh_deploy_marker.resources | length == 0
+  block:
+    - name: "shuffle | Deploy - create namespace {{ shuffle_namespace }}"
+      vars:
+        _sh_ns_labels: >-
+          {{ shuffle_labels | combine({
+            'pod-security.kubernetes.io/enforce': 'privileged',
+            'pod-security.kubernetes.io/warn': 'privileged'
+          }) }}
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ shuffle_namespace }}"
+            labels: "{{ _sh_ns_labels }}"
+
+    - name: "shuffle | Deploy - remove stale clone directory if present"
+      ansible.builtin.file:
+        path: "{{ shuffle_helm_repo_local_path }}"
+        state: absent
+
+    - name: "shuffle | Deploy - clone Shuffle chart repository"
+      ansible.builtin.git:
+        repo: "{{ shuffle_helm_repo_url }}"
+        dest: "{{ shuffle_helm_repo_local_path }}"
+        version: "{{ shuffle_helm_repo_version }}"
+        depth: 1
+        force: false
+
+    - name: "shuffle | Deploy - helm dependency build"
+      ansible.builtin.command:
+        cmd: "helm dependency build {{ shuffle_helm_chart_ref }}"
+      changed_when: true
+
+    - name: "shuffle | Deploy - Helm install Shuffle"
+      kubernetes.core.helm:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        name: "{{ shuffle_release_name }}"
+        chart_ref: "{{ shuffle_helm_chart_ref }}"
+        chart_version: "{{ shuffle_helm_chart_version if shuffle_helm_chart_version else omit }}"
+        release_namespace: "{{ shuffle_namespace }}"
+        create_namespace: false
+        values: "{{ lookup('template', 'shuffle-values.yml.j2') | from_yaml }}"
+        wait: false
+
+    - name: "shuffle | Deploy - wait for Shuffle backend to be ready"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: Pod
+        namespace: "{{ shuffle_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/component=backend"
+          - "app.kubernetes.io/name=shuffle"
+      register: _sh_backend_pods
+      retries: 60
+      delay: 10
+      until: >-
+        _sh_backend_pods.resources | length > 0
+        and (_sh_backend_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0)
+        and (_sh_backend_pods.resources[0].status.containerStatuses | default([]) | length > 0)
+        and (_sh_backend_pods.resources[0].status.containerStatuses[0].ready | default(false) | bool)
+
+    - name: "shuffle | Deploy - apply Shuffle NetworkPolicy"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition: "{{ lookup('template', 'netpol-shuffle.yml.j2') | from_yaml_all | list }}"
+
+    - name: "shuffle | Deploy - create idempotence marker"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ shuffle_marker_deploy }}"
+            namespace: "{{ shuffle_marker_ns }}"
+            labels: "{{ shuffle_labels }}"
+            annotations:
+              soc.lab/feature: "shuffle-deploy"
+              soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+          data:
+            feature: "shuffle-deploy"
+            status: "active"
+            environment: "{{ soc_environment | default('dev') }}"
+            helm_chart: "{{ shuffle_helm_chart_ref }}"
+
+- name: "shuffle | Deploy - apply Shuffle Ingress"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition: "{{ lookup('template', 'ingress-shuffle.yml.j2') | from_yaml }}"
+
+- name: "shuffle | Deploy - apply Shuffle NetworkPolicies"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition: "{{ lookup('template', 'netpol-shuffle.yml.j2') | from_yaml_all | list }}"
+
+- name: "shuffle | Deploy - apply privileged PSS on namespace"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ shuffle_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/warn: privileged
+
+- name: "shuffle | Deploy - create pod-reader Role for shuffle-backend"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: shuffle-pod-reader
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["get", "list", "watch"]
+
+- name: "shuffle | Deploy - bind pod-reader Role to shuffle-backend"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: shuffle-pod-reader-binding
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: shuffle-pod-reader
+      subjects:
+        - kind: ServiceAccount
+          name: shuffle-backend
+          namespace: "{{ shuffle_namespace }}"
+
+- name: "shuffle | Deploy - read backend and Orborus deployments"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ shuffle_namespace }}"
+    name: "{{ item }}"
+  loop:
+    - shuffle-orborus
+    - shuffle-backend
+  register: _sh_runtime_deployments
+  changed_when: false
+
+- name: "shuffle | Deploy - evaluate runtime environment alignment"
+  ansible.builtin.set_fact:
+    _sh_orborus_kubernetes_namespace: >-
+      {{
+        (
+          _sh_runtime_deployments.results[0].resources[0].spec.template.spec.containers[0].env
+          | default([])
+          | selectattr('name', 'equalto', 'KUBERNETES_NAMESPACE')
+          | map(attribute='value')
+          | list
+          | first
+        ) | default('')
+      }}
+    _sh_backend_kubernetes_namespace: >-
+      {{
+        (
+          _sh_runtime_deployments.results[1].resources[0].spec.template.spec.containers[0].env
+          | default([])
+          | selectattr('name', 'equalto', 'SHUFFLE_KUBERNETES_NAMESPACE')
+          | map(attribute='value')
+          | list
+          | first
+        ) | default('')
+      }}
+
+- name: "shuffle | Deploy - determine if runtime env vars must be patched"
+  ansible.builtin.set_fact:
+    _sh_orborus_env_needs_patch: >-
+      {{
+        _sh_orborus_kubernetes_namespace != shuffle_namespace
+      }}
+    _sh_backend_env_needs_patch: >-
+      {{
+        _sh_backend_kubernetes_namespace != shuffle_namespace
+      }}
+
+- name: "shuffle | Deploy - set KUBERNETES_NAMESPACE on Orborus"
+  when: _sh_orborus_env_needs_patch | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    set env deployment/shuffle-orborus
+    KUBERNETES_NAMESPACE={{ shuffle_namespace }}
+    -n {{ shuffle_namespace }}
+  register: _sh_orborus_env_set
+  changed_when: "'updated' in (((_sh_orborus_env_set.stdout | default('')) ~ ' ' ~ (_sh_orborus_env_set.stderr | default(''))))"
+  failed_when: false
+
+- name: "shuffle | Deploy - set SHUFFLE_KUBERNETES_NAMESPACE on Backend"
+  when: _sh_backend_env_needs_patch | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    set env deployment/shuffle-backend
+    SHUFFLE_KUBERNETES_NAMESPACE={{ shuffle_namespace }}
+    -n {{ shuffle_namespace }}
+  register: _sh_backend_env_set
+  changed_when: "'updated' in (((_sh_backend_env_set.stdout | default('')) ~ ' ' ~ (_sh_backend_env_set.stderr | default(''))))"
+  failed_when: false
+
+- name: "shuffle | Deploy - restart Orborus after env patch"
+  when:
+    - _sh_orborus_env_needs_patch | bool
+    - (_sh_orborus_env_set.rc | default(1)) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout restart deployment/shuffle-orborus -n {{ shuffle_namespace }}
+  changed_when: true
+
+- name: "shuffle | Deploy - wait for Orborus rollout"
+  when:
+    - _sh_orborus_env_needs_patch | bool
+    - (_sh_orborus_env_set.rc | default(1)) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout status deployment/shuffle-orborus -n {{ shuffle_namespace }}
+    --timeout=120s
+  changed_when: false
+
+- name: "shuffle | Deploy - restart Backend after env patch"
+  when:
+    - _sh_backend_env_needs_patch | bool
+    - (_sh_backend_env_set.rc | default(1)) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout restart deployment/shuffle-backend -n {{ shuffle_namespace }}
+  changed_when: true
+
+- name: "shuffle | Deploy - wait for Backend rollout"
+  when:
+    - _sh_backend_env_needs_patch | bool
+    - (_sh_backend_env_set.rc | default(1)) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout status deployment/shuffle-backend -n {{ shuffle_namespace }}
+    --timeout=120s
+  changed_when: false
+
+- name: "shuffle | Deploy - create OpenSearch anti-date_detection template"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -sf -X PUT "http://localhost:9200/_index_template/shuffle-safe-mappings"
+    -H "Content-Type: application/json"
+    -d '{"index_patterns":["workflow*","hooks*","workflowapp*","org_cache*","datastore*"],"template":{"mappings":{"date_detection":false}},"priority":200}'
+  register: _sh_os_template
+  changed_when: false
+  failed_when: false
+
+- name: "shuffle | Deploy - verify workflowexecution index write"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -s -o /dev/null -w "%{http_code}"
+    -X POST "http://localhost:9200/workflowexecution/_doc"
+    -H "Content-Type: application/json"
+    -d '{"_test_probe":true,"workflow":{"actions":[{"parameters":[{"value":"soc-selftest-probe"}]}]}}'
+  register: _sh_os_we_write
+  changed_when: false
+  failed_when: false
+
+- name: "shuffle | Deploy - verify hooks index existence"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -sf "http://localhost:9200/hooks/_count"
+  register: _sh_os_hooks_check
+  changed_when: false
+  failed_when: false
+
+- name: "shuffle | Deploy - verify workflow index write"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -s -o /dev/null -w "%{http_code}"
+    -X POST "http://localhost:9200/workflow-000001/_doc"
+    -H "Content-Type: application/json"
+    -d '{"_test_probe":true,"actions":[{"parameters":[{"example":"not-a-date-value","value":"test"}]}]}'
+  register: _sh_os_wf_write
+  changed_when: false
+  failed_when: false
+
+- name: "shuffle | Deploy - count registered hooks"
+  ansible.builtin.set_fact:
+    _sh_os_hooks_count: "{{ (_sh_os_hooks_check.stdout | default('{}', true) | from_json).count | default(0) | int }}"
+
+- name: "shuffle | Deploy - evaluate global OpenSearch health"
+  ansible.builtin.set_fact:
+    _sh_os_needs_repair: >-
+      {{
+        (_sh_os_we_write.stdout | default('') not in ["200", "201"])
+        or (_sh_os_hooks_check.rc | default(1) != 0)
+        or (_sh_os_hooks_count | int == 0)
+        or (_sh_os_wf_write.stdout | default('') not in ["200", "201"])
+      }}
+
+- name: "shuffle | Deploy - delete corrupted Shuffle indexes"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -sf -X DELETE
+    "http://localhost:9200/workflow,workflow-*,workflowexecution,workflowexecution*,hooks,hooks*,workflowapp,workflowapp*"
+  register: _sh_os_index_delete
+  changed_when: _sh_os_index_delete.rc == 0
+  failed_when: false
+
+- name: "shuffle | Deploy - precreate hooks index"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -sf -X PUT "http://localhost:9200/hooks"
+    -H "Content-Type: application/json"
+    -d '{"mappings":{"date_detection":false,"dynamic_templates":[{"strings_as_keywords":{"match_mapping_type":"string","mapping":{"type":"keyword","ignore_above":8191}}}]}}'
+  changed_when: true
+  failed_when: false
+
+- name: "shuffle | Deploy - remove workflows marker to force reimport"
+  when: _sh_os_needs_repair | bool
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: absent
+    kind: ConfigMap
+    namespace: "{{ shuffle_marker_ns }}"
+    name: "{{ shuffle_marker_workflows }}"
+
+- name: "shuffle | Deploy - restart backend after OpenSearch repair"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout restart deployment/shuffle-backend -n {{ shuffle_namespace }}
+  changed_when: true
+
+- name: "shuffle | Deploy - wait for backend after OpenSearch repair"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout status deployment/shuffle-backend -n {{ shuffle_namespace }}
+    --timeout=120s
+  changed_when: false
+
+- name: "shuffle | Deploy - restart Orborus after OpenSearch repair"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout restart deployment/shuffle-orborus -n {{ shuffle_namespace }}
+  changed_when: true
+
+- name: "shuffle | Deploy - wait for Orborus after OpenSearch repair"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    rollout status deployment/shuffle-orborus -n {{ shuffle_namespace }}
+    --timeout=120s
+  changed_when: false
+
+- name: "shuffle | Deploy - confirm OpenSearch repair"
+  when: _sh_os_needs_repair | bool
+  ansible.builtin.debug:
+    msg: >-
+      OpenSearch repair completed:
+      anti-date_detection template installed,
+      hooks re-created,
+      corrupted indexes removed (workflow, workflow-*, workflowapp*),
+      backend then Orborus restarted.
+      Re-run 185-shuffle.yml to reimport workflows.
+  changed_when: false
+
+# ── Réconciliation security context des app pods (always-run) ────
+# Les app deployments (http, tools, subflow, ai) sont créés par le backend Shuffle,
+# pas par Helm. Ils servent sur le port 80 → interdit à un user non-root (uid != 0).
+# Ce patch est idempotent : kubectl répond "deployment patched (no change)" si déjà OK.
+# Il s'exécute à chaque run pour corriger les deployments créés/recréés par Shuffle.
+- name: "shuffle | Deploy - list all deployments in shuffle namespace"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ shuffle_namespace }}"
+  register: _sh_all_deployments
+  changed_when: false
+
+- name: "shuffle | Deploy - patch app deployments for port 80 binding (runAsUser 0)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    patch deployment {{ item }} -n {{ shuffle_namespace }}
+    --type=merge
+    -p '{"spec":{"template":{"spec":{"securityContext":{"runAsUser":0,"runAsNonRoot":false}}}}}'
+  vars:
+    _sh_helm_managed:
+      - "{{ shuffle_release_name }}-backend"
+      - "{{ shuffle_release_name }}-frontend"
+      - "{{ shuffle_release_name }}-orborus"
+      - "{{ shuffle_release_name }}-workers"
+  loop: >-
+    {{
+      _sh_all_deployments.resources
+      | map(attribute='metadata.name')
+      | list
+      | difference(_sh_helm_managed)
+    }}
+  register: _sh_app_sec_patch
+  changed_when: >-
+    'no change' not in (_sh_app_sec_patch.stdout | default(''))
+    and 'no change' not in (_sh_app_sec_patch.stderr | default(''))
+  failed_when: false

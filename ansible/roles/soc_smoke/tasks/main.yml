@@ -1,0 +1,145 @@
+---
+- name: Ensure smoke namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_smoke_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ soc_smoke_namespace }}"
+
+- name: Delete previous smoke job if exists
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_smoke_kubeconfig_path }}"
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    name: "{{ soc_smoke_job_name }}"
+    namespace: "{{ soc_smoke_namespace }}"
+
+- name: Build smoke script
+  ansible.builtin.set_fact:
+    soc_smoke_script: |
+      set -euo pipefail
+      apk add --no-cache curl bind-tools busybox-extras libc-utils >/dev/null 2>&1
+
+      failures=0
+
+      echo "== DNS checks =="
+      {% for host in soc_smoke_dns_checks %}
+      echo "[DNS] {{ host }}"
+      if getent hosts "{{ host }}" >/dev/null 2>&1; then
+        echo "  OK"
+      else
+        echo "  FAIL"
+        failures=$((failures+1))
+      fi
+      {% endfor %}
+
+      echo "== TCP checks =="
+      {% for item in soc_smoke_tcp_checks %}
+      echo "[TCP] {{ item.name }} {{ item.host }}:{{ item.port }}"
+      if nc -vz -w 3 "{{ item.host }}" "{{ item.port }}" >/dev/null 2>&1; then
+        echo "  OK"
+      else
+        echo "  FAIL"
+        failures=$((failures+1))
+      fi
+      {% endfor %}
+
+      echo "== HTTP checks =="
+      {% for item in soc_smoke_http_checks %}
+      echo "[HTTP] {{ item.name }} {{ item.url }}"
+      CURL_TLS="-k"
+      {% if item.tls_verify | default(false) | bool %}
+      CURL_TLS=""
+      {% endif %}
+      EXPECTED_CODES="{{ (item.ok_statuses | default([200])) | map('string') | join(' ') }}"
+      # shellcheck disable=SC2086
+      HTTP_CODE="$(curl ${CURL_TLS} -sS -L --max-time 5 -o /dev/null -w "%{http_code}" "{{ item.url }}" || true)"
+      if printf " %s " "${EXPECTED_CODES}" | grep -q " ${HTTP_CODE} "; then
+        echo "  OK"
+      else
+        echo "  HTTP ${HTTP_CODE} (expected: ${EXPECTED_CODES})"
+        echo "  FAIL"
+        failures=$((failures+1))
+      fi
+      {% endfor %}
+
+      if [ "$failures" -gt 0 ]; then
+        echo "Smoke tests failed: ${failures}"
+        exit 1
+      fi
+      echo "Smoke tests OK"
+
+- name: Run smoke job
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_smoke_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "{{ soc_smoke_job_name }}"
+        namespace: "{{ soc_smoke_namespace }}"
+      spec:
+        backoffLimit: 0
+        ttlSecondsAfterFinished: 300
+        template:
+          metadata:
+            labels:
+              app: "{{ soc_smoke_job_name }}"
+          spec:
+            restartPolicy: Never
+            containers:
+              - name: smoke
+                image: "{{ soc_smoke_image }}"
+                imagePullPolicy: "{{ soc_smoke_image_pull_policy }}"
+                command: ["sh","-lc"]
+                args:
+                  - "{{ soc_smoke_script }}"
+
+- name: Wait for smoke job completion
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_smoke_kubeconfig_path }}"
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ soc_smoke_namespace }}"
+    name: "{{ soc_smoke_job_name }}"
+  register: soc_smoke_job
+  retries: "{{ soc_smoke_retries }}"
+  delay: "{{ soc_smoke_delay }}"
+  until: >-
+    (soc_smoke_job.resources | length > 0)
+    and (
+      (soc_smoke_job.resources[0].status.succeeded | default(0) | int) > 0
+      or (soc_smoke_job.resources[0].status.failed | default(0) | int) > 0
+    )
+
+- name: Get smoke pod
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_smoke_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ soc_smoke_namespace }}"
+    label_selectors:
+      - "job-name={{ soc_smoke_job_name }}"
+  register: soc_smoke_pods
+
+- name: Read smoke logs
+  kubernetes.core.k8s_log:
+    kubeconfig: "{{ soc_smoke_kubeconfig_path }}"
+    namespace: "{{ soc_smoke_namespace }}"
+    name: "{{ soc_smoke_pods.resources[0].metadata.name }}"
+  register: soc_smoke_logs
+  when: soc_smoke_pods.resources | length > 0
+
+- name: Show smoke logs
+  ansible.builtin.debug:
+    msg: "{{ soc_smoke_logs.log | default('no logs') }}"
+
+- name: Fail if smoke job failed
+  ansible.builtin.fail:
+    msg: "Smoke tests failed. See job logs above."
+  when: (soc_smoke_job.resources[0].status.failed | default(0) | int) > 0

@@ -1,0 +1,152 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# inject_wazuh_alert.yml — Create a synthetic test alert in the SOC pipeline
+# tag: inject
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Generates a unique run ID and injects a controlled test alert with a dedicated
+# IOC (203.0.113.250 — RFC 5737 TEST-NET-3, never routable).
+#
+# Two injection modes (controlled by soc_selftest_inject_via_wazuh):
+#
+#   true (default) — Full E2E Wazuh injection:
+#     kubectl exec logger on Wazuh manager — writes to syslog, triggers custom rule
+#     soc_selftest_injection_rule_id (999999 by default).
+#     Tests the complete Wazuh → Shuffle webhook → TheHive → Cortex → Risk Engine pipeline.
+#     Rule 999999 is deployed by 180-soc-automation (wazuh_webhook task) to
+#     /var/ossec/etc/rules/soc_selftest_rules.xml. Preflight verifies it exists.
+#
+#   false — Direct TheHive API injection (TheHive-only testing):
+#     POST /api/v1/alert with SA credentials. Shuffle is NOT triggered (webhook-driven).
+#     Phases beyond inject+verify_thehive will fail. Use only with verify_thehive
+#     feature enabled and all other verify_* features disabled.
+#
+# Facts set:
+#   _st_run_id       — unique identifier for this test run (YYYYMMDDHHmmSS)
+#   _st_alert_id     — TheHive alert ID (Branch A only; Branch B: set by verify_thehive)
+#   _st_inject_epoch — Unix timestamp at injection (for latency calculation)
+#   _st_inject_status — "ok" if injection succeeded, "fail" if it failed
+#
+# Security:
+#   - no_log: true on all API calls (credentials in headers)
+#   - Test IOC only — never inject real threat IOCs
+
+# ── Generate run ID and record injection start time ───────────────
+
+- name: "inject | Generate unique selftest run ID and record start time"
+  ansible.builtin.set_fact:
+    _st_run_id:        "{{ now(utc=True).strftime('%Y%m%d%H%M%S') }}"
+    _st_inject_epoch:  "{{ now(utc=True).strftime('%s') | int }}"
+    _st_inject_status: "fail"
+    _st_alert_id:      ""
+  changed_when: false
+
+- name: "inject | Show run ID"
+  ansible.builtin.debug:
+    msg:
+      - "SOC Self-Test run ID : {{ _st_run_id }}"
+      - "Test IOC             : {{ soc_selftest_test_ip }} (RFC 5737 TEST-NET-3)"
+      - "Injection mode       : {{ 'Full E2E via Wazuh' if soc_selftest_inject_via_wazuh | bool else 'Direct TheHive API' }}"
+  changed_when: false
+
+# ═══════════════════════════════════════════════════════════════════
+# Branch A — Direct TheHive API injection (soc_selftest_inject_via_wazuh=false)
+# ═══════════════════════════════════════════════════════════════════
+
+- name: "inject | [A] Create synthetic alert in TheHive (direct API)"
+  ansible.builtin.uri:
+    url:    "{{ soc_selftest_thehive_api_base }}/v1/alert"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _st_thehive_write_key }}"
+      Content-Type:  "application/json"
+    body_format: json
+    body:
+      title:       "{{ soc_selftest_test_title }} — {{ _st_run_id }}"
+      description: >-
+        Synthetic E2E test alert injected by 210-soc-selftest.
+        run_id={{ _st_run_id }} | IOC={{ soc_selftest_test_ip }} | DO NOT PROCESS MANUALLY
+      type:        "{{ soc_selftest_alert_type }}"
+      source:      "{{ soc_selftest_alert_source }}"
+      sourceRef:   "soc-selftest-{{ _st_run_id }}"
+      severity:    2
+      tags:
+        - "soc-selftest"
+        - "source:wazuh"
+        - "run:{{ _st_run_id }}"
+      observables:
+        - dataType: "ip"
+          data:     "{{ soc_selftest_test_ip }}"
+          tags:
+            - "soc-selftest"
+            - "run:{{ _st_run_id }}"
+    status_code:    [201]
+    timeout:        "{{ soc_selftest_http_timeout }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+  register: _st_alert_create
+  no_log:       true
+  changed_when: _st_alert_create.status == 201
+  when: not soc_selftest_inject_via_wazuh | bool
+
+- name: "inject | [A] Capture alert ID from TheHive response"
+  ansible.builtin.set_fact:
+    _st_alert_id: "{{ _st_alert_create.json._id | default('') }}"
+  no_log: true
+  changed_when: false
+  when:
+    - not soc_selftest_inject_via_wazuh | bool
+    - _st_alert_create.status | default(0) == 201
+
+- name: "inject | [A] Assert alert was created successfully"
+  ansible.builtin.assert:
+    that:
+      - _st_alert_create.status | default(0) == 201
+      - _st_alert_id | length > 0
+    fail_msg: >-
+      Failed to create test alert in TheHive
+      (HTTP {{ _st_alert_create.status | default('?') }}).
+      Verify TheHive SA permissions (requires alert:create right).
+  when: not soc_selftest_inject_via_wazuh | bool
+
+# ═══════════════════════════════════════════════════════════════════
+# Branch B — Full E2E Wazuh injection (soc_selftest_inject_via_wazuh=true)
+# ═══════════════════════════════════════════════════════════════════
+# Writes a synthetic syslog line to /var/log/syslog inside the Wazuh manager pod.
+# Wazuh monitors /var/log/syslog (localfile, format syslog), matches custom rule
+# 999999 on "soc-selftest-test-event", and forwards via the Shuffle integration.
+# Note: the Wazuh container does NOT have the `logger` binary — write directly
+# to /var/log/syslog with a properly formatted syslog line instead.
+
+- name: "inject | [B] Write synthetic log to Wazuh manager /var/log/syslog (kubectl exec)"
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+    bash -c 'echo "$(date "+%b %e %H:%M:%S")  soc-selftest: ALERT srcip={{ soc_selftest_test_ip }} rule_id={{ soc_selftest_injection_rule_id }} run_id={{ _st_run_id }} tag=soc-selftest soc-selftest-test-event" >> /var/log/syslog'
+  register: _st_wazuh_inject
+  no_log:       true
+  changed_when: _st_wazuh_inject.rc == 0
+  when: soc_selftest_inject_via_wazuh | bool
+
+- name: "inject | [B] Assert Wazuh log injection succeeded"
+  ansible.builtin.assert:
+    that: _st_wazuh_inject.rc == 0
+    fail_msg: >-
+      Wazuh syslog injection failed (rc={{ _st_wazuh_inject.rc | default('?') }}).
+      Verify that kubectl exec has access to pod {{ soc_selftest_wazuh_manager_pod }}
+      in namespace {{ soc_selftest_wazuh_ns }}, and that /var/log/syslog is writable.
+  when: soc_selftest_inject_via_wazuh | bool
+
+# ── Mark injection as successful ─────────────────────────────────
+
+- name: "inject | Mark injection status ok"
+  ansible.builtin.set_fact:
+    _st_inject_status: "ok"
+  changed_when: false
+
+- name: "inject | Injection complete"
+  ansible.builtin.debug:
+    msg:
+      - "Injection OK — run_id={{ _st_run_id }}"
+      - "Alert ID : {{ _st_alert_id if _st_alert_id | length > 0 else 'pending (Wazuh mode — ID assigned by connector)' }}"
+      - "Test IOC : {{ soc_selftest_test_ip }}"
+  changed_when: false

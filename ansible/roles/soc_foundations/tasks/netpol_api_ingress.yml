@@ -1,0 +1,97 @@
+---
+# soc_foundations/tasks/netpol_api_ingress.yml
+# Applique des NetworkPolicies Kubernetes restreignant l'accès aux APIs SOC
+# aux seules sources IP définies dans soc_allowed_api_sources.
+#
+# Ces policies sont de type Ingress avec ipBlock — elles COMPLÈTENT (et ne remplacent pas)
+# les policies Egress inter-services gérées par le rôle soc_netpol.
+#
+# Une NetworkPolicy par service, appliquée dans le namespace du service concerné.
+# Idempotent : kubernetes.core.k8s avec state: present (merge semantics).
+
+- name: Netpol API ingress - assert que soc_allowed_api_sources n'est pas vide
+  ansible.builtin.assert:
+    that:
+      - soc_allowed_api_sources | length > 0
+    fail_msg: >-
+      soc_allowed_api_sources est vide. Définir au moins un CIDR dans group_vars/all.yml.
+      Exemple : soc_allowed_api_sources: ["10.0.0.0/8"]
+
+- name: Netpol API ingress - appliquer la NetworkPolicy TheHive (port {{ soc_foundations_netpol_thehive_port }})
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    template: netpol-api-ingress.yml.j2
+  vars:
+    netpol_name: "{{ soc_foundations_netpol_thehive_name }}"
+    netpol_namespace: "{{ soc_namespaces.thehive }}"
+    netpol_pod_selector: "{{ soc_foundations_netpol_thehive_pod_selector }}"
+    netpol_api_port: "{{ soc_foundations_netpol_thehive_port }}"
+    netpol_allowed_cidrs: "{{ soc_allowed_api_sources }}"
+    netpol_labels: "{{ soc_foundations_netpol_labels }}"
+    netpol_allow_ingress_controller: "{{ soc_foundations_netpol_allow_ingress_controller }}"
+    netpol_ingress_controller_namespace: "{{ soc_foundations_netpol_ingress_controller_namespace }}"
+    netpol_ingress_controller_pod_labels: "{{ soc_foundations_netpol_ingress_controller_pod_labels }}"
+    netpol_allow_from_namespaces: "{{ soc_foundations_netpol_thehive_allow_from_namespaces }}"
+
+- name: Netpol API ingress - appliquer la NetworkPolicy Cortex (port {{ soc_foundations_netpol_cortex_port }})
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    template: netpol-api-ingress.yml.j2
+  vars:
+    netpol_name: "{{ soc_foundations_netpol_cortex_name }}"
+    netpol_namespace: "{{ soc_namespaces.cortex }}"
+    netpol_pod_selector: "{{ soc_foundations_netpol_cortex_pod_selector }}"
+    netpol_api_port: "{{ soc_foundations_netpol_cortex_port }}"
+    netpol_allowed_cidrs: "{{ soc_allowed_api_sources }}"
+    netpol_labels: "{{ soc_foundations_netpol_labels }}"
+    netpol_allow_ingress_controller: "{{ soc_foundations_netpol_allow_ingress_controller }}"
+    netpol_ingress_controller_namespace: "{{ soc_foundations_netpol_ingress_controller_namespace }}"
+    netpol_ingress_controller_pod_labels: "{{ soc_foundations_netpol_ingress_controller_pod_labels }}"
+    netpol_allow_from_namespaces: "{{ soc_foundations_netpol_cortex_allow_from_namespaces }}"
+
+- name: Netpol API ingress - appliquer la NetworkPolicy MISP (port {{ soc_foundations_netpol_misp_port }})
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    template: netpol-api-ingress.yml.j2
+  vars:
+    netpol_name: "{{ soc_foundations_netpol_misp_name }}"
+    netpol_namespace: "{{ soc_namespaces.misp }}"
+    netpol_pod_selector: "{{ soc_foundations_netpol_misp_pod_selector }}"
+    netpol_api_port: "{{ soc_foundations_netpol_misp_port }}"
+    netpol_allowed_cidrs: "{{ soc_allowed_api_sources }}"
+    netpol_labels: "{{ soc_foundations_netpol_labels }}"
+    netpol_allow_ingress_controller: "{{ soc_foundations_netpol_allow_ingress_controller }}"
+    netpol_ingress_controller_namespace: "{{ soc_foundations_netpol_ingress_controller_namespace }}"
+    netpol_ingress_controller_pod_labels: "{{ soc_foundations_netpol_ingress_controller_pod_labels }}"
+    netpol_allow_from_namespaces: "{{ soc_foundations_netpol_misp_allow_from_namespaces }}"
+
+- name: Netpol API ingress - appliquer la NetworkPolicy Wazuh Manager API (port {{ soc_foundations_netpol_wazuh_port }})
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    template: netpol-api-ingress.yml.j2
+  vars:
+    netpol_name: "{{ soc_foundations_netpol_wazuh_name }}"
+    netpol_namespace: "{{ soc_namespaces.wazuh }}"
+    netpol_pod_selector: "{{ soc_foundations_netpol_wazuh_pod_selector }}"
+    netpol_api_port: "{{ soc_foundations_netpol_wazuh_port }}"
+    netpol_allowed_cidrs: "{{ soc_allowed_api_sources }}"
+    netpol_labels: "{{ soc_foundations_netpol_labels }}"
+    netpol_allow_ingress_controller: "{{ soc_foundations_netpol_allow_ingress_controller }}"
+    netpol_ingress_controller_namespace: "{{ soc_foundations_netpol_ingress_controller_namespace }}"
+    netpol_ingress_controller_pod_labels: "{{ soc_foundations_netpol_ingress_controller_pod_labels }}"
+    netpol_allow_from_namespaces: "{{ soc_foundations_netpol_wazuh_allow_from_namespaces }}"
+
+- name: Netpol API ingress - rapport des policies appliquées
+  ansible.builtin.debug:
+    msg: >-
+      NetworkPolicies API ingress appliquées pour {{ soc_allowed_api_sources | length }} CIDR(s) autorisé(s) :
+      {{ soc_allowed_api_sources | join(', ') }}.
+      Services protégés :
+      thehive(:{{ soc_foundations_netpol_thehive_port }}),
+      cortex(:{{ soc_foundations_netpol_cortex_port }}),
+      misp(:{{ soc_foundations_netpol_misp_port }}),
+      wazuh(:{{ soc_foundations_netpol_wazuh_port }}).

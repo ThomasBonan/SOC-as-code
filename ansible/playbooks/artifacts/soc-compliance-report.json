@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "playbook": "200-soc-compliance",
+  "environment": "dev",
+  "timestamp": "2026-03-29T13:49:20.307776",
+  "mode": "audit",
+  "global_status": "compliant",
+  "findings_count": 0,
+  "findings_by_severity": {
+    "critical": 0,
+    "high":     0,
+    "medium":   0
+  },
+  "domains": {
+    "rbac": {
+      "status":                 "ok",
+      "sa_counts":              {"thehive": 5, "cortex": 4, "misp": 5, "wazuh": 1},
+      "privileged_crb_count":   0,
+      "admin_rolebinding_count": 0,
+      "groupvars_issues":       [],
+      "findings":               []
+    },
+    "integrations": {
+      "status":                "ok",
+      "wazuh_thehive_cm":      "unknown",
+      "analyzer_policy_cm":    "unknown",
+      "cronjob_180":           "unknown",
+      "cronjob_180_schedule":  "unknown",
+      "cronjob_180_last_run":  "never",
+      "cronjob_190":           "unknown",
+      "cronjob_190_schedule":  "unknown",
+      "cronjob_190_last_run":  "never",
+      "worker_creds_secret":   "present",
+      "findings":              []
+    },
+    "risk_model": {
+      "status":                "ok",
+      "risk_policy_cm":        "present",
+      "asset_criticality_cm":  "present",
+      "threshold_drift":       false,
+      "weight_drift":          false,
+      "asset_drift":           false,
+      "cross_schema_drift_180_190": false,
+      "declared_thresholds": {
+        "auto_close":   20,
+        "auto_promote": 50,
+        "auto_contain": 75,
+        "escalate":     90
+      },
+      "declared_weights": {
+        "wazuh":     2,
+        "cortex":    3,
+        "misp":      4,
+        "asset":     2,
+        "frequency": 1
+      },
+      "findings": []
+    },
+    "network": {
+      "status":                    "ok",
+      "netpolicies_present":       {"thehive": true, "cortex": true, "misp": true, "wazuh": true},
+      "ingress_cidrs":             {"thehive": ["10.0.0.0/8", "172.16.0.0/12"], "cortex": ["10.0.0.0/8", "172.16.0.0/12"], "misp": ["10.0.0.0/8", "172.16.0.0/12"], "wazuh": ["10.0.0.0/8", "172.16.0.0/12"]},
+      "declared_allowed_cidrs":    ["10.0.0.0/8", "172.16.0.0/12"],
+      "wildcard_cidrs_detected":   false,
+      "wildcard_services":         [],
+      "undeclared_cidrs_detected": false,
+      "undeclared_cidrs":          {"thehive": [], "cortex": [], "misp": [], "wazuh": []},
+      "empty_ingress_services":    [],
+      "total_policies":            {"thehive": 11, "wazuh": 14},
+      "findings":                  []
+    },
+    "secrets": {
+      "status":       "ok",
+      "thehive_sa":   "ok",
+      "cortex_sa":    "ok",
+      "misp_sa":      "ok",
+      "wazuh_sa":     "ok",
+      "worker_creds": "ok",
+      "findings":     []
+    }
+  },
+  "all_findings": [],
+  "meta": {
+    "kubeconfig":   "admin.conf",
+    "validate_certs": false,
+    "fail_on_drift": true,
+    "generate_artifact": true
+  }
+}

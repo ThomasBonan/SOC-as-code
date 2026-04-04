@@ -1,0 +1,154 @@
+---
+# Toggle each Day-2 integration independently
+soc_config_enable_thehive_to_cortex: true
+soc_config_enable_cortex_to_misp: true
+soc_config_enable_wazuh_to_thehive: true
+
+# Shared runtime settings
+soc_config_kubeconfig_path: "{{ kubeconfig_path }}"
+soc_config_http_timeout: "{{ soc_http.timeout | default(10) }}"
+soc_config_http_retries: "{{ soc_http.retries | default(20) }}"
+soc_config_http_delay: "{{ soc_http.delay | default(3) }}"
+
+# -------------------------
+# TheHive <-> Cortex (TheHive API)
+# -------------------------
+soc_config_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"
+# Optional host-reachable TheHive API base (used when primary base points to a cluster .svc address).
+soc_config_thehive_ingress_scheme: "https"
+soc_config_thehive_ingress_host: >-
+  {{
+    ((apps_domain | default('') | length) > 0)
+    | ternary(
+        (soc_services.thehive | default('thehive')) ~ '.' ~ apps_domain,
+        ''
+      )
+  }}
+soc_config_thehive_ingress_api_base: >-
+  {{
+    ((soc_config_thehive_ingress_host | length) > 0)
+    | ternary(
+        soc_config_thehive_ingress_scheme ~ '://' ~ soc_config_thehive_ingress_host ~ '/api',
+        ''
+      )
+  }}
+soc_config_thehive_auth_mode: "auto"   # auto|bearer|basic|none
+soc_config_thehive_api_key: "{{ thehive_api_key | default('') }}"
+soc_config_thehive_username: "{{ thehive_api_user | default('') }}"
+soc_config_thehive_password: "{{ thehive_api_password | default('') }}"
+soc_config_thehive_organisation: "{{ thehive_api_organisation | default('') }}"
+soc_config_thehive_validate_certs: false
+soc_config_thehive_api_key_auto_bootstrap: true
+soc_config_thehive_api_key_secret_name: "thehive-api-auth"
+soc_config_thehive_api_key_secret_key: "api_key"
+soc_config_thehive_bootstrap_user: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
+soc_config_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+
+# If left empty, the role can generate/load a stable key from k8s secret.
+soc_config_thehive_cortex_api_key: ""
+soc_config_thehive_cortex_use_generated_key: true
+soc_config_thehive_cortex_generated_secret_name: "thehive-integration-secret"
+soc_config_thehive_cortex_generated_secret_key: "cortex_api_key"
+
+# TheHive v5 user-config path (can vary with your model/version)
+soc_config_thehive_cortex_config_path: "connectors.cortex.servers"
+soc_config_thehive_cortex_desired_value:
+  - name: "soc-cortex"
+    url: "{{ soc_endpoints.cortex.url }}"
+    auth:
+      type: "key"
+      key: "{{ soc_config_thehive_cortex_api_key_resolved | default('') }}"
+soc_config_thehive_release_name: "{{ soc_services.thehive }}"
+soc_config_thehive_env_configmap_name: "{{ soc_config_thehive_release_name }}-env"
+soc_config_thehive_runtime_secret_name: "{{ soc_config_thehive_release_name }}-secrets"
+soc_config_thehive_cortex_protocol: "{{ soc_protocols.cortex }}"
+soc_config_thehive_cortex_hostnames:
+  - "{{ soc_endpoints.cortex.host }}"
+soc_config_thehive_cortex_port: "{{ soc_ports.cortex }}"
+soc_config_thehive_cortex_probe_path: "/v1/connector/cortex/analyzer?range=0-1"
+soc_config_thehive_cortex_fail_on_probe_error: false
+
+# -------------------------
+# Cortex -> MISP (secret + env vars for analyzers)
+# -------------------------
+soc_config_cortex_namespace: "{{ soc_namespaces.cortex }}"
+soc_config_cortex_deployment_name: "{{ soc_services.cortex }}"
+soc_config_cortex_misp_secret_name: "cortex-misp-integration-secret"
+soc_config_cortex_misp_url: "{{ soc_endpoints.misp.url }}"
+soc_config_cortex_misp_api_key: "{{ misp_api_key | default('') }}"
+soc_config_cortex_misp_api_key_auto_bootstrap: true
+soc_config_cortex_misp_admin_secret_name: "misp-app-secret"
+soc_config_cortex_misp_admin_email_secret_key: "admin_email"
+soc_config_cortex_misp_db_secret_name: "misp-mariadb-auth"
+soc_config_cortex_misp_db_password_secret_key: "mariadb-password"
+soc_config_cortex_misp_db_statefulset_name: "misp-mariadb"
+soc_config_cortex_misp_db_pod_name: "{{ soc_config_cortex_misp_db_statefulset_name }}-0"
+soc_config_cortex_misp_db_name: "misp"
+soc_config_cortex_misp_db_user: "misp"
+soc_config_cortex_misp_verify_tls: false
+soc_config_cortex_misp_env_url_name: "CORTEX_MISP_URL"
+soc_config_cortex_misp_env_key_name: "CORTEX_MISP_API_KEY"
+soc_config_cortex_misp_env_tls_name: "CORTEX_MISP_VERIFY_TLS"
+
+# -------------------------
+# Wazuh -> TheHive (ConfigMap/Secret mounted in manager)
+# -------------------------
+soc_config_wazuh_namespace: "{{ soc_namespaces.wazuh }}"
+soc_config_wazuh_manager_statefulset: "wazuh-manager-master"
+soc_config_wazuh_configmap_name: "wazuh-thehive-integration"
+soc_config_wazuh_secret_name: "wazuh-thehive-integration-secret"
+
+soc_config_wazuh_integration_dir: "/var/ossec/integrations"
+soc_config_wazuh_script_filename: "custom-thehive"
+soc_config_wazuh_config_filename: "custom-thehive.yml"
+soc_config_wazuh_api_key_filename: "custom-thehive.key"
+
+soc_config_wazuh_script_path: "{{ soc_config_wazuh_integration_dir }}/{{ soc_config_wazuh_script_filename }}"
+soc_config_wazuh_config_path: "{{ soc_config_wazuh_integration_dir }}/{{ soc_config_wazuh_config_filename }}"
+soc_config_wazuh_api_key_path: "{{ soc_config_wazuh_integration_dir }}/{{ soc_config_wazuh_api_key_filename }}"
+
+soc_config_wazuh_thehive_alert_endpoint: "{{ soc_endpoints.thehive.api_base }}/v1/alert"
+soc_config_wazuh_thehive_api_key: "{{ thehive_alert_api_key | default('') }}"
+soc_config_wazuh_thehive_verify_tls: false
+soc_config_wazuh_thehive_alert_source: "wazuh"
+soc_config_wazuh_thehive_alert_type: "wazuh-alert"
+soc_config_wazuh_thehive_min_level: 8
+
+soc_config_wazuh_config_content: |
+  endpoint: "{{ soc_config_wazuh_thehive_alert_endpoint }}"
+  verify_tls: {{ soc_config_wazuh_thehive_verify_tls | bool | lower }}
+  min_level: {{ soc_config_wazuh_thehive_min_level | int }}
+  source: "{{ soc_config_wazuh_thehive_alert_source }}"
+  type: "{{ soc_config_wazuh_thehive_alert_type }}"
+
+# ── Python integration script settings (v2.0) ────────────────────
+# The shell script (v1.0) has been replaced by a Python script
+# deployed via wazuh-integration.py.j2 template.
+# Version detected at runtime via ConfigMap annotation soc.lab/script-version
+soc_config_wazuh_script_version: "2.0"
+
+# Severity filter: alerts below this Wazuh level are ignored
+soc_config_wazuh_min_severity: 7
+
+# Deduplication window in seconds (alerts with same rule+ip within window are merged)
+soc_config_wazuh_dedup_window_sec: 3600
+
+# Enable automatic observable extraction (IP, hash, domain, URL) from alert fields
+soc_config_wazuh_extract_observables: true
+
+# Log level for the integration script (DEBUG | INFO | WARNING | ERROR)
+soc_config_wazuh_log_level: "INFO"
+
+# HTTP settings for TheHive API calls within the script
+soc_config_wazuh_http_timeout: 10
+soc_config_wazuh_http_retries: 3
+soc_config_wazuh_http_backoff_base: 2
+
+# Alert type groups that are forwarded (empty list = forward all that meet severity)
+soc_config_wazuh_alert_types:
+  - "authentication_failed"
+  - "attack"
+  - "syscheck"
+  - "intrusion_detection"
+  - "web"
+  - "malware"

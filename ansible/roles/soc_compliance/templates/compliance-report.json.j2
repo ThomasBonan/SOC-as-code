@@ -1,0 +1,89 @@
+{
+  "schema_version": "1.0",
+  "playbook": "200-soc-compliance",
+  "environment": "{{ soc_environment | default('dev') }}",
+  "timestamp": "{{ _comp_timestamp }}",
+  "mode": "{{ soc_compliance_mode }}",
+  "global_status": "{{ _comp_global_status }}",
+  "findings_count": {{ _comp_all_findings | length }},
+  "findings_by_severity": {
+    "critical": {{ _comp_critical_count }},
+    "high":     {{ _comp_high_count }},
+    "medium":   {{ _comp_medium_count }}
+  },
+  "domains": {
+    "rbac": {
+      "status":                 "{{ _comp_rbac_result.status | default('skipped') }}",
+      "sa_counts":              {{ _comp_rbac_result.sa_counts | default({}) | to_json }},
+      "privileged_crb_count":   {{ _comp_rbac_result.privileged_crb_count | default(0) }},
+      "admin_rolebinding_count": {{ _comp_rbac_result.admin_rolebinding_count | default(0) }},
+      "groupvars_issues":       {{ _comp_rbac_result.groupvars_issues | default([]) | to_json }},
+      "findings":               {{ _comp_rbac_result.findings | default([]) | to_json }}
+    },
+    "integrations": {
+      "status":                "{{ _comp_integ_result.status | default('skipped') }}",
+      "wazuh_thehive_cm":      "{{ _comp_integ_result.wazuh_thehive_cm | default('unknown') }}",
+      "analyzer_policy_cm":    "{{ _comp_integ_result.analyzer_policy_cm | default('unknown') }}",
+      "cronjob_180":           "{{ _comp_integ_result.cronjob_180 | default('unknown') }}",
+      "cronjob_180_schedule":  "{{ _comp_integ_result.cronjob_180_schedule | default('unknown') }}",
+      "cronjob_180_last_run":  "{{ _comp_integ_result.cronjob_180_last_schedule | default('never') }}",
+      "cronjob_190":           "{{ _comp_integ_result.cronjob_190 | default('unknown') }}",
+      "cronjob_190_schedule":  "{{ _comp_integ_result.cronjob_190_schedule | default('unknown') }}",
+      "cronjob_190_last_run":  "{{ _comp_integ_result.cronjob_190_last_schedule | default('never') }}",
+      "worker_creds_secret":   "{{ _comp_integ_result.worker_creds_secret | default('unknown') }}",
+      "findings":              {{ _comp_integ_result.findings | default([]) | to_json }}
+    },
+    "risk_model": {
+      "status":                "{{ _comp_risk_result.status | default('skipped') }}",
+      "risk_policy_cm":        "{{ _comp_risk_result.risk_policy_cm | default('unknown') }}",
+      "asset_criticality_cm":  "{{ _comp_risk_result.asset_criticality_cm | default('unknown') }}",
+      "threshold_drift":       {{ _comp_risk_result.threshold_drift | default(false) | bool | lower }},
+      "weight_drift":          {{ _comp_risk_result.weight_drift    | default(false) | bool | lower }},
+      "asset_drift":           {{ _comp_risk_result.asset_drift     | default(false) | bool | lower }},
+      "cross_schema_drift_180_190": {{ _comp_risk_result.cross_schema_drift | default(false) | bool | lower }},
+      "declared_thresholds": {
+        "auto_close":   {{ soc_risk_thresholds.auto_close }},
+        "auto_promote": {{ soc_risk_thresholds.auto_promote }},
+        "auto_contain": {{ soc_risk_thresholds.auto_contain }},
+        "escalate":     {{ soc_risk_thresholds.escalate }}
+      },
+      "declared_weights": {
+        "wazuh":     {{ soc_risk_weights.wazuh }},
+        "cortex":    {{ soc_risk_weights.cortex }},
+        "misp":      {{ soc_risk_weights.misp }},
+        "asset":     {{ soc_risk_weights.asset }},
+        "frequency": {{ soc_risk_weights.frequency }}
+      },
+      "findings": {{ _comp_risk_result.findings | default([]) | to_json }}
+    },
+    "network": {
+      "status":                    "{{ _comp_net_result.status | default('skipped') }}",
+      "netpolicies_present":       {{ _comp_net_result.netpolicies_present | default({}) | to_json }},
+      "ingress_cidrs":             {{ _comp_net_result.ingress_cidrs | default({}) | to_json }},
+      "declared_allowed_cidrs":    {{ soc_allowed_api_sources | to_json }},
+      "wildcard_cidrs_detected":   {{ _comp_net_result.wildcard_cidrs_detected | default(false) | bool | lower }},
+      "wildcard_services":         {{ _comp_net_result.wildcard_services | default([]) | to_json }},
+      "undeclared_cidrs_detected": {{ _comp_net_result.undeclared_cidrs_detected | default(false) | bool | lower }},
+      "undeclared_cidrs":          {{ _comp_net_result.undeclared_cidrs | default({}) | to_json }},
+      "empty_ingress_services":    {{ _comp_net_result.empty_ingress_services | default([]) | to_json }},
+      "total_policies":            {{ _comp_net_result.total_policies | default({}) | to_json }},
+      "findings":                  {{ _comp_net_result.findings | default([]) | to_json }}
+    },
+    "secrets": {
+      "status":       "{{ _comp_sec_result.status | default('skipped') }}",
+      "thehive_sa":   "{{ _comp_sec_result.thehive_sa   | default('unknown') }}",
+      "cortex_sa":    "{{ _comp_sec_result.cortex_sa    | default('unknown') }}",
+      "misp_sa":      "{{ _comp_sec_result.misp_sa      | default('unknown') }}",
+      "wazuh_sa":     "{{ _comp_sec_result.wazuh_sa     | default('unknown') }}",
+      "worker_creds": "{{ _comp_sec_result.worker_creds | default('unknown') }}",
+      "findings":     {{ _comp_sec_result.findings | default([]) | to_json }}
+    }
+  },
+  "all_findings": {{ _comp_all_findings | to_json }},
+  "meta": {
+    "kubeconfig":   "{{ soc_compliance_kubeconfig_path | basename }}",
+    "validate_certs": {{ soc_compliance_validate_certs | bool | lower }},
+    "fail_on_drift": {{ soc_compliance_fail_on_drift | bool | lower }},
+    "generate_artifact": {{ soc_compliance_generate_artifact | bool | lower }}
+  }
+}

@@ -1,0 +1,270 @@
+---
+# soc_foundations/tasks/rbac_cortex_analyzers.yml
+# Active les Cortex analyzers pour l'organisation SOC et met à jour le rôle du SA
+# en orgAdmin (requis pour activer et exécuter des analyzers).
+#
+# Idempotence : ConfigMap soc-cortex-analyzers-enabled (ns soc-cortex).
+# Invalidée automatiquement si la liste des analyzers change (hash SHA256).
+#
+# Prérequis :
+#   - rbac_cortex.yml exécuté (cortex-sa-foundations Secret doit exister)
+#   - Cortex accessible via l'URL effective (svc ou ingress)
+
+- name: "Cortex Analyzers - calculer le hash de la liste d'analyzers"
+  ansible.builtin.set_fact:
+    _sf_cx_anlz_hash: "{{ soc_foundations_cortex_analyzers | to_json | hash('sha256') }}"
+
+- name: "Cortex Analyzers - lire le marker d'idempotence"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.cortex }}"
+    name: soc-cortex-analyzers-enabled
+  register: _sf_cx_anlz_marker
+  changed_when: false
+
+- name: "Cortex Analyzers - invalider le marker si la liste a changé"
+  when:
+    - _sf_cx_anlz_marker.resources | length > 0
+    - (_sf_cx_anlz_marker.resources[0].data.analyzer_list_hash | default('')) != _sf_cx_anlz_hash
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: absent
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: soc-cortex-analyzers-enabled
+        namespace: "{{ soc_namespaces.cortex }}"
+  changed_when: true
+
+- name: "Cortex Analyzers - re-vérifier le marker après invalidation"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.cortex }}"
+    name: soc-cortex-analyzers-enabled
+  register: _sf_cx_anlz_marker
+  changed_when: false
+
+- name: "Cortex Analyzers - résoudre l'URL API effective"
+  ansible.builtin.set_fact:
+    _sf_cx_anlz_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_cortex_api_base)
+          and (soc_foundations_cortex_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_cortex_ingress_api_base, soc_foundations_cortex_api_base)
+      }}
+
+- name: "Cortex Analyzers - bloc principal d'activation"
+  when: _sf_cx_anlz_marker.resources | length == 0
+  block:
+
+    # ── Auth admin (même mécanique que rbac_cortex.yml) ──────────────────────────
+
+    - name: "Cortex Analyzers - login admin"
+      ansible.builtin.uri:
+        url: "{{ _sf_cx_anlz_api_base }}/login"
+        method: POST
+        body_format: json
+        body:
+          user: "{{ soc_foundations_cortex_bootstrap_login }}"
+          password: "{{ soc_foundations_cortex_bootstrap_password }}"
+        validate_certs: "{{ soc_foundations_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ soc_foundations_http_timeout | int }}"
+      register: _sf_cx_anlz_login
+      no_log: true
+      retries: "{{ soc_foundations_http_retries | int }}"
+      delay: "{{ soc_foundations_http_delay | int }}"
+      until: _sf_cx_anlz_login.status == 200
+
+    - name: "Cortex Analyzers - extraire le cookie de session"
+      ansible.builtin.set_fact:
+        _sf_cx_anlz_cookie: "{{ _sf_cx_anlz_login.cookies_string }}"
+      no_log: true
+
+    - name: "Cortex Analyzers - GET /api/user/current (déclenche CSRF)"
+      ansible.builtin.uri:
+        url: "{{ _sf_cx_anlz_api_base }}/user/current"
+        method: GET
+        headers:
+          Cookie: "{{ _sf_cx_anlz_cookie }}"
+        validate_certs: "{{ soc_foundations_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ soc_foundations_http_timeout | int }}"
+      register: _sf_cx_anlz_get_current
+      no_log: true
+      failed_when: false
+
+    - name: "Cortex Analyzers - extraire le token CSRF"
+      ansible.builtin.set_fact:
+        _sf_cx_anlz_csrf: >-
+          {{
+            _sf_cx_anlz_get_current.set_cookie | default('')
+            | regex_search('CORTEX-XSRF-TOKEN=([^;,\s]+)', '\1')
+            | first | default('')
+          }}
+      no_log: true
+
+    - name: "Cortex Analyzers - générer l'API key admin"
+      ansible.builtin.uri:
+        url: "{{ _sf_cx_anlz_api_base }}/user/{{ soc_foundations_cortex_bootstrap_login }}/key/renew"
+        method: POST
+        headers:
+          Cookie: "{{ _sf_cx_anlz_cookie }}{{ '; CORTEX-XSRF-TOKEN=' + _sf_cx_anlz_csrf if _sf_cx_anlz_csrf | length > 0 else '' }}"
+          X-XSRF-TOKEN: "{{ _sf_cx_anlz_csrf }}"
+          Csrf-Token: "nocheck"
+          X-Requested-With: "XMLHttpRequest"
+        body_format: form-urlencoded
+        body:
+          csrfToken: "{{ _sf_cx_anlz_csrf }}"
+        validate_certs: "{{ soc_foundations_validate_certs }}"
+        status_code: [200]
+        return_content: true
+        timeout: "{{ soc_foundations_http_timeout | int }}"
+      register: _sf_cx_anlz_admin_key
+      no_log: true
+
+    - name: "Cortex Analyzers - extraire le Bearer admin"
+      ansible.builtin.set_fact:
+        _sf_cx_anlz_admin_bearer: >-
+          {{
+            _sf_cx_anlz_admin_key.content | trim
+            | regex_replace('^"', '') | regex_replace('"$', '')
+          }}
+      no_log: true
+
+    # ── Lire la clé SA existante ──────────────────────────────────────────────────
+
+    - name: "Cortex Analyzers - lire le Secret SA (cortex-sa-foundations)"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ soc_namespaces.cortex }}"
+        name: "{{ soc_foundations_cortex_sa_secret_name }}"
+      register: _sf_cx_anlz_sa_secret
+      no_log: true
+
+    - name: "Cortex Analyzers - extraire la clé API SA"
+      ansible.builtin.set_fact:
+        _sf_cx_anlz_sa_key: >-
+          {{
+            _sf_cx_anlz_sa_secret.resources[0].data[soc_foundations_cortex_sa_secret_key_api]
+            | b64decode
+          }}
+      no_log: true
+
+    # ── Mettre à jour le rôle SA → orgAdmin ──────────────────────────────────────
+    # orgAdmin est requis pour activer des analyzers et les exécuter.
+    # failed_when: false — la mise à jour peut échouer si Cortex 4.x utilise
+    # un endpoint différent ; l'activation d'analyzers sera tentée quand même.
+
+    - name: "Cortex Analyzers - promouvoir le SA en orgAdmin"
+      ansible.builtin.uri:
+        url: "{{ _sf_cx_anlz_api_base }}/user/{{ soc_foundations_cortex_sa_login }}"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ _sf_cx_anlz_admin_bearer }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          roles:
+            - orgAdmin
+        validate_certs: "{{ soc_foundations_validate_certs }}"
+        status_code: [200, 201, 204]
+        timeout: "{{ soc_foundations_http_timeout | int }}"
+      register: _sf_cx_anlz_role_update
+      failed_when: false
+      no_log: true
+
+    - name: "Cortex Analyzers - [info] résultat promotion rôle"
+      ansible.builtin.debug:
+        msg: "SA role update → HTTP {{ _sf_cx_anlz_role_update.status | default('?') }}"
+
+    # ── Découvrir les analyzers disponibles ──────────────────────────────────────
+
+    - name: "Cortex Analyzers - lister le catalogue disponible (SA orgAdmin)"
+      ansible.builtin.uri:
+        url: "{{ _sf_cx_anlz_api_base }}/analyzer?range=all"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _sf_cx_anlz_sa_key }}"
+        validate_certs: "{{ soc_foundations_validate_certs }}"
+        status_code: [200]
+        timeout: "{{ soc_foundations_http_timeout | int }}"
+      register: _sf_cx_anlz_catalog
+      changed_when: false
+      failed_when: false
+
+    - name: "Cortex Analyzers - [info] analyzers disponibles dans le catalogue"
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            (_sf_cx_anlz_catalog.json | default([]))
+            | map(attribute='name') | list | sort
+            if (_sf_cx_anlz_catalog.json | default([]) | type_debug) == 'list'
+            else 'Catalog unavailable (HTTP ' ~ (_sf_cx_anlz_catalog.status | default('?')) ~ ')'
+          }}
+
+    # ── Activer chaque analyzer configuré ────────────────────────────────────────
+    # Utilise la clé SA (orgAdmin dans l'org SOC) pour activer.
+    # POST /api/organization/analyzer/{id} — idempotent (201 si nouveau, 200 si déjà actif).
+    # failed_when: false — un analyzer absent du catalogue est ignoré sans planter.
+
+    - name: "Cortex Analyzers - activer les analyzers pour l'org SOC"
+      ansible.builtin.uri:
+        url: "{{ _sf_cx_anlz_api_base }}/organization/analyzer/{{ item.name }}"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ _sf_cx_anlz_sa_key }}"
+          Content-Type: "application/json"
+        body_format: json
+        body:
+          name: "{{ item.name }}"
+          configuration: "{{ item.config | default({}) }}"
+          rate: 1000
+          rate_unit: "Day"
+        validate_certs: "{{ soc_foundations_validate_certs }}"
+        status_code: [200, 201]
+        timeout: "{{ soc_foundations_http_timeout | int }}"
+      loop: "{{ soc_foundations_cortex_analyzers }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: _sf_cx_anlz_enable_results
+      failed_when: false
+
+    - name: "Cortex Analyzers - [rapport] résultat activation"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.name }} →
+          HTTP {{ item.status | default('skipped/error') }}
+          {{ '✓' if (item.status | default(0)) in [200, 201] else '✗ (voir logs Cortex)' }}
+      loop: "{{ _sf_cx_anlz_enable_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ── Marker ───────────────────────────────────────────────────────────────────
+
+    - name: "Cortex Analyzers - créer le marker d'idempotence"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: soc-cortex-analyzers-enabled
+            namespace: "{{ soc_namespaces.cortex }}"
+            labels:
+              app.kubernetes.io/managed-by: soc-foundations
+            annotations:
+              soc.lab/feature: cortex-analyzers
+              soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
+          data:
+            feature: cortex-analyzers
+            status: active
+            environment: "{{ soc_environment | default('dev') }}"
+            analyzer_list_hash: "{{ _sf_cx_anlz_hash }}"

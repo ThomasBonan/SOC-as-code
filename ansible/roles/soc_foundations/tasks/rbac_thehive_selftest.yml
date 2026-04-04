@@ -1,0 +1,425 @@
+---
+# soc_foundations/tasks/rbac_thehive_selftest.yml
+# Crée le compte de service SOC Self-Test (svc-selftest@thehive.local) avec le
+# profil "analyst" dans l'organisation SOC, et génère une API key.
+#
+# Ce compte est utilisé par le playbook 210-soc-selftest pour injecter
+# des alertes synthétiques et par le workflow Shuffle alert-triage.
+# Le profil "analyst" (étendu par rbac_thehive.yml) dispose de toutes les
+# permissions workflow nécessaires (manageAlert/*, manageCase/*, manageAnalyse...).
+#
+# Idempotence : si le K8s Secret thehive-selftest-foundations existe déjà, le bloc
+# create-once est ignoré. La section always-run (en bas) s'exécute TOUJOURS pour
+# corriger l'appartenance org (cas où le SA existe mais organisations: []).
+#
+# IMPORTANT — API d'appartenance org dans TheHive 5 (comportement vérifié) :
+#   POST /v1/user {organisation, profile}              → crée le user ET l'ajoute à l'org
+#   PATCH /v1/user/{login} {organisation, profile}     → retourne 200 mais N'AJOUTE PAS à l'org
+#   POST /v1/organisation/{_id}/user {login, profile}  → retourne NotFoundError (endpoint absent)
+#   PUT  /v1/organisation/{_id}/user/{login} {profile} → retourne 404 (endpoint absent)
+#
+#   Le membership org est retourné via 'organisation' (singulier) dans GET /v1/user/{login},
+#   pas via un tableau 'organisations'. Les deux champs sont vérifiés pour compatibilité.
+#
+# Flux create-once (guarded by Secret marker) :
+#   1. Vérifier si le Secret K8s de destination existe → skip si oui
+#   2. Résoudre l'API base effective (ingress si .svc non atteignable)
+#   3. Vérifier si l'organisation cible existe → créer si absente (POST /v1/organisation)
+#   4. Vérifier si le compte svc-selftest existe déjà (GET /v1/user/{login})
+#   5a. Si absent (404) : créer avec POST /v1/user + {organisation, profile: analyst}
+#   5b. Si présent (200) : PATCH /v1/user/{login} + {organisation, profile}
+#   6. Générer l'API key (POST /v1/user/{login}/key/renew)
+#   7. Stocker dans K8s Secret
+#
+# Flux always-run (section en bas du fichier) :
+#   1. Résoudre l'API base si non définie
+#   2. Vérifier / créer l'org SOC, capturer son _id interne
+#   3. Lire le membership org actuel du SA
+#   4. Assert que le SA est bien dans l'org SOC (échec = intervention manuelle requise)
+
+- name: TheHive Selftest RBAC - vérifier si le Secret SA existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_foundations_thehive_selftest_sa_secret_name }}"
+  register: _sf_th_st_secret_existing
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - résoudre l'API base effective
+  ansible.builtin.set_fact:
+    _sf_thehive_selftest_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_thehive_api_base)
+          and (soc_foundations_thehive_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_thehive_ingress_api_base, soc_foundations_thehive_api_base)
+      }}
+  when: _sf_th_st_secret_existing.resources | length == 0
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Vérifier / créer l'organisation cible ────────────────────────
+
+- name: TheHive Selftest RBAC - vérifier si l'organisation cible existe
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/organisation/{{ soc_foundations_thehive_selftest_sa_organisation }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 404
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_org_check
+  when: _sf_th_st_secret_existing.resources | length == 0
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - créer l'organisation si elle n'existe pas
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/organisation"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name:        "{{ soc_foundations_thehive_selftest_sa_organisation }}"
+      description: "SOC Operations Organisation — managed by soc-foundations"
+    status_code:
+      - 200
+      - 201
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_org_create
+  when:
+    - _sf_th_st_secret_existing.resources | length == 0
+    - (_sf_th_st_org_check.status | default(200)) == 404
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - afficher l'organisation cible
+  ansible.builtin.debug:
+    msg: >-
+      TheHive Selftest SA : organisation cible = '{{ soc_foundations_thehive_selftest_sa_organisation }}'
+      ({{ 'créée' if (_sf_th_st_org_check.status | default(200)) == 404 else 'déjà existante' }})
+  when: _sf_th_st_secret_existing.resources | length == 0
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Vérifier / créer le compte utilisateur ───────────────────────
+
+- name: TheHive Selftest RBAC - vérifier si le compte SA existe déjà via API
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/user/{{ soc_foundations_thehive_selftest_sa_login }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+      - 404
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_sa_check
+  when: _sf_th_st_secret_existing.resources | length == 0
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Branche A — nouveau compte (404) ─────────────────────────────
+# POST /v1/user avec organisation+profile crée directement le user dans l'org.
+
+- name: TheHive Selftest RBAC - [A] créer le compte dans l'org avec profil analyst (nouveau)
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/user"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      login:        "{{ soc_foundations_thehive_selftest_sa_login }}"
+      name:         "{{ soc_foundations_thehive_selftest_sa_name }}"
+      profile:      "{{ soc_foundations_thehive_selftest_sa_profile }}"
+      organisation: "{{ soc_foundations_thehive_selftest_sa_organisation }}"
+    status_code:
+      - 200
+      - 201
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_sa_create
+  when:
+    - _sf_th_st_secret_existing.resources | length == 0
+    - (_sf_th_st_sa_check.status | default(404)) == 404
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Branche B — compte pré-existant (200) ────────────────────────
+# PATCH /v1/user/{login} avec {organisation, profile} : retourne 200 mais peut ne pas
+# mettre à jour le membership (comportement observé en production). La génération de
+# l'API key qui suit est la vraie finalité de ce bloc.
+
+- name: TheHive Selftest RBAC - [B] PATCH organisation+profil du compte pré-existant
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/user/{{ soc_foundations_thehive_selftest_sa_login }}"
+    method: PATCH
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      organisation: "{{ soc_foundations_thehive_selftest_sa_organisation }}"
+      profile:      "{{ soc_foundations_thehive_selftest_sa_profile }}"
+    status_code:
+      - 200
+      - 204
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_sa_patch
+  when:
+    - _sf_th_st_secret_existing.resources | length == 0
+    - (_sf_th_st_sa_check.status | default(404)) == 200
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - assert compte créé/patché
+  ansible.builtin.assert:
+    that: >-
+      (_sf_th_st_sa_create.status | default(0)) in [200, 201]
+      or (_sf_th_st_sa_patch.status | default(0)) in [200, 204]
+    fail_msg: >-
+      Impossible de créer/patcher {{ soc_foundations_thehive_selftest_sa_login }}.
+      create={{ _sf_th_st_sa_create.status | default('skipped') }}
+      patch={{ _sf_th_st_sa_patch.status | default('skipped') }}
+  when: _sf_th_st_secret_existing.resources | length == 0
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Générer et stocker l'API key ──────────────────────────────────
+
+- name: TheHive Selftest RBAC - générer l'API key pour le compte de service
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/user/{{ soc_foundations_thehive_selftest_sa_login }}/key/renew"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code:
+      - 200
+    return_content: true
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_sa_key
+  when: _sf_th_st_secret_existing.resources | length == 0
+  retries: "{{ soc_foundations_http_retries | int }}"
+  delay: "{{ soc_foundations_http_delay | int }}"
+  until: _sf_th_st_sa_key.status == 200
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - extraire l'API key de la réponse
+  ansible.builtin.set_fact:
+    _sf_th_st_sa_api_key: >-
+      {{
+        _sf_th_st_sa_key.content
+        | trim
+        | regex_replace('^"', '')
+        | regex_replace('"$', '')
+      }}
+  when: _sf_th_st_secret_existing.resources | length == 0
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - assert que l'API key n'est pas vide
+  ansible.builtin.assert:
+    that:
+      - _sf_th_st_sa_api_key | length > 0
+    fail_msg: >-
+      TheHive Selftest : la génération d'API key a retourné une valeur vide pour
+      login={{ soc_foundations_thehive_selftest_sa_login }}. Vérifier les credentials admin et l'API TheHive.
+  when: _sf_th_st_secret_existing.resources | length == 0
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - stocker l'API key dans un K8s Secret (create-once)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ soc_foundations_thehive_selftest_sa_secret_name }}"
+        namespace: "{{ soc_namespaces.thehive }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-foundations
+          soc.lab/service: thehive
+          soc.lab/secret-type: service-account
+          soc.lab/used-by: soc-selftest
+        annotations:
+          soc.lab/sa-login:      "{{ soc_foundations_thehive_selftest_sa_login }}"
+          soc.lab/sa-profile:    "{{ soc_foundations_thehive_selftest_sa_profile }}"
+          soc.lab/sa-org:        "{{ soc_foundations_thehive_selftest_sa_organisation }}"
+          soc.lab/environment:   "{{ soc_environment | default('dev') }}"
+      type: Opaque
+      stringData: >-
+        {{
+          {
+            soc_foundations_thehive_selftest_sa_secret_key_login: soc_foundations_thehive_selftest_sa_login,
+            soc_foundations_thehive_selftest_sa_secret_key_api: _sf_th_st_sa_api_key
+          }
+        }}
+  when: _sf_th_st_secret_existing.resources | length == 0
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - rapport de statut
+  ansible.builtin.debug:
+    msg: >-
+      TheHive Selftest SA '{{ soc_foundations_thehive_selftest_sa_login }}'
+      (profil={{ soc_foundations_thehive_selftest_sa_profile }},
+      org={{ soc_foundations_thehive_selftest_sa_organisation }}).
+      Secret : {{ soc_namespaces.thehive }}/{{ soc_foundations_thehive_selftest_sa_secret_name }}.
+      Action : {{ 'ignoré (déjà existant)' if _sf_th_st_secret_existing.resources | length > 0 else 'créé' }}.
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# ── Vérifier l'appartenance org du SA (always-run) ──────────────────────────
+# S'exécute TOUJOURS. Vérifie que le SA est dans l'org SOC.
+# NOTE : Les endpoints PUT/POST /v1/organisation/{id}/user retournent 404/NotFoundError
+# dans cette version de TheHive 5 — aucune modification du membership via API n'est
+# possible. Si le SA n'est pas dans l'org, supprimer le K8s Secret ET le user TheHive
+# puis re-exécuter pour laisser Branch A recréer tout correctement.
+#
+# TheHive 5.x retourne le membership via 'organisation' (singulier) dans GET /v1/user.
+
+- name: TheHive Selftest RBAC - résoudre l'API base pour la vérification org
+  ansible.builtin.set_fact:
+    _sf_thehive_selftest_api_base: >-
+      {{
+        (
+          ('.svc' in soc_foundations_thehive_api_base)
+          and (soc_foundations_thehive_ingress_api_base | length > 0)
+        )
+        | ternary(soc_foundations_thehive_ingress_api_base, soc_foundations_thehive_api_base)
+      }}
+  when: _sf_thehive_selftest_api_base is not defined
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - vérifier l'organisation SOC et capturer son _id (always-run)
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/organisation/{{ soc_foundations_thehive_selftest_sa_organisation }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code: [200, 404]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_org_always
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - créer l'organisation SOC si absente (always-run)
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/organisation"
+    method: POST
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name:        "{{ soc_foundations_thehive_selftest_sa_organisation }}"
+      description: "SOC Operations Organisation — managed by soc-foundations"
+    status_code: [200, 201]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_org_create_always
+  when: (_sf_th_st_org_always.status | default(200)) == 404
+  no_log: true
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - extraire l'_id interne de l'org SOC
+  ansible.builtin.set_fact:
+    _sf_th_st_org_id: >-
+      {{
+        (_sf_th_st_org_always.json._id | default(''))
+        if (_sf_th_st_org_always.status | default(200)) == 200
+        else (_sf_th_st_org_create_always.json._id | default(''))
+      }}
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - debug org SOC _id (diagnostic)
+  ansible.builtin.debug:
+    msg: >-
+      Org '{{ soc_foundations_thehive_selftest_sa_organisation }}' _id interne: '{{ _sf_th_st_org_id }}'
+      ({{ 'créée' if (_sf_th_st_org_always.status | default(200)) == 404 else 'déjà existante' }})
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - lire l'appartenance org actuelle du SA (always-run)
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_selftest_api_base }}/v1/user/{{ soc_foundations_thehive_selftest_sa_login }}"
+    method: GET
+    url_username: "{{ soc_foundations_thehive_bootstrap_login }}"
+    url_password: "{{ soc_foundations_thehive_bootstrap_password }}"
+    force_basic_auth: true
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code: [200]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_st_sa_membership
+  no_log: true
+  changed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - debug appartenance org du SA (diagnostic)
+  ansible.builtin.debug:
+    msg: >-
+      SA '{{ soc_foundations_thehive_selftest_sa_login }}'
+      organisation={{ _sf_th_st_sa_membership.json.organisation | default('') }}
+      defaultOrganisation={{ _sf_th_st_sa_membership.json.defaultOrganisation | default('') }}
+      organisations={{ _sf_th_st_sa_membership.json.organisations | default([]) | map(attribute='organisation') | list }}
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# TheHive 5.x retourne le membership via 'organisation' (singulier) ET/OU
+# 'organisations' (tableau). On vérifie les deux pour couvrir toutes les versions.
+- name: TheHive Selftest RBAC - vérifier si le SA est dans l'org SOC
+  ansible.builtin.set_fact:
+    _sf_th_st_sa_in_org: >-
+      {{
+        (
+          (_sf_th_st_sa_membership.json.organisation | default('')) == soc_foundations_thehive_selftest_sa_organisation
+        ) or (
+          (_sf_th_st_sa_membership.json.defaultOrganisation | default('')) == soc_foundations_thehive_selftest_sa_organisation
+        ) or (
+          (soc_foundations_thehive_selftest_sa_organisation) in (
+            _sf_th_st_sa_membership.json.organisations
+            | default([])
+            | map(attribute='organisation')
+            | list
+          )
+        )
+      }}
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive Selftest RBAC - assert que le SA est dans l'org SOC
+  ansible.builtin.assert:
+    that: _sf_th_st_sa_in_org | bool
+    fail_msg: >-
+      SA '{{ soc_foundations_thehive_selftest_sa_login }}' n'est pas dans l'org
+      '{{ soc_foundations_thehive_selftest_sa_organisation }}'. Les endpoints de membership
+      TheHive 5 ne permettent pas la correction automatique. Procédure manuelle :
+      1. kubectl delete secret -n {{ soc_namespaces.thehive }} {{ soc_foundations_thehive_selftest_sa_secret_name }}
+      2. Supprimer le user '{{ soc_foundations_thehive_selftest_sa_login }}' dans TheHive (UI/API)
+      3. Re-exécuter ce playbook — Branch A recrée le user avec l'org correcte.
+  tags: [rbac, rbac_thehive, soc_foundations]
