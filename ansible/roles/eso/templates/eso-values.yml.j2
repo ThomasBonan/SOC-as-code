@@ -1,0 +1,39 @@
+# eso-values.yml.j2 — Helm values pour External Secrets Operator
+# Généré par le rôle Ansible eso
+
+installCRDs: true
+
+replicaCount: 1
+
+serviceAccount:
+  create: true
+  name: external-secrets
+  annotations: {}
+
+resources:
+  requests:
+    memory: "64Mi"
+    cpu: "50m"
+  limits:
+    memory: "128Mi"
+    cpu: "200m"
+
+webhook:
+  create: true
+  replicaCount: 1
+  resources:
+    requests:
+      memory: "32Mi"
+      cpu: "25m"
+    limits:
+      memory: "64Mi"
+      cpu: "100m"
+
+certController:
+  create: true
+  replicaCount: 1
+
+# Labels communs
+commonLabels:
+  soc.lab/component: eso
+  soc.lab/managed-by: soc-ansible

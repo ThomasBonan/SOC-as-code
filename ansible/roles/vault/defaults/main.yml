@@ -1,0 +1,54 @@
+---
+# --- Helm ---
+vault_chart_repo_url: "https://helm.releases.hashicorp.com"
+vault_chart_name: "hashicorp/vault"
+vault_chart_version: "0.28.1"
+vault_release_name: "vault"
+vault_namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+
+# --- Vault server config ---
+vault_replicas: 1                          # 1 en lab, 3 en prod (HA Raft)
+vault_storage_size: "5Gi"
+vault_storage_class: "longhorn"
+vault_image_tag: "1.17.2"
+
+# --- TLS (cert-manager) ---
+vault_tls_secret_name: "vault-tls"
+vault_certificate_name: "vault-tls"
+vault_cluster_issuer_name: "soc-lab-ca-issuer"
+vault_dns_names:
+  - "vault.{{ vault_namespace }}.svc"
+  - "vault.{{ vault_namespace }}.svc.cluster.local"
+  - "vault.apps.soc.lab"
+vault_ingress_host: "vault.apps.soc.lab"
+
+# --- Vault KV engine ---
+vault_kv_mount: "{{ soc_vault_kv_mount | default('soc') }}"
+vault_kv_description: "SOC secrets store (KV v2)"
+vault_kv_max_versions: 10
+
+# --- Kubernetes auth ---
+vault_k8s_auth_path: "kubernetes"
+vault_k8s_auth_role_eso: "eso-reader"
+vault_k8s_service_account_eso: "external-secrets"
+vault_eso_namespace: "soc-vault"
+
+# --- AppRole auth ---
+vault_approle_path: "approle"
+vault_approle_role_name: "soc-admin"
+vault_approle_secret_name: "vault-approle-creds"   # K8s Secret stockant role_id + secret_id
+
+# --- Policies ---
+vault_policy_readonly: "soc-readonly"
+vault_policy_admin: "soc-admin"
+vault_policy_eso: "soc-eso"
+
+# --- Unseal keys backup (K8s Secret dans le namespace vault) ---
+vault_unseal_keys_secret_name: "vault-unseal-keys"
+vault_unseal_keys_secret_namespace: "{{ vault_namespace }}"
+
+# --- Bootstrap passwords ---
+vault_bootstrap_password_length: 32
+
+# --- kubeconfig ---
+vault_kubeconfig_path: "{{ kubeconfig_path }}"

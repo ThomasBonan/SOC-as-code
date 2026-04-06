@@ -1,0 +1,90 @@
+---
+# vault/tasks/deploy.yml — Déploiement Helm + certificat TLS
+
+# --- Namespace ---
+- name: Vault deploy | Créer le namespace {{ vault_namespace }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vault_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          soc.lab/component: vault
+
+# --- Certificat TLS via cert-manager ---
+- name: Vault deploy | Créer le Certificate TLS pour Vault
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    state: present
+    template: vault-certificate.yml.j2
+
+- name: Vault deploy | Attendre que le Secret TLS soit prêt
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ vault_namespace }}"
+    name: "{{ vault_tls_secret_name }}"
+  register: _vault_tls_secret
+  until: _vault_tls_secret.resources | length > 0
+  retries: 30
+  delay: 10
+
+# --- Helm repo ---
+- name: Vault deploy | Ajouter le repo Helm HashiCorp
+  ansible.builtin.command: >
+    helm repo add hashicorp {{ vault_chart_repo_url }}
+  register: _vault_repo_add
+  changed_when: "'already exists' not in _vault_repo_add.stdout"
+
+- name: Vault deploy | Mettre à jour les repos Helm
+  ansible.builtin.command: helm repo update
+  changed_when: false
+
+# --- Écrire les values dans un fichier temporaire ---
+- name: Vault deploy | Écrire les values Helm dans un fichier temporaire
+  ansible.builtin.copy:
+    content: "{{ lookup('template', 'vault-values.yml.j2') }}"
+    dest: /tmp/vault-values-rendered.yml
+    mode: "0600"
+
+- name: Vault deploy | Installer/mettre à jour Vault via Helm
+  ansible.builtin.command: >
+    helm upgrade --install {{ vault_release_name }}
+    {{ vault_chart_name }}
+    --version {{ vault_chart_version }}
+    --namespace {{ vault_namespace }}
+    --values /tmp/vault-values-rendered.yml
+    --wait --timeout 5m
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  changed_when: true
+
+- name: Vault deploy | Nettoyer le fichier de values temporaire
+  ansible.builtin.file:
+    path: /tmp/vault-values-rendered.yml
+    state: absent
+
+# --- Attendre que Vault soit prêt ---
+- name: Vault deploy | Attendre que le pod Vault soit Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ vault_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=vault"
+      - "component=server"
+  register: _vault_pods
+  until: >-
+    _vault_pods.resources | length > 0
+    and (_vault_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) > 0
+  retries: 30
+  delay: 10
+
+- name: Vault deploy | Vault pod opérationnel
+  ansible.builtin.debug:
+    msg: "Vault déployé : {{ _vault_pods.resources | length }} pod(s) Running dans {{ vault_namespace }}"

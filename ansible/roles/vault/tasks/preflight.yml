@@ -1,0 +1,46 @@
+---
+# vault/tasks/preflight.yml — Vérification des prérequis
+
+- name: Vault preflight | Vérifier que Helm est disponible
+  ansible.builtin.command: helm version --short
+  register: _vault_helm_version
+  changed_when: false
+  failed_when: _vault_helm_version.rc != 0
+
+- name: Vault preflight | Afficher la version Helm
+  ansible.builtin.debug:
+    msg: "Helm disponible : {{ _vault_helm_version.stdout }}"
+
+- name: Vault preflight | Vérifier que la StorageClass Longhorn existe
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: "{{ vault_storage_class }}"
+  register: _vault_sc_check
+  failed_when: _vault_sc_check.resources | length == 0
+
+- name: Vault preflight | Vérifier que cert-manager est opérationnel
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: cert-manager
+    name: cert-manager
+  register: _vault_cm_check
+  failed_when: >-
+    _vault_cm_check.resources | length == 0
+    or (_vault_cm_check.resources[0].status.readyReplicas | default(0)) < 1
+
+- name: Vault preflight | Vérifier que le ClusterIssuer soc-lab-ca-issuer existe
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    api_version: cert-manager.io/v1
+    kind: ClusterIssuer
+    name: "{{ vault_cluster_issuer_name }}"
+  register: _vault_issuer_check
+  failed_when: _vault_issuer_check.resources | length == 0
+
+- name: Vault preflight | Tous les prérequis validés
+  ansible.builtin.debug:
+    msg: "Prérequis Vault OK : Helm, Longhorn, cert-manager, ClusterIssuer."

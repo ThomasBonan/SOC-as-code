@@ -1,0 +1,10 @@
+# policy-soc-readonly.hcl — Lecture seule sur tous les secrets SOC
+# Utilisée par : roles K8s auth génériques
+
+path "{{ vault_kv_mount }}/data/*" {
+  capabilities = ["read"]
+}
+
+path "{{ vault_kv_mount }}/metadata/*" {
+  capabilities = ["read", "list"]
+}

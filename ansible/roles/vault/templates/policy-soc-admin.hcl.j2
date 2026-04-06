@@ -1,0 +1,22 @@
+# policy-soc-admin.hcl — Admin complet sur les secrets SOC
+# Utilisée par : AppRole Ansible (runs post-bootstrap)
+
+path "{{ vault_kv_mount }}/data/*" {
+  capabilities = ["create", "read", "update", "delete"]
+}
+
+path "{{ vault_kv_mount }}/metadata/*" {
+  capabilities = ["read", "list", "delete"]
+}
+
+path "{{ vault_kv_mount }}/delete/*" {
+  capabilities = ["update"]
+}
+
+path "{{ vault_kv_mount }}/undelete/*" {
+  capabilities = ["update"]
+}
+
+path "{{ vault_kv_mount }}/destroy/*" {
+  capabilities = ["update"]
+}

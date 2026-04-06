@@ -1,0 +1,189 @@
+---
+# --- Helm ---
+eso_chart_repo_url: "https://charts.external-secrets.io"
+eso_chart_name: "external-secrets/external-secrets"
+eso_chart_version: "0.10.4"
+eso_release_name: "external-secrets"
+eso_namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+
+# --- ClusterSecretStore ---
+eso_cluster_secret_store_name: "vault-backend"
+eso_vault_addr: "{{ soc_vault_addr | default('https://vault.soc-vault.svc:8200') }}"
+eso_vault_kv_mount: "{{ soc_vault_kv_mount | default('soc') }}"
+eso_vault_k8s_auth_path: "kubernetes"
+eso_vault_k8s_auth_role: "soc-admin-eso"
+eso_vault_ca_bundle_secret: "soc-lab-ca-bundle"  # ConfigMap contenant le CA cert
+
+# --- Refresh interval des ExternalSecrets ---
+eso_refresh_interval: "1h"
+
+# --- Kubeconfig ---
+eso_kubeconfig_path: "{{ kubeconfig_path }}"
+
+# --- Mapping des ExternalSecrets à créer ---
+# Format : { name, namespace, vault_path, data: [ {secretKey, remoteKey} ] }
+eso_external_secrets:
+  # Databases
+  - name: thehive-postgresql-auth
+    namespace: "{{ soc_namespaces.thehive }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/thehive-postgresql"
+    data:
+      - secretKey: postgres-password
+        remoteKey: postgres-password
+      - secretKey: password
+        remoteKey: password
+
+  - name: cortex-postgresql-auth
+    namespace: "{{ soc_namespaces.cortex }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/cortex-postgresql"
+    data:
+      - secretKey: postgres-password
+        remoteKey: postgres-password
+      - secretKey: password
+        remoteKey: password
+
+  - name: misp-mariadb-auth
+    namespace: "{{ soc_namespaces.misp }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/misp-mariadb"
+    data:
+      - secretKey: mariadb-root-password
+        remoteKey: mariadb-root-password
+      - secretKey: mariadb-password
+        remoteKey: mariadb-password
+
+  - name: misp-redis
+    namespace: "{{ soc_namespaces.misp }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/misp-redis"
+    data:
+      - secretKey: redis-password
+        remoteKey: redis-password
+
+  # Apps
+  - name: misp-app-secret
+    namespace: "{{ soc_namespaces.misp }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/misp-app-secret"
+    data:
+      - secretKey: admin_email
+        remoteKey: admin_email
+      - secretKey: admin_password
+        remoteKey: admin_password
+      - secretKey: salt
+        remoteKey: salt
+      - secretKey: gpg_passphrase
+        remoteKey: gpg_passphrase
+
+  - name: thehive-secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/thehive-secret"
+    data:
+      - secretKey: httpSecret
+        remoteKey: httpSecret
+
+  - name: cortex-secret
+    namespace: "{{ soc_namespaces.cortex }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/cortex-secret"
+    data:
+      - secretKey: httpSecret
+        remoteKey: httpSecret
+
+  - name: soc-shuffle-admin-creds
+    namespace: soc-shuffle
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/shuffle-admin"
+    data:
+      - secretKey: apikey
+        remoteKey: apikey
+      - secretKey: username
+        remoteKey: username
+
+  # Wazuh credentials
+  - name: wazuh-credentials
+    namespace: "{{ soc_namespaces.wazuh }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/credentials/wazuh-credentials"
+    data:
+      - secretKey: indexer_password
+        remoteKey: indexer_password
+      - secretKey: indexer_password_hash
+        remoteKey: indexer_password_hash
+      - secretKey: dashboard_password
+        remoteKey: dashboard_password
+      - secretKey: dashboard_password_hash
+        remoteKey: dashboard_password_hash
+
+  - name: wazuh-api-cred
+    namespace: "{{ soc_namespaces.wazuh }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/credentials/wazuh-api-cred"
+    data:
+      - secretKey: API_USERNAME
+        remoteKey: API_USERNAME
+      - secretKey: API_PASSWORD
+        remoteKey: API_PASSWORD
+
+  # Service accounts
+  - name: thehive-sa-foundations
+    namespace: "{{ soc_namespaces.thehive }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/thehive-sa"
+    data:
+      - secretKey: api_key
+        remoteKey: api_key
+      - secretKey: login
+        remoteKey: login
+
+  - name: thehive-selftest-foundations
+    namespace: "{{ soc_namespaces.thehive }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/thehive-selftest-sa"
+    data:
+      - secretKey: api_key
+        remoteKey: api_key
+      - secretKey: login
+        remoteKey: login
+
+  - name: cortex-sa-foundations
+    namespace: "{{ soc_namespaces.cortex }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/cortex-sa"
+    data:
+      - secretKey: api_key
+        remoteKey: api_key
+      - secretKey: login
+        remoteKey: login
+
+  - name: misp-sa-foundations
+    namespace: "{{ soc_namespaces.misp }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/misp-sa"
+    data:
+      - secretKey: authkey
+        remoteKey: authkey
+      - secretKey: email
+        remoteKey: email
+
+  - name: wazuh-sa-foundations
+    namespace: "{{ soc_namespaces.wazuh }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/wazuh-sa"
+    data:
+      - secretKey: username
+        remoteKey: username
+      - secretKey: password
+        remoteKey: password
+
+  # Automation worker
+  - name: soc-automation-worker-creds
+    namespace: "{{ soc_namespaces.thehive }}"
+    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/automation/worker-creds"
+    data:
+      - secretKey: THEHIVE_URL
+        remoteKey: THEHIVE_URL
+      - secretKey: THEHIVE_API_KEY
+        remoteKey: THEHIVE_API_KEY
+      - secretKey: THEHIVE_WRITE_KEY
+        remoteKey: THEHIVE_WRITE_KEY
+      - secretKey: CORTEX_URL
+        remoteKey: CORTEX_URL
+      - secretKey: CORTEX_API_KEY
+        remoteKey: CORTEX_API_KEY
+      - secretKey: MISP_URL
+        remoteKey: MISP_URL
+      - secretKey: MISP_API_KEY
+        remoteKey: MISP_API_KEY
+      - secretKey: WAZUH_USER
+        remoteKey: WAZUH_USER
+      - secretKey: WAZUH_PASS
+        remoteKey: WAZUH_PASS

@@ -1,0 +1,10 @@
+# policy-soc-eso.hcl — Lecture pour External Secrets Operator
+# Utilisée par : ServiceAccount external-secrets dans le namespace soc-vault
+
+path "{{ vault_kv_mount }}/data/*" {
+  capabilities = ["read"]
+}
+
+path "{{ vault_kv_mount }}/metadata/*" {
+  capabilities = ["list"]
+}

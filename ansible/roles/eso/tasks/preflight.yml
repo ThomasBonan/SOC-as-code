@@ -1,0 +1,39 @@
+---
+# eso/tasks/preflight.yml — Vérifier que Vault est opérationnel
+
+- name: ESO preflight | Vérifier que le pod Vault est Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ eso_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=vault"
+      - "component=server"
+  register: _eso_vault_pods
+  failed_when: >-
+    _eso_vault_pods.resources | length == 0
+    or (_eso_vault_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) == 0
+
+- name: ESO preflight | Vérifier que Vault est unsealed
+  ansible.builtin.command: >
+    kubectl exec -n {{ eso_namespace }} vault-0 --
+    vault status -format=json
+  environment:
+    KUBECONFIG: "{{ eso_kubeconfig_path }}"
+  register: _eso_vault_status_raw
+  changed_when: false
+  failed_when: _eso_vault_status_raw.rc not in [0, 1, 2]
+
+- name: ESO preflight | Parser le statut Vault
+  ansible.builtin.set_fact:
+    _eso_vault_status: "{{ _eso_vault_status_raw.stdout | from_json }}"
+
+- name: ESO preflight | Echec si Vault est sealed
+  ansible.builtin.fail:
+    msg: "Vault est sealed — lancer le playbook 75-vault.yml --tags unseal avant ESO."
+  when: _eso_vault_status.sealed | bool
+
+- name: ESO preflight | Vault opérationnel pour ESO
+  ansible.builtin.debug:
+    msg: "Vault unsealed — déploiement ESO autorisé."

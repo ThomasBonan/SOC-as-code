@@ -4,4 +4,6 @@ collections:
   - name: community.general      # modules réseau/outil divers
   - name: community.crypto       # si tu gènes des clés/certificats
   - name: kubernetes.core        # kubectl/k8s modules si besoin plus tard
+  - name: community.hashi_vault  # HashiCorp Vault lookups et modules
+    version: ">=6.2.0"
 roles: []

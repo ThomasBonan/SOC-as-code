@@ -1,0 +1,91 @@
+# vault-values.yml.j2 — Helm values pour HashiCorp Vault
+# Généré par le rôle Ansible vault
+
+global:
+  enabled: true
+  tlsDisable: false
+
+server:
+  image:
+    tag: "{{ vault_image_tag }}"
+
+  # Ressources
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "50m"    # Réduit pour lab (worker-1 saturé)
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+  # TLS
+  volumes:
+    - name: vault-tls
+      secret:
+        secretName: "{{ vault_tls_secret_name }}"
+
+  volumeMounts:
+    - mountPath: /vault/tls
+      name: vault-tls
+      readOnly: true
+
+  extraEnvironmentVars:
+    VAULT_CACERT: /vault/tls/ca.crt
+    VAULT_TLSCERT: /vault/tls/tls.crt
+    VAULT_TLSKEY: /vault/tls/tls.key
+
+  # Configuration Vault (HCL)
+  ha:
+    enabled: false
+
+  standalone:
+    enabled: true
+    config: |
+      ui = true
+
+      listener "tcp" {
+        tls_disable = 0
+        address     = "[::]:8200"
+        tls_cert_file = "/vault/tls/tls.crt"
+        tls_key_file  = "/vault/tls/tls.key"
+        tls_client_ca_file = "/vault/tls/ca.crt"
+      }
+
+      storage "raft" {
+        path    = "/vault/data"
+        node_id = "vault-0"
+      }
+
+      api_addr     = "https://vault.{{ vault_namespace }}.svc:8200"
+      cluster_addr = "https://vault-0.vault-internal:8201"
+
+  # Persistence via Longhorn
+  dataStorage:
+    enabled: true
+    size: "{{ vault_storage_size }}"
+    storageClass: "{{ vault_storage_class }}"
+    accessMode: ReadWriteOnce
+
+  # Désactiver l'auto-unseal (manuel pour lab ; KMS pour prod)
+  auditStorage:
+    enabled: false
+
+  # ServiceAccount
+  serviceAccount:
+    create: true
+    name: vault
+
+  # Annotations pour cert-manager
+  annotations:
+    soc.lab/component: vault
+    soc.lab/managed-by: soc-ansible
+
+ui:
+  enabled: true
+  serviceType: ClusterIP
+
+injector:
+  enabled: false  # On utilise ESO, pas l'agent injector
+
+csi:
+  enabled: false

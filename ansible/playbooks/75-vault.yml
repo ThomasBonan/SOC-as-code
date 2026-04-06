@@ -1,0 +1,48 @@
+---
+# 75-vault.yml
+# HashiCorp Vault + External Secrets Operator
+#
+# Ce playbook déploie l'infrastructure de gestion de secrets centralisée.
+# Il doit être exécuté APRÈS le playbook 60-post-config-master.yml
+# (cert-manager + Longhorn) et AVANT le playbook 80-databases.yml.
+#
+# Tags disponibles :
+#   preflight        - vérification des prérequis (Helm, Longhorn, cert-manager)
+#   deploy           - déploiement Helm Vault
+#   unseal           - init + unseal Vault
+#   auth             - configuration Kubernetes auth + AppRole
+#   secrets          - activation KV v2 + policies
+#   bootstrap        - seed des secrets bootstrap (TheHive/Cortex/Shuffle)
+#   vault            - toutes les tâches du rôle vault
+#   eso              - toutes les tâches du rôle eso
+#   configure        - ClusterSecretStore
+#   external_secrets - ExternalSecret CRDs (17 secrets)
+#
+# Exemples d'utilisation :
+#   ansible-playbook 75-vault.yml                             # run complet
+#   ansible-playbook 75-vault.yml --tags vault                # vault seul
+#   ansible-playbook 75-vault.yml --tags eso                  # eso seul
+#   ansible-playbook 75-vault.yml --tags unseal               # unseal seul
+#   ansible-playbook 75-vault.yml --tags bootstrap            # re-seed secrets
+#   ansible-playbook 75-vault.yml --tags external_secrets     # re-sync CRDs ESO
+#
+# Prérequis :
+#   - cert-manager + ClusterIssuer soc-lab-ca-issuer déployés (playbook 60)
+#   - Longhorn StorageClass déployée (playbook 60)
+#   - Collection community.hashi_vault >= 6.2.0 installée :
+#     ansible-galaxy collection install -r requirements.yml
+
+- name: "75 | HashiCorp Vault + External Secrets Operator"
+  hosts: localhost
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+  pre_tasks:
+    - name: Override soc_environment depuis la variable d'env SOC_ENV
+      ansible.builtin.set_fact:
+        soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
+      when: lookup('env', 'SOC_ENV') | length > 0
+      tags: always
+  roles:
+    - vault
+    - eso

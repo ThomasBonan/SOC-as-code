@@ -1,0 +1,35 @@
+---
+# vault/tasks/main.yml — Orchestrateur du rôle HashiCorp Vault
+#
+# Tags disponibles :
+#   preflight   - vérification des prérequis
+#   deploy      - déploiement Helm + certificat TLS
+#   unseal      - init + unseal Vault
+#   auth        - configuration Kubernetes auth + AppRole
+#   secrets     - activation KV v2 + policies
+#   bootstrap   - seed des secrets initiaux
+#   vault       - toutes les tâches du rôle
+
+- name: Vault | Preflight — vérification des prérequis
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [vault, preflight]
+
+- name: Vault | Deploy — Helm install + certificat TLS
+  ansible.builtin.import_tasks: deploy.yml
+  tags: [vault, deploy]
+
+- name: Vault | Unseal — init + déscellement Vault
+  ansible.builtin.import_tasks: unseal.yml
+  tags: [vault, unseal]
+
+- name: Vault | Auth — Kubernetes auth + AppRole
+  ansible.builtin.import_tasks: configure_auth.yml
+  tags: [vault, auth]
+
+- name: Vault | Secrets — KV v2 engine + policies
+  ansible.builtin.import_tasks: configure_secrets.yml
+  tags: [vault, secrets]
+
+- name: Vault | Bootstrap — seed des secrets initiaux
+  ansible.builtin.import_tasks: bootstrap_secrets.yml
+  tags: [vault, bootstrap]

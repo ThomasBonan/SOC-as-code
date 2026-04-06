@@ -1,0 +1,131 @@
+---
+# vault/tasks/configure_auth.yml — Configuration Kubernetes auth + AppRole
+
+# --- Token root ---
+- name: Vault auth | Lire le root token depuis le K8s Secret
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ vault_unseal_keys_secret_namespace }}"
+    name: "{{ vault_unseal_keys_secret_name }}"
+  register: _vault_keys_secret_auth
+  no_log: true
+
+- name: Vault auth | Extraire le root token
+  ansible.builtin.set_fact:
+    _vault_root_token: "{{ _vault_keys_secret_auth.resources[0].data.root_token | b64decode }}"
+  no_log: true
+
+# Préfixe pour toutes les commandes vault dans le pod (transmet VAULT_TOKEN via env)
+- name: Vault auth | Définir le préfixe kubectl exec
+  ansible.builtin.set_fact:
+    _vault_exec: >-
+      kubectl exec -n {{ vault_namespace }} vault-0 --
+      env VAULT_TOKEN={{ _vault_root_token }}
+  no_log: true
+
+# --- Kubernetes auth ---
+- name: Vault auth | Activer le Kubernetes auth si absent
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault auth enable -path={{ vault_k8s_auth_path }} kubernetes
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_k8s_auth_enable
+  changed_when: "'already enabled' not in _vault_k8s_auth_enable.stderr"
+  failed_when: >-
+    _vault_k8s_auth_enable.rc != 0
+    and 'already enabled' not in _vault_k8s_auth_enable.stderr
+  no_log: true
+
+- name: Vault auth | Configurer le Kubernetes auth (in-cluster)
+  ansible.builtin.shell: >
+    {{ _vault_exec }}
+    vault write auth/{{ vault_k8s_auth_path }}/config
+    kubernetes_host="https://kubernetes.default.svc:443"
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  changed_when: true
+  no_log: true
+
+- name: Vault auth | Créer le rôle K8s auth pour ESO
+  ansible.builtin.shell: >
+    {{ _vault_exec }}
+    vault write auth/{{ vault_k8s_auth_path }}/role/{{ vault_approle_role_name }}-eso
+    bound_service_account_names={{ vault_k8s_service_account_eso }}
+    bound_service_account_namespaces={{ vault_eso_namespace }}
+    policies={{ vault_policy_eso }}
+    ttl=1h
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  changed_when: true
+  no_log: true
+
+# --- AppRole auth ---
+- name: Vault auth | Activer AppRole auth si absent
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault auth enable -path={{ vault_approle_path }} approle
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_approle_enable
+  changed_when: "'already enabled' not in _vault_approle_enable.stderr"
+  failed_when: >-
+    _vault_approle_enable.rc != 0
+    and 'already enabled' not in _vault_approle_enable.stderr
+  no_log: true
+
+- name: Vault auth | Créer le rôle AppRole soc-admin
+  ansible.builtin.shell: >
+    {{ _vault_exec }}
+    vault write auth/{{ vault_approle_path }}/role/{{ vault_approle_role_name }}
+    policies={{ vault_policy_admin }}
+    secret_id_ttl=0
+    token_ttl=1h
+    token_max_ttl=4h
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  changed_when: true
+  no_log: true
+
+- name: Vault auth | Lire le role_id AppRole
+  ansible.builtin.shell: >
+    {{ _vault_exec }}
+    vault read -format=json auth/{{ vault_approle_path }}/role/{{ vault_approle_role_name }}/role-id
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_approle_role_id_raw
+  changed_when: false
+  no_log: true
+
+- name: Vault auth | Générer un secret_id AppRole
+  ansible.builtin.shell: >
+    {{ _vault_exec }}
+    vault write -format=json -f
+    auth/{{ vault_approle_path }}/role/{{ vault_approle_role_name }}/secret-id
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_approle_secret_id_raw
+  changed_when: true
+  no_log: true
+
+- name: Vault auth | Sauvegarder les credentials AppRole dans un K8s Secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ vault_approle_secret_name }}"
+        namespace: "{{ vault_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          soc.lab/component: vault-approle
+      type: Opaque
+      stringData:
+        role_id: "{{ (_vault_approle_role_id_raw.stdout | from_json).data.role_id }}"
+        secret_id: "{{ (_vault_approle_secret_id_raw.stdout | from_json).data.secret_id }}"
+  no_log: true
+
+- name: Vault auth | Configuration auth terminée
+  ansible.builtin.debug:
+    msg: "Kubernetes auth et AppRole configurés dans Vault."

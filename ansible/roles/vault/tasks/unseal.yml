@@ -1,0 +1,134 @@
+---
+# vault/tasks/unseal.yml — Init + unseal Vault
+
+# --- Vérifier le statut d'init ---
+- name: Vault unseal | Vérifier le statut d'initialisation
+  ansible.builtin.command: >
+    kubectl exec -n {{ vault_namespace }} vault-0 --
+    vault status -format=json
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_status_raw
+  changed_when: false
+  failed_when: _vault_status_raw.rc not in [0, 1, 2]  # rc=2 = sealed
+
+- name: Vault unseal | Parser le statut Vault
+  ansible.builtin.set_fact:
+    _vault_status: "{{ _vault_status_raw.stdout | from_json }}"
+
+- name: Vault unseal | Afficher le statut Vault
+  ansible.builtin.debug:
+    msg: >-
+      Vault initialized={{ _vault_status.initialized }},
+      sealed={{ _vault_status.sealed }}
+
+# --- Init si pas encore initialisé ---
+- name: Vault unseal | Initialiser Vault (première fois uniquement)
+  ansible.builtin.command: >
+    kubectl exec -n {{ vault_namespace }} vault-0 --
+    vault operator init -key-shares=5 -key-threshold=3 -format=json
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_init_raw
+  changed_when: true
+  no_log: true
+  when: not _vault_status.initialized
+
+- name: Vault unseal | Parser les clés d'unseal (init)
+  ansible.builtin.set_fact:
+    _vault_init: "{{ _vault_init_raw.stdout | from_json }}"
+  no_log: true
+  when: not _vault_status.initialized
+
+- name: Vault unseal | Sauvegarder les unseal keys dans un K8s Secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ vault_unseal_keys_secret_name }}"
+        namespace: "{{ vault_unseal_keys_secret_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          soc.lab/component: vault-recovery
+        annotations:
+          soc.lab/warning: >-
+            CRITIQUE : Ces clés permettent de déverrouiller Vault.
+            Stocker hors-cluster en production (KMS, HSM, gestionnaire de mots de passe sécurisé).
+      type: Opaque
+      stringData:
+        unseal_key_0: "{{ _vault_init.unseal_keys_b64[0] }}"
+        unseal_key_1: "{{ _vault_init.unseal_keys_b64[1] }}"
+        unseal_key_2: "{{ _vault_init.unseal_keys_b64[2] }}"
+        unseal_key_3: "{{ _vault_init.unseal_keys_b64[3] }}"
+        unseal_key_4: "{{ _vault_init.unseal_keys_b64[4] }}"
+        root_token: "{{ _vault_init.root_token }}"
+  no_log: true
+  when: not _vault_status.initialized
+
+# --- Récupérer les clés d'unseal depuis le Secret K8s ---
+- name: Vault unseal | Lire les unseal keys depuis le K8s Secret
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ vault_unseal_keys_secret_namespace }}"
+    name: "{{ vault_unseal_keys_secret_name }}"
+  register: _vault_keys_secret
+  no_log: true
+
+- name: Vault unseal | Extraire les clés d'unseal
+  ansible.builtin.set_fact:
+    _vault_unseal_keys:
+      - "{{ _vault_keys_secret.resources[0].data.unseal_key_0 | b64decode }}"
+      - "{{ _vault_keys_secret.resources[0].data.unseal_key_1 | b64decode }}"
+      - "{{ _vault_keys_secret.resources[0].data.unseal_key_2 | b64decode }}"
+    _vault_root_token: "{{ _vault_keys_secret.resources[0].data.root_token | b64decode }}"
+  no_log: true
+
+# --- Vérifier le statut sealed après init ---
+- name: Vault unseal | Relire le statut Vault
+  ansible.builtin.command: >
+    kubectl exec -n {{ vault_namespace }} vault-0 --
+    vault status -format=json
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_status_raw2
+  changed_when: false
+  failed_when: _vault_status_raw2.rc not in [0, 1, 2]
+
+- name: Vault unseal | Parser le statut Vault (post-init)
+  ansible.builtin.set_fact:
+    _vault_status2: "{{ _vault_status_raw2.stdout | from_json }}"
+
+# --- Unseal avec les 3 premières clés ---
+- name: Vault unseal | Appliquer les unseal keys (threshold=3)
+  ansible.builtin.command: >
+    kubectl exec -n {{ vault_namespace }} vault-0 --
+    vault operator unseal {{ item }}
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  loop: "{{ _vault_unseal_keys }}"
+  no_log: true
+  changed_when: true
+  when: _vault_status2.sealed | bool
+
+# --- Vérifier que Vault est unsealed ---
+- name: Vault unseal | Vérifier que Vault est opérationnel
+  ansible.builtin.command: >
+    kubectl exec -n {{ vault_namespace }} vault-0 --
+    vault status -format=json
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_status_final_raw
+  changed_when: false
+  retries: 10
+  delay: 5
+  until: >-
+    _vault_status_final_raw.rc == 0
+    and not (_vault_status_final_raw.stdout | from_json).sealed
+
+- name: Vault unseal | Vault opérationnel
+  ansible.builtin.debug:
+    msg: "Vault unsealed et opérationnel."

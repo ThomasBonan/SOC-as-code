@@ -1,0 +1,25 @@
+---
+# eso/tasks/main.yml — Orchestrateur du rôle External Secrets Operator
+#
+# Tags disponibles :
+#   preflight        - vérification que Vault est opérationnel
+#   deploy           - déploiement Helm ESO
+#   configure        - ClusterSecretStore pointant vers Vault
+#   external_secrets - création des ExternalSecret CRDs
+#   eso              - toutes les tâches du rôle
+
+- name: ESO | Preflight — Vault unsealed et accessible
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [eso, preflight]
+
+- name: ESO | Deploy — Helm install External Secrets Operator
+  ansible.builtin.import_tasks: deploy.yml
+  tags: [eso, deploy]
+
+- name: ESO | Configure — ClusterSecretStore
+  ansible.builtin.import_tasks: configure.yml
+  tags: [eso, configure]
+
+- name: ESO | ExternalSecrets — création des 17 CRDs
+  ansible.builtin.import_tasks: external_secrets.yml
+  tags: [eso, external_secrets]

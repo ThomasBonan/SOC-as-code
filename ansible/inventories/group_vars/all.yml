@@ -146,6 +146,15 @@ soc_environment: "dev"
 # Valeurs : kubernetes-secrets | vault | eso (External Secrets Operator)
 soc_vault_backend: "kubernetes-secrets"
 
+# ============================================================
+# HashiCorp Vault — variables globales (rôle vault + eso)
+# ============================================================
+soc_vault_namespace: "soc-vault"
+soc_vault_addr: "https://vault.soc-vault.svc:8200"
+soc_vault_kv_mount: "soc"
+# Chemin vers le CA cert de soc-lab-ca-issuer (déployé par cert-manager)
+vault_ca_cert: "/etc/pki/soc-lab/soc-lab-ca.crt"
+
 # CIDRs autorisés à accéder aux APIs SOC (TheHive:9000, Cortex:9001, MISP:443, Wazuh:55000)
 # Appliqués via NetworkPolicy Kubernetes (ingress ipBlock) par le rôle soc_foundations.
 # En production, restreindre aux seuls CIDR des runners CI/CD et du controller Ansible.

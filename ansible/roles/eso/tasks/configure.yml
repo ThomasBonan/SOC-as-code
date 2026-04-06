@@ -1,0 +1,59 @@
+---
+# eso/tasks/configure.yml — ClusterSecretStore pointant vers Vault
+
+# --- Créer un ConfigMap contenant le CA cert de soc-lab ---
+# ESO en a besoin pour valider le TLS Vault
+- name: ESO configure | Lire le CA cert depuis le Secret soc-lab-ca (cert-manager)
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    namespace: cert-manager
+    name: soc-lab-ca
+  register: _eso_ca_secret
+  no_log: true
+  failed_when: _eso_ca_secret.resources | length == 0
+
+- name: ESO configure | Créer le ConfigMap CA bundle dans le namespace ESO
+  kubernetes.core.k8s:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ eso_vault_ca_bundle_secret }}"
+        namespace: "{{ eso_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          soc.lab/component: eso-ca
+      data:
+        ca.crt: "{{ _eso_ca_secret.resources[0].data['tls.crt'] | b64decode }}"
+  no_log: true
+
+# --- ClusterSecretStore ---
+- name: ESO configure | Créer le ClusterSecretStore vault-backend
+  kubernetes.core.k8s:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    state: present
+    template: cluster-secret-store.yml.j2
+
+- name: ESO configure | Attendre que le ClusterSecretStore soit Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    api_version: external-secrets.io/v1beta1
+    kind: ClusterSecretStore
+    name: "{{ eso_cluster_secret_store_name }}"
+  register: _eso_css_check
+  until: >-
+    _eso_css_check.resources | length > 0
+    and (_eso_css_check.resources[0].status.conditions | default([])
+         | selectattr('type', 'equalto', 'Ready')
+         | selectattr('status', 'equalto', 'True')
+         | list | length) > 0
+  retries: 30
+  delay: 10
+
+- name: ESO configure | ClusterSecretStore prêt
+  ansible.builtin.debug:
+    msg: "ClusterSecretStore '{{ eso_cluster_secret_store_name }}' opérationnel."

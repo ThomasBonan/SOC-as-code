@@ -1,0 +1,66 @@
+---
+# eso/tasks/deploy.yml — Déploiement Helm External Secrets Operator
+
+- name: ESO deploy | Ajouter le repo Helm external-secrets
+  ansible.builtin.command: >
+    helm repo add external-secrets {{ eso_chart_repo_url }}
+  register: _eso_repo_add
+  changed_when: "'already exists' not in _eso_repo_add.stdout"
+
+- name: ESO deploy | Mettre à jour les repos Helm
+  ansible.builtin.command: helm repo update
+  changed_when: false
+
+- name: ESO deploy | Écrire les values ESO dans un fichier temporaire
+  ansible.builtin.copy:
+    content: "{{ lookup('template', 'eso-values.yml.j2') }}"
+    dest: /tmp/eso-values-rendered.yml
+    mode: "0600"
+
+- name: ESO deploy | Installer/mettre à jour ESO via Helm
+  ansible.builtin.command: >
+    helm upgrade --install {{ eso_release_name }}
+    {{ eso_chart_name }}
+    --version {{ eso_chart_version }}
+    --namespace {{ eso_namespace }}
+    --create-namespace
+    --values /tmp/eso-values-rendered.yml
+    --wait --timeout 5m
+  environment:
+    KUBECONFIG: "{{ eso_kubeconfig_path }}"
+  changed_when: true
+
+- name: ESO deploy | Nettoyer le fichier de values temporaire
+  ansible.builtin.file:
+    path: /tmp/eso-values-rendered.yml
+    state: absent
+
+# --- Attendre que les CRDs ESO soient disponibles ---
+- name: ESO deploy | Attendre que le CRD ExternalSecret soit enregistré
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: externalsecrets.external-secrets.io
+  register: _eso_crd_check
+  until: _eso_crd_check.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: ESO deploy | Attendre que le pod ESO soit Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ eso_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ eso_namespace }}"
+    name: "external-secrets"
+  register: _eso_deploy_check
+  until: >-
+    _eso_deploy_check.resources | length > 0
+    and (_eso_deploy_check.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
+
+- name: ESO deploy | ESO opérationnel
+  ansible.builtin.debug:
+    msg: "External Secrets Operator déployé dans {{ eso_namespace }}."

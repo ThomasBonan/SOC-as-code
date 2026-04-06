@@ -188,6 +188,14 @@
     - soc_netpol_enable_internal_egress | bool
     - cortex_dests | length > 0
 
+# --- NetworkPolicies Vault ---
+- name: Apply Vault NetworkPolicies (namespace soc-vault)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-vault.yml.j2
+  when: soc_netpol_enable_vault | bool
+
 - name: Apply MISP internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
   vars:
