@@ -39,7 +39,7 @@ monitoring_evaluation_interval: "30s"
 # Grafana
 # ============================================================
 monitoring_grafana_admin_user: "admin"
-monitoring_grafana_admin_password: "SOCGrafana2026!"  # Surchargeable via Vault
+monitoring_grafana_admin_password: ""  # Résolu depuis Vault (soc/bootstrap/grafana)
 monitoring_grafana_ingress_host: "grafana.{{ apps_domain }}"
 monitoring_grafana_tls_secret: "grafana-tls"
 monitoring_grafana_clusterissuer: "{{ cert_manager_clusterissuer_name }}"

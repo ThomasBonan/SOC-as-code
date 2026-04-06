@@ -24,6 +24,23 @@
   gather_facts: false
   vars:
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
+  pre_tasks:
+    - name: Monitoring | Résoudre le mot de passe Grafana depuis Vault
+      ansible.builtin.include_tasks:
+        file: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+        apply:
+          tags: always
+      when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+      tags: always
+
+    - name: Monitoring | Appliquer le mot de passe Grafana résolu
+      ansible.builtin.set_fact:
+        monitoring_grafana_admin_password: "{{ grafana_admin_password }}"
+      when:
+        - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+        - grafana_admin_password is defined
+      no_log: true
+      tags: always
   roles:
     - role: monitoring
       tags: [monitoring]
