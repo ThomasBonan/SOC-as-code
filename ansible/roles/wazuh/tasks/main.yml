@@ -13,6 +13,7 @@
     mode: "0700"
   delegate_to: localhost
   run_once: true
+  when: soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
 - name: Add Wazuh Helm repo (once)
   kubernetes.core.helm_repository:
@@ -63,22 +64,29 @@
   run_once: true
   changed_when: false
 
-# --- Secrets (generated + persisted locally for idempotence) ---
-- name: Generate/Load indexer password
+# --- Secrets : deux chemins selon le backend de secrets ---
+#
+# kubernetes-secrets : génération + persistence disque (idempotent via fichier .pass)
+# vault              : passwords déjà dans Vault (séminés par seed_from_k8s.yml Phase 2),
+#                      K8s Secret wazuh-credentials géré par ESO → pas de création directe.
+
+- name: Generate/Load indexer password (kubernetes-secrets backend)
   ansible.builtin.set_fact:
     wazuh_indexer_password: >-
       {{ lookup('password', secrets_dir ~ '/indexer.pass length=32 chars=ascii_letters,digits') }}
   delegate_to: localhost
   run_once: true
   no_log: true
+  when: soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
-- name: Generate/Load dashboard password
+- name: Generate/Load dashboard password (kubernetes-secrets backend)
   ansible.builtin.set_fact:
     wazuh_dashboard_password: >-
       {{ lookup('password', secrets_dir ~ '/dashboard.pass length=32 chars=ascii_letters,digits') }}
   delegate_to: localhost
   run_once: true
   no_log: true
+  when: soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
 # bcrypt cost=12 (chart: passwordHash en bcrypt 12 rounds)
 - name: Compute bcrypt hashes (cost 12)
@@ -88,8 +96,9 @@
   delegate_to: localhost
   run_once: true
   no_log: true
+  when: soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
-- name: Create/Update Wazuh credentials secret (kubectl apply)
+- name: Create/Update Wazuh credentials secret (kubernetes-secrets backend — ESO gère sinon)
   ansible.builtin.shell: |
     set -e
     cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
@@ -111,6 +120,7 @@
   run_once: true
   changed_when: false
   no_log: true
+  when: soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
 # -----------------------------
 # Helper: Wait workloads rollout (deploy/sts/ds) in namespace

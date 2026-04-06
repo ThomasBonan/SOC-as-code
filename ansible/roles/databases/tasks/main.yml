@@ -53,7 +53,9 @@
           stringData:
             postgres-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
             password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-      when: (thehive_pg_secret.resources | length) == 0
+      when:
+        - (thehive_pg_secret.resources | length) == 0
+        - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
     # -------------------------
     # Cortex PostgreSQL secret
@@ -83,7 +85,9 @@
           stringData:
             postgres-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
             password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-      when: (cortex_pg_secret.resources | length) == 0
+      when:
+        - (cortex_pg_secret.resources | length) == 0
+        - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
     # -------------------------
     # MISP MariaDB secret
@@ -113,7 +117,9 @@
           stringData:
             mariadb-root-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
             mariadb-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-      when: (misp_mariadb_secret.resources | length) == 0
+      when:
+        - (misp_mariadb_secret.resources | length) == 0
+        - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
   delegate_to: localhost
   run_once: true

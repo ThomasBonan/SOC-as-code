@@ -43,7 +43,9 @@
       type: Opaque
       stringData:
         httpSecret: "{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-  when: (thehive_secret_info.resources | length) == 0
+  when:
+    - (thehive_secret_info.resources | length) == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
 
 - name: Read TheHive secret values

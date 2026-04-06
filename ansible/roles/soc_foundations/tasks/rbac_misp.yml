@@ -433,7 +433,9 @@
             soc_foundations_misp_sa_secret_key_authkey: _sf_misp_sa_authkey
           }
         }}
-  when: _sf_misp_sa_secret_existing.resources | length == 0
+  when:
+    - _sf_misp_sa_secret_existing.resources | length == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
 
 - name: MISP RBAC - rapport de statut

@@ -59,7 +59,7 @@ soc_risk_engine_wazuh_sa_key_pass:      "password"
 # Required to create custom fields — the analyst SA profile returns 403 (not org-admin).
 # Reuses the same variables as soc_foundations (170) and soc_automation (180).
 soc_risk_engine_thehive_bootstrap_user:     "{{ thehive_bootstrap_user     | default('admin@thehive.local') }}"
-soc_risk_engine_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+soc_risk_engine_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('') }}"
 
 # ── API base URLs ─────────────────────────────────────────────────
 soc_risk_engine_thehive_api_base: "{{ soc_endpoints.thehive.api_base }}"

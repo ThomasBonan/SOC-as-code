@@ -64,7 +64,9 @@
       type: Opaque
       stringData:
         httpSecret: "{{ lookup('password', '/dev/null length=64 chars=ascii_letters,digits') }}"
-  when: (cortex_secret.resources | length) == 0
+  when:
+    - (cortex_secret.resources | length) == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   delegate_to: localhost
   run_once: true
   no_log: true

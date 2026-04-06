@@ -31,7 +31,7 @@ soc_foundations_enable_integration_placeholders: true
 # Credentials admin pour bootstrap (Basic auth vers TheHive)
 # Compatible avec les variables thehive_bootstrap_user / thehive_bootstrap_password du projet
 soc_foundations_thehive_bootstrap_login: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
-soc_foundations_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+soc_foundations_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('') }}"
 
 # Compte de service à créer
 soc_foundations_thehive_sa_login: "{{ soc_service_accounts.thehive.login | default('svc-foundations@thehive.local') }}"
@@ -84,7 +84,7 @@ soc_foundations_thehive_selftest_sa_secret_key_login: "login"
 # ============================================================
 # Admin bootstrap : utilise Basic auth puis génère un Bearer token admin
 soc_foundations_cortex_bootstrap_login: "{{ cortex_bootstrap_user | default('admin') }}"
-soc_foundations_cortex_bootstrap_password: "{{ cortex_bootstrap_password | default('secret') }}"
+soc_foundations_cortex_bootstrap_password: "{{ cortex_bootstrap_password | default('') }}"
 
 # Compte de service à créer
 soc_foundations_cortex_sa_login: "{{ soc_service_accounts.cortex.login | default('svc-foundations') }}"

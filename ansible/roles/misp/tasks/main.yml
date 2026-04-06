@@ -48,7 +48,9 @@
         mariadb-root-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
         # IMPORTANT: alpha-num only (pas de chars spéciaux) -> OK avec chars=ascii_letters,digits
         mariadb-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-  when: (misp_mariadb_secret.resources | length) == 0
+  when:
+    - (misp_mariadb_secret.resources | length) == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
 - name: Check Redis auth secret exists
   kubernetes.core.k8s_info:
@@ -72,7 +74,9 @@
       type: Opaque
       stringData:
         redis-password: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
-  when: (misp_redis_secret.resources | length) == 0
+  when:
+    - (misp_redis_secret.resources | length) == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
 - name: Check MISP app secret exists
   kubernetes.core.k8s_info:
@@ -99,7 +103,9 @@
         admin_password: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
         salt: "{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
         gpg_passphrase: "{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
-  when: (misp_app_secret.resources | length) == 0
+  when:
+    - (misp_app_secret.resources | length) == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
 # -------------------------
 # DB exists check (MariaDB already deployed)

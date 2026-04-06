@@ -42,7 +42,7 @@ soc_config_thehive_api_key_auto_bootstrap: true
 soc_config_thehive_api_key_secret_name: "thehive-api-auth"
 soc_config_thehive_api_key_secret_key: "api_key"
 soc_config_thehive_bootstrap_user: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
-soc_config_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('secret') }}"
+soc_config_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('') }}"
 
 # If left empty, the role can generate/load a stable key from k8s secret.
 soc_config_thehive_cortex_api_key: ""
