@@ -46,17 +46,10 @@
           kubernetes.io/metadata.name: "{{ monitoring_namespace }}"
           app.kubernetes.io/managed-by: ansible
 
-- name: Monitoring | Preflight — créer le secret admin Grafana
-  kubernetes.core.k8s:
-    kubeconfig: "{{ monitoring_kubeconfig_path }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: grafana-admin-credentials
-        namespace: "{{ monitoring_namespace }}"
-      type: Opaque
-      stringData:
-        admin-user: "{{ monitoring_grafana_admin_user }}"
-        admin-password: "{{ monitoring_grafana_admin_password }}"
+- name: Monitoring | Preflight — valider que le mot de passe Grafana est résolu
+  ansible.builtin.assert:
+    that: monitoring_grafana_admin_password | length > 0
+    fail_msg: >-
+      monitoring_grafana_admin_password est vide.
+      Assurez-vous que Vault est unsealed et que soc_vault_backend == 'vault'
+      (ou passez le mot de passe via -e monitoring_grafana_admin_password=...).
