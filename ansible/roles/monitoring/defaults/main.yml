@@ -1,0 +1,92 @@
+---
+# ============================================================
+# Feature toggles
+# ============================================================
+monitoring_enable_prometheus: true
+monitoring_enable_loki: true
+monitoring_enable_blackbox: true
+monitoring_enable_dashboards: true
+monitoring_enable_alerts: true
+
+# ============================================================
+# Namespace & kubeconfig
+# ============================================================
+monitoring_namespace: "soc-monitoring"
+monitoring_kubeconfig_path: "{{ kubeconfig_path }}"
+
+# ============================================================
+# Chart versions
+# ============================================================
+monitoring_prometheus_chart_version: "65.1.0"   # kube-prometheus-stack
+monitoring_loki_chart_version: "2.10.2"          # loki-stack
+monitoring_blackbox_chart_version: "9.0.1"       # blackbox-exporter
+
+# ============================================================
+# Stockage (Longhorn PVC)
+# ============================================================
+monitoring_prometheus_retention: "15d"
+monitoring_prometheus_storage_size: "50Gi"
+monitoring_loki_storage_size: "20Gi"
+monitoring_grafana_storage_size: "5Gi"
+
+# ============================================================
+# Scrape & évaluation
+# ============================================================
+monitoring_scrape_interval: "30s"
+monitoring_evaluation_interval: "30s"
+
+# ============================================================
+# Grafana
+# ============================================================
+monitoring_grafana_admin_user: "admin"
+monitoring_grafana_admin_password: "SOCGrafana2026!"  # Surchargeable via Vault
+monitoring_grafana_ingress_host: "grafana.{{ apps_domain }}"
+monitoring_grafana_tls_secret: "grafana-tls"
+monitoring_grafana_clusterissuer: "{{ cert_manager_clusterissuer_name }}"
+
+# ============================================================
+# Wazuh OpenSearch datasource
+# ============================================================
+monitoring_wazuh_opensearch_url: "https://wazuh-core-indexer-rest.{{ soc_namespaces.wazuh }}.svc:9200"
+monitoring_wazuh_opensearch_user: "admin"
+monitoring_wazuh_opensearch_password: "SecretPassword"  # Surchargeable via Vault
+
+# ============================================================
+# Blackbox probes (6 cibles SOC)
+# ============================================================
+monitoring_blackbox_targets:
+  - name: thehive
+    url: "http://thehive.{{ soc_namespaces.thehive }}.svc:9000/api/v1/status"
+    module: http_2xx
+  - name: cortex
+    url: "http://cortex.{{ soc_namespaces.cortex }}.svc:9001/api/status"
+    module: http_2xx
+  - name: misp
+    url: "https://misp.{{ soc_namespaces.misp }}.svc:443/users/login"
+    module: http_2xx_tls_skip
+  - name: wazuh-api
+    url: "https://wazuh-manager-master-0.wazuh-core-cluster.{{ soc_namespaces.wazuh }}.svc:55000/"
+    module: http_401_tls_skip
+  - name: shuffle
+    url: "http://shuffle-backend.soc-shuffle.svc:5001/api/v1/health"
+    module: http_2xx
+  - name: risk-engine
+    url: "http://risk-engine-svc.{{ soc_namespaces.thehive }}.svc:8080/health"
+    module: http_2xx
+
+# ============================================================
+# Cilium metrics scrape
+# ============================================================
+monitoring_cilium_agent_port: 9090
+monitoring_cilium_operator_port: 8888
+
+# ============================================================
+# Prometheus alerting — seuils
+# ============================================================
+monitoring_alert_pvc_threshold: "0.85"
+monitoring_alert_memory_threshold: "0.9"
+monitoring_alert_db_connections_max: "80"
+monitoring_alert_probe_latency_max: "5"
+monitoring_alert_wazuh_high_rate: "100"
+monitoring_alert_integration_errors_max: "5"
+monitoring_alert_pipeline_stall_minutes: "30"

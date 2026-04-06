@@ -29,4 +29,8 @@ replica:
   replicaCount: 0
 
 metrics:
-  enabled: false
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack

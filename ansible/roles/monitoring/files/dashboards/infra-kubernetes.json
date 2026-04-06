@@ -1,0 +1,97 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0"},
+    {"type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0"}
+  ],
+  "annotations": {"list": []},
+  "description": "Santé du cluster Kubernetes SOC — pods, nodes, ressources, PVC",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 0.9}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "title": "Nodes Ready",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})", "legendFormat": "Nodes Ready"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "title": "Pods Running (SOC)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(kube_pod_status_phase{namespace=~\"soc-.*\",phase=\"Running\"})", "legendFormat": "Pods Running"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "title": "Pods Not Ready (SOC)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum(kube_pod_status_ready{condition=\"false\",namespace=~\"soc-.*\"})", "legendFormat": "Pods Not Ready"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+      "id": 4,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "title": "CPU Usage par namespace SOC",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (namespace)(rate(container_cpu_usage_seconds_total{namespace=~\"soc-.*\",container!=\"\"}[5m]))", "legendFormat": "{{ namespace }}"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}, "unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+      "id": 5,
+      "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+      "title": "Mémoire utilisée par namespace SOC",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sum by (namespace)(container_memory_working_set_bytes{namespace=~\"soc-.*\",container!=\"\"})", "legendFormat": "{{ namespace }}"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "unit": "percentunit", "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "red", "value": 0.85}]}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+      "id": 6,
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
+      "title": "Usage PVC (namespace SOC)",
+      "type": "gauge",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "kubelet_volume_stats_used_bytes{namespace=~\"soc-.*\"} / kubelet_volume_stats_capacity_bytes{namespace=~\"soc-.*\"}", "legendFormat": "{{ persistentvolumeclaim }}"}]
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+      "id": 7,
+      "options": {"frameIndex": 0, "showHeader": true, "sortBy": [{"desc": true, "displayName": "Restarts"}]},
+      "title": "Top restarts (1h)",
+      "type": "table",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "prometheus"}, "expr": "sort_desc(sum by (namespace, pod)(increase(kube_pod_container_status_restarts_total{namespace=~\"soc-.*\"}[1h]))) > 0", "legendFormat": "", "instant": true}],
+      "transformations": [{"id": "organize", "options": {"renameByName": {"namespace": "Namespace", "pod": "Pod", "Value": "Restarts"}}}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["kubernetes", "infrastructure", "soc"],
+  "templating": {"list": [{"current": {}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "definition": "label_values(kube_pod_info{namespace=~\"soc-.*\"}, namespace)", "hide": 0, "includeAll": true, "multi": true, "name": "namespace", "options": [], "query": {"query": "label_values(kube_pod_info{namespace=~\"soc-.*\"}, namespace)", "refId": "StandardVariableQuery"}, "refresh": 2, "sort": 1, "type": "query", "label": "Namespace"}]},
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {},
+  "timezone": "Europe/Paris",
+  "title": "Infra — Kubernetes SOC",
+  "uid": "infra-kubernetes",
+  "version": 1
+}

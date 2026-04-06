@@ -1,0 +1,62 @@
+---
+# monitoring/tasks/preflight.yml — Vérification des prérequis
+
+- name: Monitoring | Preflight — vérifier que cert-manager est opérationnel
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ cert_manager_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=cert-manager
+  register: _cm_pods
+  failed_when: (_cm_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) == 0
+
+- name: Monitoring | Preflight — vérifier que Longhorn est opérationnel
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ longhorn_namespace }}"
+    label_selectors:
+      - app=longhorn-manager
+  register: _lh_pods
+  failed_when: (_lh_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) == 0
+
+- name: Monitoring | Preflight — ajouter les repos Helm
+  kubernetes.core.helm_repository:
+    name: "{{ item.name }}"
+    repo_url: "{{ item.url }}"
+  loop:
+    - name: prometheus-community
+      url: https://prometheus-community.github.io/helm-charts
+    - name: grafana
+      url: https://grafana.github.io/helm-charts
+
+- name: Monitoring | Preflight — créer le namespace soc-monitoring
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ monitoring_namespace }}"
+        labels:
+          kubernetes.io/metadata.name: "{{ monitoring_namespace }}"
+          app.kubernetes.io/managed-by: ansible
+
+- name: Monitoring | Preflight — créer le secret admin Grafana
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: grafana-admin-credentials
+        namespace: "{{ monitoring_namespace }}"
+      type: Opaque
+      stringData:
+        admin-user: "{{ monitoring_grafana_admin_user }}"
+        admin-password: "{{ monitoring_grafana_admin_password }}"

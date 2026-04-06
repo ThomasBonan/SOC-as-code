@@ -1,0 +1,62 @@
+---
+# monitoring/tasks/deploy_blackbox.yml — Déploiement Blackbox Exporter
+
+- name: Monitoring | Blackbox — déployer prometheus-blackbox-exporter via Helm
+  kubernetes.core.helm:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    name: blackbox-exporter
+    chart_ref: prometheus-community/prometheus-blackbox-exporter
+    chart_version: "{{ monitoring_blackbox_chart_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: false
+    wait: true
+    timeout: "5m"
+    values: "{{ lookup('template', 'blackbox-values.yml.j2') | from_yaml }}"
+
+- name: Monitoring | Blackbox — attendre que le pod soit Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=prometheus-blackbox-exporter
+  register: _bb_pods
+  retries: 10
+  delay: 10
+  until: >
+    (_bb_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
+
+- name: Monitoring | Blackbox — créer le ServiceMonitor pour les probes SOC
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: monitoring.coreos.com/v1
+      kind: ServiceMonitor
+      metadata:
+        name: blackbox-soc-probes
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          release: kube-prometheus-stack
+      spec:
+        jobLabel: blackbox
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus-blackbox-exporter
+        namespaceSelector:
+          matchNames:
+            - "{{ monitoring_namespace }}"
+        endpoints:
+          - port: http
+            interval: "{{ monitoring_scrape_interval }}"
+            path: /probe
+            params:
+              module: [http_2xx]
+            relabelings:
+              - sourceLabels: [__address__]
+                targetLabel: __param_target
+              - sourceLabels: [__param_target]
+                targetLabel: instance
+              - targetLabel: __address__
+                replacement: "blackbox-exporter-prometheus-blackbox-exporter.{{ monitoring_namespace }}.svc:9115"

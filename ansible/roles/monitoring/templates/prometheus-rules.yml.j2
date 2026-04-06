@@ -1,0 +1,129 @@
+# prometheus-rules.yml.j2 — PrometheusRules pour alertes infra + SOC
+---
+# ── Alertes Infrastructure ──────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: soc-infra-alerts
+  namespace: "{{ monitoring_namespace }}"
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: soc-infrastructure
+      interval: "{{ monitoring_evaluation_interval }}"
+      rules:
+
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"soc-.*"}[1h]) > 5
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ "{{" }} $labels.pod {{ "}}" }} crash-looping dans {{ "{{" }} $labels.namespace {{ "}}" }}"
+            description: "{{ "{{" }} $labels.pod {{ "}}" }} ({{ "{{" }} $labels.container {{ "}}" }}) a redémarré plus de 5 fois en 1h."
+            runbook: "Vérifier kubectl logs {{ "{{" }} $labels.pod {{ "}}" }} -n {{ "{{" }} $labels.namespace {{ "}}" }}"
+
+        - alert: PodNotReady
+          expr: kube_pod_status_ready{condition="false", namespace=~"soc-.*"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ "{{" }} $labels.pod {{ "}}" }} non-ready depuis 5 minutes"
+            description: "Le pod {{ "{{" }} $labels.pod {{ "}}" }} dans {{ "{{" }} $labels.namespace {{ "}}" }} n'est pas Ready."
+            runbook: "kubectl describe pod {{ "{{" }} $labels.pod {{ "}}" }} -n {{ "{{" }} $labels.namespace {{ "}}" }}"
+
+        - alert: PVCAlmostFull
+          expr: >
+            kubelet_volume_stats_used_bytes{namespace=~"soc-.*"}
+            / kubelet_volume_stats_capacity_bytes{namespace=~"soc-.*"}
+            > {{ monitoring_alert_pvc_threshold }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Volume {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} presque plein"
+            description: "PVC {{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} dans {{ "{{" }} $labels.namespace {{ "}}" }} est à {{ "{{" }} $value | humanizePercentage {{ "}}" }}."
+
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Noeud K8s {{ "{{" }} $labels.node {{ "}}" }} hors service"
+            description: "Le noeud {{ "{{" }} $labels.node {{ "}}" }} n'est plus Ready depuis 5 minutes."
+
+        - alert: HighMemoryUsage
+          expr: >
+            container_memory_working_set_bytes{namespace=~"soc-.*"}
+            / container_spec_memory_limit_bytes{namespace=~"soc-.*"}
+            > {{ monitoring_alert_memory_threshold }}
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Usage mémoire élevé pour {{ "{{" }} $labels.pod {{ "}}" }}"
+            description: "{{ "{{" }} $labels.pod {{ "}}" }} utilise {{ "{{" }} $value | humanizePercentage {{ "}}" }} de sa limite mémoire."
+
+---
+# ── Alertes Services SOC ────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: soc-services-alerts
+  namespace: "{{ monitoring_namespace }}"
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: soc-services
+      interval: "{{ monitoring_evaluation_interval }}"
+      rules:
+
+        - alert: SOCServiceDown
+          expr: probe_success == 0
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Service SOC {{ "{{" }} $labels.instance {{ "}}" }} inaccessible"
+            description: "La probe HTTP vers {{ "{{" }} $labels.instance {{ "}}" }} échoue depuis 3 minutes."
+            runbook: "Vérifier l'état du service et ses NetworkPolicies."
+
+        - alert: TheHiveDown
+          expr: probe_success{job=~".*blackbox.*", instance=~".*thehive.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TheHive ne répond pas"
+            description: "TheHive est inaccessible depuis 2 minutes. Impact : ingestion d'alertes stoppée."
+
+        - alert: WazuhDown
+          expr: probe_success{job=~".*blackbox.*", instance=~".*wazuh.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API Wazuh ne répond pas"
+            description: "L'API Wazuh est inaccessible depuis 2 minutes. Impact : détection dégradée."
+
+        - alert: HighProbeLatency
+          expr: probe_duration_seconds > {{ monitoring_alert_probe_latency_max }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latence élevée vers {{ "{{" }} $labels.instance {{ "}}" }}"
+            description: "La latence HTTP vers {{ "{{" }} $labels.instance {{ "}}" }} dépasse 5s depuis 5 minutes."
+
+        - alert: DatabaseConnectionsHigh
+          expr: pg_stat_activity_count > {{ monitoring_alert_db_connections_max }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Connexions PostgreSQL élevées ({{ "{{" }} $value {{ "}}" }})"
+            description: "L'instance PostgreSQL {{ "{{" }} $labels.instance {{ "}}" }} dépasse {{ monitoring_alert_db_connections_max }} connexions actives."

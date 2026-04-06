@@ -12,6 +12,7 @@ soc_compliance_enable_audit_integrations: true
 soc_compliance_enable_audit_risk_model:   true
 soc_compliance_enable_audit_network:      true
 soc_compliance_enable_audit_secrets:      true
+soc_compliance_enable_audit_monitoring:   true
 soc_compliance_enable_report:             true
 
 # ── Compliance mode ───────────────────────────────────────────────

@@ -24,4 +24,8 @@ primary:
       memory: 1Gi
 
 metrics:
-  enabled: false
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    labels:
+      release: kube-prometheus-stack

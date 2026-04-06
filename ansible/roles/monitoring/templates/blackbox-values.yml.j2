@@ -1,0 +1,58 @@
+# blackbox-values.yml.j2 — Values Helm pour prometheus-blackbox-exporter
+---
+config:
+  modules:
+    http_2xx:
+      prober: http
+      timeout: 10s
+      http:
+        valid_http_versions: [HTTP/1.1, HTTP/2.0]
+        valid_status_codes: []
+        method: GET
+        follow_redirects: true
+        preferred_ip_protocol: ip4
+
+    http_2xx_tls_skip:
+      prober: http
+      timeout: 10s
+      http:
+        valid_http_versions: [HTTP/1.1, HTTP/2.0]
+        valid_status_codes: []
+        method: GET
+        follow_redirects: true
+        tls_config:
+          insecure_skip_verify: true
+
+    http_401_tls_skip:
+      prober: http
+      timeout: 10s
+      http:
+        valid_http_versions: [HTTP/1.1, HTTP/2.0]
+        valid_status_codes: [401]
+        method: GET
+        tls_config:
+          insecure_skip_verify: true
+
+serviceMonitor:
+  enabled: true
+  defaults:
+    labels:
+      release: kube-prometheus-stack
+    interval: "{{ monitoring_scrape_interval }}"
+    scrapeTimeout: 10s
+  targets:
+{% for target in monitoring_blackbox_targets %}
+    - name: {{ target.name }}
+      url: {{ target.url }}
+      module: {{ target.module }}
+      additionalMetricsRelabels:
+        service: "{{ target.name }}"
+{% endfor %}
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

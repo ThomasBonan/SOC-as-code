@@ -1,0 +1,75 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0"},
+    {"type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0"}
+  ],
+  "annotations": {"list": []},
+  "description": "Cases TheHive et enrichissement Cortex — suivi du traitement des incidents",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Analyses Cortex lancées (dernière heure)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-cortex\"} |= \"analyzer\" |= \"started\" [1h]))", "legendFormat": "Jobs Cortex"}]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Erreurs pipeline (dernière heure)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=~\"soc-.*\"} |= \"ERROR\" [1h]))", "legendFormat": "Erreurs"}]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Décisions Risk Engine (dernière heure)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\" [1h]))", "legendFormat": "Décisions"}]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "id": 4,
+      "options": {"legend": {"displayMode": "list"}, "tooltip": {"mode": "multi"}},
+      "title": "Activité pipeline SOC (erreurs + décisions)",
+      "type": "timeseries",
+      "targets": [
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=~\"soc-.*\"} |= \"ERROR\" [5m]))", "legendFormat": "Erreurs"},
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\" [5m]))", "legendFormat": "Décisions Risk Engine"}
+      ]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 12, "w": 24, "x": 0, "y": 12},
+      "id": 5,
+      "options": {"dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "title": "Logs Risk Engine (décisions)",
+      "type": "logs",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "{namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\"", "legendFormat": ""}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["ssi", "cases", "thehive", "cortex", "soc"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "Europe/Paris",
+  "title": "SSI — Cases TheHive + Cortex",
+  "uid": "ssi-cases",
+  "version": 1
+}

@@ -1,0 +1,78 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0"},
+    {"type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0"}
+  ],
+  "annotations": {"list": []},
+  "description": "Risk Engine — scoring, décisions automatiques, escalades",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 3}, {"color": "red", "value": 10}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Escalades (score >= 90)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=escalated\" [24h]))", "legendFormat": "Escalades"}]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Containments auto (score >= 75)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=auto_contain\" [24h]))", "legendFormat": "Containments"}]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "id": 3,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Faux positifs (auto_close)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=auto_close\" [24h]))", "legendFormat": "Auto close"}]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}, "color": {"mode": "palette-classic"}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "id": 4,
+      "options": {"legend": {"displayMode": "list"}, "tooltip": {"mode": "multi"}},
+      "title": "Décisions Risk Engine par type (timeline)",
+      "type": "timeseries",
+      "targets": [
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=escalated\" [5m]))", "legendFormat": "escalated"},
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=auto_contain\" [5m]))", "legendFormat": "auto_contain"},
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=auto_promote\" [5m]))", "legendFormat": "auto_promote"},
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=auto_close\" [5m]))", "legendFormat": "auto_close"},
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=reviewed\" [5m]))", "legendFormat": "reviewed"}
+      ]
+    },
+    {
+      "datasource": {"type": "loki", "uid": "loki"},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 12},
+      "id": 5,
+      "options": {"dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
+      "title": "Logs Risk Engine — Escalades critiques",
+      "type": "logs",
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "{namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=escalated\" | logfmt | score > 90", "legendFormat": ""}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["ssi", "risk", "scoring", "soc"],
+  "time": {"from": "now-24h", "to": "now"},
+  "timepicker": {},
+  "timezone": "Europe/Paris",
+  "title": "SSI — Risk Engine",
+  "uid": "ssi-risk",
+  "version": 1
+}

@@ -92,6 +92,7 @@ soc_namespaces:
   thehive: soc-thehive
   cortex: soc-cortex
   misp: soc-core
+  monitoring: soc-monitoring
 
 # Services
 soc_services:
@@ -243,6 +244,32 @@ soc_compliance_fail_on_drift: true
 # Générer un fichier JSON exploitable par le pipeline CI/CD.
 # Chemin : ansible/playbooks/artifacts/soc-compliance-report.json
 soc_compliance_generate_artifact: true
+
+# ============================================================
+# Monitoring — variables globales (rôle monitoring)
+# Playbook 76 | Prometheus + Grafana + Loki + Blackbox Exporter
+# ============================================================
+
+monitoring_namespace: "soc-monitoring"
+
+# Chart versions (épinglez en production)
+monitoring_prometheus_chart_version: "65.1.0"   # kube-prometheus-stack
+monitoring_loki_chart_version: "2.10.2"          # loki-stack
+monitoring_blackbox_chart_version: "9.0.1"       # blackbox-exporter
+
+# Stockage Longhorn
+monitoring_prometheus_storage_size: "50Gi"
+monitoring_prometheus_retention: "15d"
+monitoring_loki_storage_size: "20Gi"
+monitoring_grafana_storage_size: "5Gi"
+
+# Grafana
+monitoring_grafana_admin_user: "admin"
+monitoring_grafana_ingress_host: "grafana.{{ apps_domain }}"
+
+# Scrape & évaluation
+monitoring_scrape_interval: "30s"
+monitoring_evaluation_interval: "30s"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SOC Self-Test (210) — Continuous E2E pipeline validation

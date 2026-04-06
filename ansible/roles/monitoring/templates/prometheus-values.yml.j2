@@ -1,0 +1,128 @@
+# prometheus-values.yml.j2 — Values Helm pour kube-prometheus-stack
+---
+fullnameOverride: kube-prometheus-stack
+
+# ── Prometheus ─────────────────────────────────────────────────────────────
+prometheus:
+  prometheusSpec:
+    scrapeInterval: "{{ monitoring_scrape_interval }}"
+    evaluationInterval: "{{ monitoring_evaluation_interval }}"
+    retention: "{{ monitoring_prometheus_retention }}"
+    ruleSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    serviceMonitorSelector: {}
+    podMonitorSelector: {}
+
+    # Scrape additionnel Cilium
+    additionalScrapeConfigs:
+      - job_name: cilium-agent
+        static_configs:
+          - targets:
+            - "localhost:{{ monitoring_cilium_agent_port }}"
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: instance
+      - job_name: cilium-operator
+        static_configs:
+          - targets:
+            - "cilium-operator.kube-system.svc:{{ monitoring_cilium_operator_port }}"
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: "{{ monitoring_prometheus_storage_size }}"
+
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1
+        memory: 2Gi
+
+# ── Alertmanager ────────────────────────────────────────────────────────────
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: longhorn
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 2Gi
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+# ── Grafana ─────────────────────────────────────────────────────────────────
+grafana:
+  enabled: true
+  adminUser: "{{ monitoring_grafana_admin_user }}"
+  adminPassword: "{{ monitoring_grafana_admin_password }}"
+
+  persistence:
+    enabled: true
+    storageClassName: longhorn
+    accessModes: [ReadWriteOnce]
+    size: "{{ monitoring_grafana_storage_size }}"
+
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: "{{ monitoring_namespace }}"
+    datasources:
+      enabled: true
+      label: grafana_datasource
+      searchNamespace: "{{ monitoring_namespace }}"
+
+  plugins:
+    - grafana-opensearch-datasource
+
+  grafana.ini:
+    server:
+      root_url: "https://{{ monitoring_grafana_ingress_host }}"
+    auth:
+      disable_login_form: false
+    auth.anonymous:
+      enabled: false
+    security:
+      allow_embedding: false
+      cookie_secure: true
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# ── Node Exporter ────────────────────────────────────────────────────────────
+nodeExporter:
+  enabled: true
+
+# ── Kube State Metrics ────────────────────────────────────────────────────────
+kube-state-metrics:
+  enabled: true
+
+# ── Prometheus Operator ────────────────────────────────────────────────────────
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

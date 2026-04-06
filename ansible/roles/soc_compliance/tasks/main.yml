@@ -46,6 +46,13 @@
     - audit
     - soc_compliance
 
+- name: "soc_compliance | Audit monitoring — Prometheus, Grafana, ServiceMonitors, alertes"
+  import_tasks: audit_monitoring.yml
+  when: soc_compliance_enable_audit_monitoring | bool
+  tags:
+    - audit
+    - soc_compliance
+
 - name: "soc_compliance | Report — generate structured compliance report"
   import_tasks: report.yml
   when: soc_compliance_enable_report | bool

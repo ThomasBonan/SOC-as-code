@@ -2,6 +2,8 @@
 # Enable/disable specific policies
 soc_netpol_enable_vault: true           # NetworkPolicies pour le namespace soc-vault
 soc_netpol_vault_namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+soc_netpol_enable_monitoring: true     # NetworkPolicies pour soc-monitoring
+soc_netpol_monitoring_namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
 soc_netpol_enable_dns: true
 soc_netpol_enable_wazuh_to_thehive: true
 soc_netpol_enable_thehive_to_cortex: true

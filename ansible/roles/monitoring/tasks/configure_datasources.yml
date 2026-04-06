@@ -1,0 +1,72 @@
+---
+# monitoring/tasks/configure_datasources.yml — Datasources Grafana supplémentaires
+
+- name: Monitoring | Datasources — attendre que Grafana soit prêt
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=grafana
+  register: _grafana_pods
+  retries: 30
+  delay: 10
+  until: >
+    (_grafana_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
+
+- name: Monitoring | Datasources — créer le ConfigMap Loki datasource
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-datasource-loki
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          grafana_datasource: "1"
+      data:
+        loki-datasource.yaml: |
+          apiVersion: 1
+          datasources:
+            - name: Loki
+              type: loki
+              access: proxy
+              url: http://loki-stack.{{ monitoring_namespace }}.svc:3100
+              isDefault: false
+              jsonData:
+                timeout: 60
+                maxLines: 1000
+
+- name: Monitoring | Datasources — créer le ConfigMap Wazuh OpenSearch datasource
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-datasource-opensearch
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          grafana_datasource: "1"
+      data:
+        opensearch-datasource.yaml: |
+          apiVersion: 1
+          datasources:
+            - name: Wazuh-OpenSearch
+              type: grafana-opensearch-datasource
+              access: proxy
+              url: {{ monitoring_wazuh_opensearch_url }}
+              basicAuth: true
+              basicAuthUser: "{{ monitoring_wazuh_opensearch_user }}"
+              isDefault: false
+              jsonData:
+                database: "wazuh-alerts-*"
+                timeField: "@timestamp"
+                esVersion: "7.10.0"
+                tlsSkipVerify: true
+              secureJsonData:
+                basicAuthPassword: "{{ monitoring_wazuh_opensearch_password }}"

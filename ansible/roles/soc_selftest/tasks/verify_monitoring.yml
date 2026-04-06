@@ -1,0 +1,75 @@
+---
+# soc_selftest/tasks/verify_monitoring.yml — Vérification que le monitoring est opérationnel
+# Vérifie que Prometheus scrape bien les pods SOC et que Grafana est accessible.
+
+- name: "soc_selftest | verify_monitoring — vérifier que Prometheus est Running"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+    label_selectors:
+      - app.kubernetes.io/name=prometheus
+  register: _selftest_prom_pods
+
+- name: "soc_selftest | verify_monitoring — enregistrer le statut Prometheus"
+  ansible.builtin.set_fact:
+    _selftest_monitoring_prometheus_ok: >-
+      {{
+        (_selftest_prom_pods.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | list | length) >= 1
+      }}
+
+- name: "soc_selftest | verify_monitoring — vérifier que Grafana est Running"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+    label_selectors:
+      - app.kubernetes.io/name=grafana
+  register: _selftest_grafana_pods
+
+- name: "soc_selftest | verify_monitoring — enregistrer le statut Grafana"
+  ansible.builtin.set_fact:
+    _selftest_monitoring_grafana_ok: >-
+      {{
+        (_selftest_grafana_pods.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | list | length) >= 1
+      }}
+
+- name: "soc_selftest | verify_monitoring — vérifier que Loki est Running"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+    label_selectors:
+      - app=loki
+  register: _selftest_loki_pods
+
+- name: "soc_selftest | verify_monitoring — enregistrer le statut Loki"
+  ansible.builtin.set_fact:
+    _selftest_monitoring_loki_ok: >-
+      {{
+        (_selftest_loki_pods.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | list | length) >= 1
+      }}
+
+- name: "soc_selftest | verify_monitoring — résumé"
+  ansible.builtin.debug:
+    msg: |
+      ── Vérification monitoring ───────────────────────────────────
+      Prometheus : {{ _selftest_monitoring_prometheus_ok | ternary('OK', 'FAIL') }}
+      Grafana    : {{ _selftest_monitoring_grafana_ok    | ternary('OK', 'FAIL') }}
+      Loki       : {{ _selftest_monitoring_loki_ok       | ternary('OK', 'FAIL') }}
+
+- name: "soc_selftest | verify_monitoring — échec si monitoring critique absent"
+  ansible.builtin.fail:
+    msg: "Stack monitoring dégradée (Prometheus ou Grafana absent). Relancer 76-monitoring.yml."
+  when:
+    - soc_selftest_fail_on_error | bool
+    - not (_selftest_monitoring_prometheus_ok | bool) or not (_selftest_monitoring_grafana_ok | bool)

@@ -1,0 +1,44 @@
+---
+# monitoring/tasks/main.yml — Orchestrateur du rôle monitoring
+#
+# Tags disponibles :
+#   preflight        - vérification des prérequis
+#   deploy           - déploiement Helm (prometheus, loki, blackbox)
+#   datasources      - configuration des datasources Grafana
+#   dashboards       - import des dashboards Grafana
+#   alerts           - configuration des PrometheusRules
+#   monitoring       - toutes les tâches du rôle
+
+- name: Monitoring | Preflight — vérification des prérequis
+  ansible.builtin.import_tasks: preflight.yml
+  tags: [monitoring, preflight]
+
+- name: Monitoring | Deploy Prometheus (kube-prometheus-stack)
+  ansible.builtin.import_tasks: deploy_prometheus.yml
+  tags: [monitoring, deploy]
+  when: monitoring_enable_prometheus | bool
+
+- name: Monitoring | Deploy Loki + Promtail
+  ansible.builtin.import_tasks: deploy_loki.yml
+  tags: [monitoring, deploy]
+  when: monitoring_enable_loki | bool
+
+- name: Monitoring | Deploy Blackbox Exporter
+  ansible.builtin.import_tasks: deploy_blackbox.yml
+  tags: [monitoring, deploy]
+  when: monitoring_enable_blackbox | bool
+
+- name: Monitoring | Configure datasources Grafana
+  ansible.builtin.import_tasks: configure_datasources.yml
+  tags: [monitoring, datasources]
+  when: monitoring_enable_prometheus | bool
+
+- name: Monitoring | Import dashboards Grafana
+  ansible.builtin.import_tasks: configure_dashboards.yml
+  tags: [monitoring, dashboards]
+  when: monitoring_enable_dashboards | bool
+
+- name: Monitoring | Configure PrometheusRules (alertes)
+  ansible.builtin.import_tasks: configure_alerts.yml
+  tags: [monitoring, alerts]
+  when: monitoring_enable_alerts | bool

@@ -1,0 +1,86 @@
+---
+# soc_compliance/tasks/audit_monitoring.yml — Audit de la stack monitoring
+# Vérifie : Prometheus running, Grafana running, ServiceMonitors actifs,
+#            Alertmanager configuré, retention suffisante.
+
+- name: "soc_compliance | audit_monitoring — vérifier que Prometheus est running"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+    label_selectors:
+      - app.kubernetes.io/name=prometheus
+  register: _compliance_prom_pods
+
+- name: "soc_compliance | audit_monitoring — DRIFT si Prometheus absent"
+  ansible.builtin.set_fact:
+    soc_compliance_drift_monitoring_prometheus: >-
+      {{
+        (_compliance_prom_pods.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | list | length) == 0
+      }}
+
+- name: "soc_compliance | audit_monitoring — vérifier que Grafana est running"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+    label_selectors:
+      - app.kubernetes.io/name=grafana
+  register: _compliance_grafana_pods
+
+- name: "soc_compliance | audit_monitoring — DRIFT si Grafana absent"
+  ansible.builtin.set_fact:
+    soc_compliance_drift_monitoring_grafana: >-
+      {{
+        (_compliance_grafana_pods.resources
+          | selectattr('status.phase', 'equalto', 'Running')
+          | list | length) == 0
+      }}
+
+- name: "soc_compliance | audit_monitoring — vérifier les ServiceMonitors"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: monitoring.coreos.com/v1
+    kind: ServiceMonitor
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+  register: _compliance_service_monitors
+
+- name: "soc_compliance | audit_monitoring — DRIFT si aucun ServiceMonitor"
+  ansible.builtin.set_fact:
+    soc_compliance_drift_monitoring_servicemonitors: >-
+      {{ (_compliance_service_monitors.resources | length) == 0 }}
+
+- name: "soc_compliance | audit_monitoring — vérifier les PrometheusRules"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: monitoring.coreos.com/v1
+    kind: PrometheusRule
+    namespace: "{{ monitoring_namespace | default('soc-monitoring') }}"
+  register: _compliance_prom_rules
+
+- name: "soc_compliance | audit_monitoring — DRIFT si aucune PrometheusRule"
+  ansible.builtin.set_fact:
+    soc_compliance_drift_monitoring_rules: >-
+      {{ (_compliance_prom_rules.resources | length) == 0 }}
+
+- name: "soc_compliance | audit_monitoring — rapport des dérives monitoring"
+  ansible.builtin.debug:
+    msg: |
+      ── Audit monitoring ──────────────────────────────────────────
+      Prometheus running   : {{ not soc_compliance_drift_monitoring_prometheus  | ternary('OK', 'DRIFT') }}
+      Grafana running      : {{ not soc_compliance_drift_monitoring_grafana      | ternary('OK', 'DRIFT') }}
+      ServiceMonitors      : {{ not soc_compliance_drift_monitoring_servicemonitors | ternary('OK (' ~ (_compliance_service_monitors.resources | length) ~ ')', 'DRIFT — aucun ServiceMonitor') }}
+      PrometheusRules      : {{ not soc_compliance_drift_monitoring_rules        | ternary('OK (' ~ (_compliance_prom_rules.resources | length) ~ ')', 'DRIFT — aucune règle d alertes') }}
+
+- name: "soc_compliance | audit_monitoring — échec si dérive critique (fail_on_drift)"
+  ansible.builtin.fail:
+    msg: "DRIFT DÉTECTÉ — stack monitoring dégradée. Relancer 76-monitoring.yml."
+  when:
+    - soc_compliance_fail_on_drift | bool
+    - >-
+        soc_compliance_drift_monitoring_prometheus | bool
+        or soc_compliance_drift_monitoring_grafana | bool

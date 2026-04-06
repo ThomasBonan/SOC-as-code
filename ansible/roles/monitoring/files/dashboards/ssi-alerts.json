@@ -1,0 +1,83 @@
+{
+  "__inputs": [],
+  "__requires": [
+    {"type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0"},
+    {"type": "datasource", "id": "grafana-opensearch-datasource", "name": "OpenSearch", "version": "2.0.0"}
+  ],
+  "annotations": {"list": []},
+  "description": "Alertes Wazuh — analyse opérationnelle pour analystes SOC N1/N2",
+  "editable": true,
+  "graphTooltip": 1,
+  "id": null,
+  "panels": [
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 50}, {"color": "red", "value": 200}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "id": 1,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Alertes dernière heure",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"}, "query": "", "timeField": "@timestamp", "metrics": [{"type": "count", "id": "1"}], "bucketAggs": [{"type": "date_histogram", "field": "@timestamp", "id": "2", "settings": {"interval": "1h", "min_doc_count": 0}}], "legendFormat": "Alertes"}]
+    },
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 30}]}}, "overrides": []},
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "id": 2,
+      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
+      "title": "Alertes haute sévérité (level >= 8)",
+      "type": "stat",
+      "targets": [{"datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"}, "query": "rule.level: [8 TO *]", "timeField": "@timestamp", "metrics": [{"type": "count", "id": "1"}], "bucketAggs": [{"type": "date_histogram", "field": "@timestamp", "id": "2", "settings": {"interval": "1h", "min_doc_count": 0}}], "legendFormat": "High alerts"}]
+    },
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"},
+      "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+      "id": 3,
+      "options": {"legend": {"displayMode": "list"}, "tooltip": {"mode": "multi"}},
+      "title": "Volume d'alertes Wazuh (timeline 5min)",
+      "type": "timeseries",
+      "targets": [{"datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"}, "query": "", "timeField": "@timestamp", "metrics": [{"type": "count", "id": "1"}], "bucketAggs": [{"type": "date_histogram", "field": "@timestamp", "id": "2", "settings": {"interval": "5m", "min_doc_count": 0}}], "legendFormat": "Alertes"}]
+    },
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 12},
+      "id": 4,
+      "options": {"frameIndex": 0, "showHeader": true},
+      "title": "Top 10 règles déclenchées",
+      "type": "table",
+      "targets": [{"datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"}, "query": "", "timeField": "@timestamp", "metrics": [{"type": "count", "id": "1"}], "bucketAggs": [{"type": "terms", "field": "rule.id", "id": "2", "settings": {"size": "10", "order": "desc", "orderBy": "1"}}], "legendFormat": "{{ rule.id }}"}]
+    },
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 12},
+      "id": 5,
+      "options": {"frameIndex": 0, "showHeader": true},
+      "title": "Top 10 agents sources",
+      "type": "table",
+      "targets": [{"datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"}, "query": "", "timeField": "@timestamp", "metrics": [{"type": "count", "id": "1"}], "bucketAggs": [{"type": "terms", "field": "agent.name", "id": "2", "settings": {"size": "10", "order": "desc", "orderBy": "1"}}], "legendFormat": "{{ agent.name }}"}]
+    },
+    {
+      "datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"},
+      "fieldConfig": {"defaults": {}, "overrides": []},
+      "gridPos": {"h": 10, "w": 24, "x": 0, "y": 22},
+      "id": 6,
+      "options": {"frameIndex": 0, "showHeader": true, "sortBy": [{"desc": true, "displayName": "timestamp"}]},
+      "title": "50 dernières alertes Wazuh",
+      "type": "table",
+      "targets": [{"datasource": {"type": "grafana-opensearch-datasource", "uid": "wazuh-opensearch"}, "query": "", "timeField": "@timestamp", "metrics": [{"type": "raw_data", "id": "1", "settings": {"size": "50"}}], "bucketAggs": [], "legendFormat": ""}]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["ssi", "alerts", "wazuh", "soc"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timepicker": {},
+  "timezone": "Europe/Paris",
+  "title": "SSI — Alertes Wazuh",
+  "uid": "ssi-alerts",
+  "version": 1
+}

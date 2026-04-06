@@ -1,0 +1,29 @@
+---
+# 76-monitoring.yml — Déploiement de la stack de supervision
+#
+# Prérequis :
+#   - 60-post-config-master.yml (cert-manager + Longhorn)
+#   - 75-vault.yml (optionnel — si soc_vault_backend == vault)
+#
+# Déploie :
+#   - Prometheus + Grafana + Alertmanager (kube-prometheus-stack)
+#   - Loki + Promtail (agrégation logs)
+#   - Blackbox Exporter (probes HTTP SOC)
+#   - Datasources Grafana (Loki, Wazuh OpenSearch)
+#   - Dashboards SSI (8 dashboards)
+#   - PrometheusRules (alertes infra + services SOC)
+#
+# Usage :
+#   ansible-playbook playbooks/76-monitoring.yml
+#   ansible-playbook playbooks/76-monitoring.yml --tags deploy
+#   ansible-playbook playbooks/76-monitoring.yml --tags dashboards
+
+- name: Déploiement supervision — Prometheus + Grafana + Loki
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+  roles:
+    - role: monitoring
+      tags: [monitoring]

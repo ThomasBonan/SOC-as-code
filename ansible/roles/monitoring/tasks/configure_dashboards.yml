@@ -1,0 +1,42 @@
+---
+# monitoring/tasks/configure_dashboards.yml — Import dashboards Grafana via ConfigMaps
+
+- name: Monitoring | Dashboards — créer le ConfigMap pour les dashboards infra
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "grafana-dashboard-{{ item | basename | splitext | first }}"
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          grafana_dashboard: "1"
+      data:
+        "{{ item | basename }}": "{{ lookup('file', item) }}"
+  loop:
+    - "{{ role_path }}/files/dashboards/infra-kubernetes.json"
+    - "{{ role_path }}/files/dashboards/infra-databases.json"
+    - "{{ role_path }}/files/dashboards/infra-network.json"
+
+- name: Monitoring | Dashboards — créer le ConfigMap pour les dashboards SSI
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "grafana-dashboard-{{ item | basename | splitext | first }}"
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          grafana_dashboard: "1"
+      data:
+        "{{ item | basename }}": "{{ lookup('file', item) }}"
+  loop:
+    - "{{ role_path }}/files/dashboards/ssi-overview.json"
+    - "{{ role_path }}/files/dashboards/ssi-alerts.json"
+    - "{{ role_path }}/files/dashboards/ssi-cases.json"
+    - "{{ role_path }}/files/dashboards/ssi-risk.json"
+    - "{{ role_path }}/files/dashboards/ssi-pipeline.json"

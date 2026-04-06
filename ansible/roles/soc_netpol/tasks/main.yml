@@ -196,6 +196,14 @@
     template: netpol-vault.yml.j2
   when: soc_netpol_enable_vault | bool
 
+# --- NetworkPolicies Monitoring ---
+- name: Apply Monitoring NetworkPolicies (namespace soc-monitoring)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-monitoring.yml.j2
+  when: soc_netpol_enable_monitoring | bool
+
 - name: Apply MISP internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
   vars:

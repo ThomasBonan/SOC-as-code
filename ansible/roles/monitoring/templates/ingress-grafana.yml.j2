@@ -1,0 +1,30 @@
+# ingress-grafana.yml.j2 — Ingress TLS pour Grafana
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: "{{ monitoring_namespace }}"
+  annotations:
+    kubernetes.io/ingress.class: "{{ ingress_class }}"
+    cert-manager.io/cluster-issuer: "{{ monitoring_grafana_clusterissuer }}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: "{{ ingress_class }}"
+  tls:
+    - hosts:
+        - "{{ monitoring_grafana_ingress_host }}"
+      secretName: "{{ monitoring_grafana_tls_secret }}"
+  rules:
+    - host: "{{ monitoring_grafana_ingress_host }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kube-prometheus-stack-grafana
+                port:
+                  number: 80

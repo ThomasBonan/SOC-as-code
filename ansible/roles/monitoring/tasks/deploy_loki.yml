@@ -1,0 +1,28 @@
+---
+# monitoring/tasks/deploy_loki.yml — Déploiement Loki + Promtail
+
+- name: Monitoring | Loki — déployer loki-stack via Helm
+  kubernetes.core.helm:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    name: loki-stack
+    chart_ref: grafana/loki-stack
+    chart_version: "{{ monitoring_loki_chart_version }}"
+    release_namespace: "{{ monitoring_namespace }}"
+    create_namespace: false
+    wait: true
+    timeout: "10m"
+    values: "{{ lookup('template', 'loki-values.yml.j2') | from_yaml }}"
+
+- name: Monitoring | Loki — attendre que Loki soit Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    api_version: v1
+    kind: Pod
+    namespace: "{{ monitoring_namespace }}"
+    label_selectors:
+      - app=loki
+  register: _loki_pods
+  retries: 20
+  delay: 10
+  until: >
+    (_loki_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1

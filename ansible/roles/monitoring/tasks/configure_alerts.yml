@@ -1,0 +1,8 @@
+---
+# monitoring/tasks/configure_alerts.yml — PrometheusRules pour les alertes
+
+- name: Monitoring | Alertes — déployer les PrometheusRules infra + SOC
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    template: prometheus-rules.yml.j2
