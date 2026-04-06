@@ -13,6 +13,31 @@
     timeout: "15m"
     values: "{{ lookup('template', 'prometheus-values.yml.j2') | from_yaml }}"
 
+# GF_SECURITY_ADMIN_PASSWORD n'est appliqué qu'à la première initialisation de grafana.db.
+# On force la synchronisation via la CLI Grafana après chaque déploiement.
+- name: Monitoring | Grafana — récupérer le nom du pod Grafana
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    kind: Pod
+    namespace: "{{ monitoring_namespace }}"
+    label_selectors:
+      - app.kubernetes.io/name=grafana
+  register: _grafana_pods
+  retries: 10
+  delay: 15
+  until: (_grafana_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
+
+- name: Monitoring | Grafana — synchroniser le mot de passe admin avec la DB
+  ansible.builtin.shell: >
+    kubectl exec -n {{ monitoring_namespace }}
+    {{ _grafana_pods.resources | selectattr('status.phase', 'equalto', 'Running') | map(attribute='metadata.name') | first }}
+    -c grafana --
+    grafana cli admin reset-admin-password {{ monitoring_grafana_admin_password }}
+  environment:
+    KUBECONFIG: "{{ monitoring_kubeconfig_path }}"
+  no_log: true
+  changed_when: true
+
 - name: Monitoring | Prometheus — attendre que les pods soient Running
   kubernetes.core.k8s_info:
     kubeconfig: "{{ monitoring_kubeconfig_path }}"
