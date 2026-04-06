@@ -13,18 +13,21 @@
 #   auth             - configuration Kubernetes auth + AppRole
 #   secrets          - activation KV v2 + policies
 #   bootstrap        - seed des secrets bootstrap (TheHive/Cortex/Shuffle)
+#   seed             - Phase 2 : migration K8s Secrets → Vault (idempotent)
 #   vault            - toutes les tâches du rôle vault
 #   eso              - toutes les tâches du rôle eso
 #   configure        - ClusterSecretStore
-#   external_secrets - ExternalSecret CRDs (17 secrets)
+#   external_secrets - ExternalSecret CRDs (16 secrets, vault_path corrigé Phase 2)
 #
 # Exemples d'utilisation :
 #   ansible-playbook 75-vault.yml                             # run complet
 #   ansible-playbook 75-vault.yml --tags vault                # vault seul
 #   ansible-playbook 75-vault.yml --tags eso                  # eso seul
 #   ansible-playbook 75-vault.yml --tags unseal               # unseal seul
-#   ansible-playbook 75-vault.yml --tags bootstrap            # re-seed secrets
-#   ansible-playbook 75-vault.yml --tags external_secrets     # re-sync CRDs ESO
+#   ansible-playbook 75-vault.yml --tags bootstrap            # re-seed secrets bootstrap
+#   ansible-playbook 75-vault.yml --tags seed                 # Phase 2 : seeder Vault depuis K8s
+#   ansible-playbook 75-vault.yml --tags external_secrets     # re-appliquer les ExternalSecret CRDs
+#   ansible-playbook 75-vault.yml --tags seed,external_secrets # Phase 2 complète
 #
 # Prérequis :
 #   - cert-manager + ClusterIssuer soc-lab-ca-issuer déployés (playbook 60)

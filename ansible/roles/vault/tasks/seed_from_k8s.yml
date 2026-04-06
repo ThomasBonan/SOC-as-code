@@ -1,0 +1,228 @@
+---
+# vault/tasks/seed_from_k8s.yml — Phase 2 : Seeder Vault depuis les K8s Secrets existants
+#
+# Lit les 16 K8s Secrets cibles (dont 14 existent déjà) et écrit leurs données
+# dans les chemins Vault correspondants. Idempotent : si le chemin Vault existe
+# déjà, la tâche est sautée (pas d'écrasement).
+#
+# Appelé par : 75-vault.yml --tags seed
+# Prérequis  : Vault unsealed, K8s Secret vault-unseal-keys présent.
+# Sécurité   : no_log sur toutes les tâches manipulant des credentials.
+#
+# Mapping K8s Secret → Vault :
+#   Namespace/Secret                      → soc/<subpath>
+#   soc-core/misp-mariadb-auth            → databases/misp-mariadb
+#   soc-core/misp-redis                   → databases/misp-redis
+#   soc-core/misp-app-secret              → apps/misp-app-secret
+#   soc-thehive/thehive-secret            → apps/thehive-secret
+#   soc-cortex/cortex-secret              → apps/cortex-secret
+#   soc-shuffle/soc-shuffle-admin-creds   → apps/shuffle-admin
+#   soc-wazuh/wazuh-credentials           → credentials/wazuh-credentials
+#   soc-wazuh/wazuh-api-cred              → credentials/wazuh-api-cred
+#   soc-thehive/thehive-sa-foundations    → service-accounts/thehive-sa
+#   soc-thehive/thehive-selftest-found.   → service-accounts/thehive-selftest-sa
+#   soc-cortex/cortex-sa-foundations      → service-accounts/cortex-sa
+#   soc-core/misp-sa-foundations          → service-accounts/misp-sa
+#   soc-wazuh/wazuh-sa-foundations        → service-accounts/wazuh-sa
+#   soc-thehive/soc-automation-worker-cr. → automation/worker-creds
+#   (absent) thehive-postgresql-auth      → databases/thehive-postgresql  [SKIP]
+#   (absent) cortex-postgresql-auth       → databases/cortex-postgresql   [SKIP]
+
+# ── Lire le root token ────────────────────────────────────────────────────────
+
+- name: Vault seed | Lire le root token
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ vault_unseal_keys_secret_namespace }}"
+    name: "{{ vault_unseal_keys_secret_name }}"
+  register: _seed_keys_secret
+  no_log: true
+  failed_when: _seed_keys_secret.resources | length == 0
+
+- name: Vault seed | Extraire le root token
+  ansible.builtin.set_fact:
+    _seed_vault_token: "{{ _seed_keys_secret.resources[0].data.root_token | b64decode }}"
+  no_log: true
+
+# ── Script de seeding Python ──────────────────────────────────────────────────
+#
+# Passe le VAULT_TOKEN via une variable d'environnement pour éviter tout
+# affichage dans les logs même en cas de no_log bypass.
+# Le script Python utilise kubectl cp + vault kv put @json pour gérer les
+# valeurs avec caractères spéciaux sans injection shell.
+
+- name: Vault seed | Seeder les chemins Vault depuis les K8s Secrets
+  ansible.builtin.shell: |
+    python3 << 'PYEOF'
+    import os, sys, subprocess, json, base64, tempfile
+
+    KUBECONFIG  = os.environ['KUBECONFIG']
+    VAULT_TOKEN = os.environ['VAULT_ROOT_TOKEN']
+    VAULT_NS    = os.environ.get('VAULT_NAMESPACE', 'soc-vault')
+    VAULT_MOUNT = os.environ.get('VAULT_KV_MOUNT', 'soc')
+    VAULT_POD   = 'vault-0'
+
+    def kube(args):
+        return subprocess.run(
+            ['kubectl', '--kubeconfig', KUBECONFIG] + args,
+            capture_output=True, text=True
+        )
+
+    def vault_exec(args):
+        return subprocess.run(
+            ['kubectl', '--kubeconfig', KUBECONFIG,
+             'exec', '-n', VAULT_NS, VAULT_POD, '--',
+             'env', 'VAULT_TOKEN=' + VAULT_TOKEN, 'vault'] + args,
+            capture_output=True, text=True
+        )
+
+    def path_exists(subpath):
+        r = vault_exec(['kv', 'get', '-mount=' + VAULT_MOUNT, subpath])
+        return r.returncode == 0
+
+    def get_k8s_secret(name, namespace, keys):
+        r = kube(['get', 'secret', name, '-n', namespace, '-o', 'json'])
+        if r.returncode != 0:
+            return None
+        s = json.loads(r.stdout)
+        raw = s.get('data', {})
+        return {k: base64.b64decode(raw[k]).decode() for k in keys if k in raw}
+
+    def seed(k8s_name, k8s_ns, vault_subpath, keys):
+        if path_exists(vault_subpath):
+            print('EXISTS  ' + vault_subpath)
+            return
+
+        data = get_k8s_secret(k8s_name, k8s_ns, keys)
+        if data is None:
+            print('SKIP    ' + vault_subpath + ' (K8s Secret ' + k8s_name + '/' + k8s_ns + ' absent)')
+            return
+
+        missing = [k for k in keys if k not in data]
+        if missing:
+            print('WARNING ' + vault_subpath + ' keys manquantes: ' + str(missing), file=sys.stderr)
+
+        # Écrire un JSON temporaire sur le controller, le copier dans vault-0, puis kv put
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False,
+                                         prefix='vault_seed_') as f:
+            json.dump(data, f)
+            tmpfile = f.name
+        try:
+            cp = kube(['cp', tmpfile, VAULT_NS + '/' + VAULT_POD + ':/tmp/_vault_seed.json'])
+            if cp.returncode != 0:
+                print('ERROR   ' + vault_subpath + ' (kubectl cp): ' + cp.stderr, file=sys.stderr)
+                return
+            put = vault_exec(['kv', 'put', '-mount=' + VAULT_MOUNT, vault_subpath,
+                              '@/tmp/_vault_seed.json'])
+            if put.returncode == 0:
+                print('CREATED ' + vault_subpath)
+            else:
+                print('ERROR   ' + vault_subpath + ' (vault kv put): ' + put.stderr, file=sys.stderr)
+        finally:
+            os.unlink(tmpfile)
+            subprocess.run(
+                ['kubectl', '--kubeconfig', KUBECONFIG,
+                 'exec', '-n', VAULT_NS, VAULT_POD, '--', 'rm', '-f', '/tmp/_vault_seed.json'],
+                capture_output=True
+            )
+
+    MAPPINGS = [
+        # Databases
+        ('misp-mariadb-auth',            'soc-core',    'databases/misp-mariadb',
+         ['mariadb-root-password', 'mariadb-password']),
+        ('misp-redis',                   'soc-core',    'databases/misp-redis',
+         ['redis-password']),
+        ('thehive-postgresql-auth',      'soc-thehive', 'databases/thehive-postgresql',
+         ['postgres-password', 'password']),
+        ('cortex-postgresql-auth',       'soc-cortex',  'databases/cortex-postgresql',
+         ['postgres-password', 'password']),
+        # Apps
+        ('misp-app-secret',              'soc-core',    'apps/misp-app-secret',
+         ['admin_email', 'admin_password', 'salt', 'gpg_passphrase']),
+        ('thehive-secret',               'soc-thehive', 'apps/thehive-secret',
+         ['httpSecret']),
+        ('cortex-secret',                'soc-cortex',  'apps/cortex-secret',
+         ['httpSecret']),
+        ('soc-shuffle-admin-creds',      'soc-shuffle', 'apps/shuffle-admin',
+         ['apikey', 'username']),
+        # Wazuh credentials
+        ('wazuh-credentials',            'soc-wazuh',   'credentials/wazuh-credentials',
+         ['indexer_password', 'indexer_password_hash',
+          'dashboard_password', 'dashboard_password_hash']),
+        ('wazuh-api-cred',               'soc-wazuh',   'credentials/wazuh-api-cred',
+         ['API_USERNAME', 'API_PASSWORD']),
+        # Service accounts
+        ('thehive-sa-foundations',       'soc-thehive', 'service-accounts/thehive-sa',
+         ['api_key', 'login']),
+        ('thehive-selftest-foundations', 'soc-thehive', 'service-accounts/thehive-selftest-sa',
+         ['api_key', 'login']),
+        ('cortex-sa-foundations',        'soc-cortex',  'service-accounts/cortex-sa',
+         ['api_key', 'login']),
+        ('misp-sa-foundations',          'soc-core',    'service-accounts/misp-sa',
+         ['authkey', 'email']),
+        ('wazuh-sa-foundations',         'soc-wazuh',   'service-accounts/wazuh-sa',
+         ['username', 'password']),
+        # Automation
+        ('soc-automation-worker-creds',  'soc-thehive', 'automation/worker-creds',
+         ['THEHIVE_URL', 'THEHIVE_API_KEY', 'THEHIVE_WRITE_KEY',
+          'CORTEX_URL', 'CORTEX_API_KEY',
+          'MISP_URL', 'MISP_API_KEY',
+          'WAZUH_USER', 'WAZUH_PASS']),
+    ]
+
+    for m in MAPPINGS:
+        seed(*m)
+    PYEOF
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+    VAULT_ROOT_TOKEN: "{{ _seed_vault_token }}"
+    VAULT_NAMESPACE: "{{ vault_namespace }}"
+    VAULT_KV_MOUNT: "{{ vault_kv_mount }}"
+  no_log: true
+  register: _vault_seed_result
+  changed_when: "'CREATED' in _vault_seed_result.stdout"
+
+- name: Vault seed | Rapport de seeding
+  ansible.builtin.debug:
+    msg: "{{ _vault_seed_result.stdout_lines }}"
+
+- name: Vault seed | Erreurs de seeding (le cas échéant)
+  ansible.builtin.debug:
+    msg: "{{ _vault_seed_result.stderr_lines }}"
+  when: _vault_seed_result.stderr_lines | length > 0
+
+# ── Forcer la resynchronisation ESO ──────────────────────────────────────────
+
+- name: Vault seed | Redémarrer le déploiement ESO pour forcer la resync
+  ansible.builtin.shell: >
+    kubectl --kubeconfig={{ vault_kubeconfig_path }}
+    rollout restart deployment/external-secrets
+    -n {{ vault_eso_namespace | default('soc-vault') }}
+  changed_when: true
+
+- name: Vault seed | Attendre que ESO soit prêt
+  ansible.builtin.shell: >
+    kubectl --kubeconfig={{ vault_kubeconfig_path }}
+    rollout status deployment/external-secrets
+    -n {{ vault_eso_namespace | default('soc-vault') }}
+    --timeout=120s
+  changed_when: false
+
+- name: Vault seed | Vérifier le statut des ExternalSecrets (attendre 30s)
+  ansible.builtin.pause:
+    seconds: 30
+    prompt: "Attente de la resynchronisation ESO..."
+
+- name: Vault seed | Statut des ExternalSecrets
+  ansible.builtin.shell: >
+    kubectl --kubeconfig={{ vault_kubeconfig_path }}
+    get externalsecret -A
+    -o custom-columns='NAMESPACE:.metadata.namespace,NAME:.metadata.name,READY:.status.conditions[0].type,STATUS:.status.conditions[0].status,REASON:.status.conditions[0].reason'
+    --no-headers
+  register: _es_status
+  changed_when: false
+
+- name: Vault seed | Afficher le statut des ExternalSecrets
+  ansible.builtin.debug:
+    msg: "{{ _es_status.stdout_lines }}"

@@ -24,9 +24,10 @@ eso_kubeconfig_path: "{{ kubeconfig_path }}"
 # Format : { name, namespace, vault_path, data: [ {secretKey, remoteKey} ] }
 eso_external_secrets:
   # Databases
+  # vault_path = chemin DANS le mount KV (le mount 'soc' est déjà configuré dans le ClusterSecretStore)
   - name: thehive-postgresql-auth
     namespace: "{{ soc_namespaces.thehive }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/thehive-postgresql"
+    vault_path: "databases/thehive-postgresql"
     data:
       - secretKey: postgres-password
         remoteKey: postgres-password
@@ -35,7 +36,7 @@ eso_external_secrets:
 
   - name: cortex-postgresql-auth
     namespace: "{{ soc_namespaces.cortex }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/cortex-postgresql"
+    vault_path: "databases/cortex-postgresql"
     data:
       - secretKey: postgres-password
         remoteKey: postgres-password
@@ -44,7 +45,7 @@ eso_external_secrets:
 
   - name: misp-mariadb-auth
     namespace: "{{ soc_namespaces.misp }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/misp-mariadb"
+    vault_path: "databases/misp-mariadb"
     data:
       - secretKey: mariadb-root-password
         remoteKey: mariadb-root-password
@@ -53,7 +54,7 @@ eso_external_secrets:
 
   - name: misp-redis
     namespace: "{{ soc_namespaces.misp }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/databases/misp-redis"
+    vault_path: "databases/misp-redis"
     data:
       - secretKey: redis-password
         remoteKey: redis-password
@@ -61,7 +62,7 @@ eso_external_secrets:
   # Apps
   - name: misp-app-secret
     namespace: "{{ soc_namespaces.misp }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/misp-app-secret"
+    vault_path: "apps/misp-app-secret"
     data:
       - secretKey: admin_email
         remoteKey: admin_email
@@ -74,21 +75,21 @@ eso_external_secrets:
 
   - name: thehive-secret
     namespace: "{{ soc_namespaces.thehive }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/thehive-secret"
+    vault_path: "apps/thehive-secret"
     data:
       - secretKey: httpSecret
         remoteKey: httpSecret
 
   - name: cortex-secret
     namespace: "{{ soc_namespaces.cortex }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/cortex-secret"
+    vault_path: "apps/cortex-secret"
     data:
       - secretKey: httpSecret
         remoteKey: httpSecret
 
   - name: soc-shuffle-admin-creds
     namespace: soc-shuffle
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/apps/shuffle-admin"
+    vault_path: "apps/shuffle-admin"
     data:
       - secretKey: apikey
         remoteKey: apikey
@@ -98,7 +99,7 @@ eso_external_secrets:
   # Wazuh credentials
   - name: wazuh-credentials
     namespace: "{{ soc_namespaces.wazuh }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/credentials/wazuh-credentials"
+    vault_path: "credentials/wazuh-credentials"
     data:
       - secretKey: indexer_password
         remoteKey: indexer_password
@@ -111,7 +112,7 @@ eso_external_secrets:
 
   - name: wazuh-api-cred
     namespace: "{{ soc_namespaces.wazuh }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/credentials/wazuh-api-cred"
+    vault_path: "credentials/wazuh-api-cred"
     data:
       - secretKey: API_USERNAME
         remoteKey: API_USERNAME
@@ -121,7 +122,7 @@ eso_external_secrets:
   # Service accounts
   - name: thehive-sa-foundations
     namespace: "{{ soc_namespaces.thehive }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/thehive-sa"
+    vault_path: "service-accounts/thehive-sa"
     data:
       - secretKey: api_key
         remoteKey: api_key
@@ -130,7 +131,7 @@ eso_external_secrets:
 
   - name: thehive-selftest-foundations
     namespace: "{{ soc_namespaces.thehive }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/thehive-selftest-sa"
+    vault_path: "service-accounts/thehive-selftest-sa"
     data:
       - secretKey: api_key
         remoteKey: api_key
@@ -139,7 +140,7 @@ eso_external_secrets:
 
   - name: cortex-sa-foundations
     namespace: "{{ soc_namespaces.cortex }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/cortex-sa"
+    vault_path: "service-accounts/cortex-sa"
     data:
       - secretKey: api_key
         remoteKey: api_key
@@ -148,7 +149,7 @@ eso_external_secrets:
 
   - name: misp-sa-foundations
     namespace: "{{ soc_namespaces.misp }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/misp-sa"
+    vault_path: "service-accounts/misp-sa"
     data:
       - secretKey: authkey
         remoteKey: authkey
@@ -157,7 +158,7 @@ eso_external_secrets:
 
   - name: wazuh-sa-foundations
     namespace: "{{ soc_namespaces.wazuh }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/service-accounts/wazuh-sa"
+    vault_path: "service-accounts/wazuh-sa"
     data:
       - secretKey: username
         remoteKey: username
@@ -167,7 +168,7 @@ eso_external_secrets:
   # Automation worker
   - name: soc-automation-worker-creds
     namespace: "{{ soc_namespaces.thehive }}"
-    vault_path: "{{ soc_vault_kv_mount | default('soc') }}/automation/worker-creds"
+    vault_path: "automation/worker-creds"
     data:
       - secretKey: THEHIVE_URL
         remoteKey: THEHIVE_URL
