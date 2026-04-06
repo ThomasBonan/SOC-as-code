@@ -1,0 +1,127 @@
+---
+# vault/tasks/fetch_bootstrap_vars.yml
+#
+# Récupère les passwords bootstrap depuis Vault KV v2 et les expose
+# comme facts Ansible (thehive_bootstrap_password, cortex_bootstrap_password,
+# shuffle_admin_password).
+#
+# Prérequis : Vault initialized + unsealed, K8s Secret vault-unseal-keys présent.
+# Méthode   : kubectl exec (aucune dépendance Python hvac requise sur le controller).
+# Sécurité  : no_log sur toutes les tâches manipulant des credentials.
+#
+# Usage (dans un playbook en pre_tasks) :
+#   - name: Charger les bootstrap passwords depuis Vault
+#     ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+#     when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+
+# --- Root token ---
+- name: Vault fetch | Lire le root token depuis K8s Secret
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+    name: "vault-unseal-keys"
+  register: _vfb_keys_secret
+  no_log: true
+  failed_when: _vfb_keys_secret.resources | length == 0
+
+- name: Vault fetch | Construire le préfixe exec
+  ansible.builtin.set_fact:
+    _vfb_exec: >-
+      kubectl exec -n {{ soc_vault_namespace | default('soc-vault') }} vault-0 --
+      env VAULT_TOKEN={{ _vfb_keys_secret.resources[0].data.root_token | b64decode }}
+    _vfb_kv_mount: "{{ soc_vault_kv_mount | default('soc') }}"
+  no_log: true
+
+# --- TheHive bootstrap password ---
+- name: Vault fetch | Lire thehive_bootstrap_password depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=password
+    {{ _vfb_kv_mount }}/bootstrap/thehive
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_thehive_pass
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_thehive_pass.rc != 0
+
+- name: Vault fetch | Lire thehive_bootstrap_user depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=login
+    {{ _vfb_kv_mount }}/bootstrap/thehive
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_thehive_user
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_thehive_user.rc != 0
+
+- name: Vault fetch | Définir thehive_bootstrap_password + user comme facts
+  ansible.builtin.set_fact:
+    thehive_bootstrap_password: "{{ _vfb_thehive_pass.stdout }}"
+    thehive_bootstrap_user: "{{ _vfb_thehive_user.stdout }}"
+  no_log: true
+
+# --- Cortex bootstrap password ---
+- name: Vault fetch | Lire cortex_bootstrap_password depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=password
+    {{ _vfb_kv_mount }}/bootstrap/cortex
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_cortex_pass
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_cortex_pass.rc != 0
+
+- name: Vault fetch | Lire cortex_bootstrap_user depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=login
+    {{ _vfb_kv_mount }}/bootstrap/cortex
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_cortex_user
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_cortex_user.rc != 0
+
+- name: Vault fetch | Définir cortex_bootstrap_password + user comme facts
+  ansible.builtin.set_fact:
+    cortex_bootstrap_password: "{{ _vfb_cortex_pass.stdout }}"
+    cortex_bootstrap_user: "{{ _vfb_cortex_user.stdout }}"
+  no_log: true
+
+# --- Shuffle admin password ---
+- name: Vault fetch | Lire shuffle_admin_password depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=password
+    {{ _vfb_kv_mount }}/bootstrap/shuffle
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_shuffle_pass
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_shuffle_pass.rc != 0
+
+- name: Vault fetch | Lire shuffle_admin_username depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=username
+    {{ _vfb_kv_mount }}/bootstrap/shuffle
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_shuffle_user
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_shuffle_user.rc != 0
+
+- name: Vault fetch | Définir shuffle_admin_password + username comme facts
+  ansible.builtin.set_fact:
+    shuffle_admin_password: "{{ _vfb_shuffle_pass.stdout }}"
+    shuffle_admin_username: "{{ _vfb_shuffle_user.stdout }}"
+  no_log: true
+
+- name: Vault fetch | Bootstrap passwords chargés depuis Vault
+  ansible.builtin.debug:
+    msg: >-
+      Bootstrap passwords résolus depuis Vault KV
+      ({{ _vfb_kv_mount }}/bootstrap/) pour TheHive, Cortex et Shuffle.

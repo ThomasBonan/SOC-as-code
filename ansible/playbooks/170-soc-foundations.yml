@@ -35,5 +35,14 @@
         soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
       when: lookup('env', 'SOC_ENV') | length > 0
       tags: always
+
+    # Phase 1 — Résolution des bootstrap passwords depuis Vault
+    # Remplace les valeurs en dur ('secret', 'Shuffle@SOCLab2025!') par des passwords
+    # forts stockés dans Vault KV v2 (soc/bootstrap/thehive, cortex, shuffle).
+    # Ignoré si soc_vault_backend == 'kubernetes-secrets' (comportement legacy).
+    - name: Charger les bootstrap passwords depuis Vault
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+      when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+      tags: always
   roles:
     - soc_foundations

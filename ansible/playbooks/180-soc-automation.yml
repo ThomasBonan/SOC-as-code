@@ -61,5 +61,9 @@
         msg: "SOC environment: {{ soc_environment | default('dev') }}"
       changed_when: false
 
+    - name: Charger les bootstrap passwords depuis Vault
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+      when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+
   roles:
     - role: soc_automation

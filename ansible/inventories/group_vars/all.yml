@@ -144,7 +144,7 @@ soc_environment: "dev"
 
 # Backend de secrets actuel (pour traçabilité et migration future)
 # Valeurs : kubernetes-secrets | vault | eso (External Secrets Operator)
-soc_vault_backend: "kubernetes-secrets"
+soc_vault_backend: "vault"
 
 # ============================================================
 # HashiCorp Vault — variables globales (rôle vault + eso)

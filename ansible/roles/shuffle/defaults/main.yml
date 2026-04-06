@@ -57,7 +57,7 @@ shuffle_tls_secret:     "shuffle-tls"
 # Created by configure.yml on first run and stored in K8s Secret.
 # Override these in envs/prod.yml or vault for production.
 shuffle_admin_username:  "admin"
-shuffle_admin_password:  "Shuffle@SOCLab2025!"   # Change in prod
+shuffle_admin_password:  ""   # Résolu depuis Vault soc/bootstrap/shuffle quand soc_vault_backend != 'kubernetes-secrets'
 shuffle_admin_org_name:  "SOC"
 # K8s Secret that stores Shuffle admin API key (written by configure.yml)
 shuffle_admin_secret_name: "soc-shuffle-admin-creds"
