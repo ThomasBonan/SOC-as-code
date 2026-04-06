@@ -13,6 +13,33 @@
     timeout: "10m"
     values: "{{ lookup('template', 'loki-values.yml.j2') | from_yaml }}"
 
+# Le chart loki-stack crée un ConfigMap datasource avec isDefault: true (hardcodé).
+# On le patche immédiatement pour éviter le conflit avec la datasource Prometheus (aussi default).
+- name: Monitoring | Loki — patcher la datasource ConfigMap (isDefault false)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: loki-stack
+        namespace: "{{ monitoring_namespace }}"
+        labels:
+          grafana_datasource: "1"
+      data:
+        loki-stack-datasource.yaml: |
+          apiVersion: 1
+          datasources:
+          - name: Loki
+            type: loki
+            access: proxy
+            url: "http://loki-stack:3100"
+            version: 1
+            isDefault: false
+            jsonData:
+              {}
+
 - name: Monitoring | Loki — attendre que Loki soit Running
   kubernetes.core.k8s_info:
     kubeconfig: "{{ monitoring_kubeconfig_path }}"

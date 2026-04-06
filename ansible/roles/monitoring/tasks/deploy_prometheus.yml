@@ -10,8 +10,6 @@
     release_namespace: "{{ monitoring_namespace }}"
     create_namespace: false
     wait: true
-    wait_condition:
-      type: Ready
     timeout: "15m"
     values: "{{ lookup('template', 'prometheus-values.yml.j2') | from_yaml }}"
 

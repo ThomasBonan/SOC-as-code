@@ -1,0 +1,27 @@
+---
+# _create_dashboard_configmap.yml — helper appelé par configure_dashboards.yml
+# Précalcule le nom de fichier via set_fact pour contourner la limitation Jinja2
+# (les clés de dict YAML dans `definition:` ne sont pas évaluées par Jinja2).
+
+- name: "Monitoring | Dashboard — calculer les noms pour {{ _dashboard_path | basename }}"
+  ansible.builtin.set_fact:
+    _dashboard_filename: "{{ _dashboard_path | basename }}"
+    _dashboard_cm_name: "grafana-dashboard-{{ _dashboard_path | basename | splitext | first }}"
+
+- name: "Monitoring | Dashboard — créer le ConfigMap {{ _dashboard_cm_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ monitoring_kubeconfig_path }}"
+    state: present
+    definition: >-
+      {{
+        {
+          'apiVersion': 'v1',
+          'kind': 'ConfigMap',
+          'metadata': {
+            'name': _dashboard_cm_name,
+            'namespace': monitoring_namespace,
+            'labels': {'grafana_dashboard': '1'}
+          },
+          'data': {_dashboard_filename: lookup('file', _dashboard_path)}
+        }
+      }}

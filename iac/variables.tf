@@ -91,7 +91,7 @@ variable "master_ip_cidr" {
 variable "worker_ips_cidr" {
   type        = list(string)
   description = "IPs CIDR des workers"
-  default     = ["10.0.20.11/24", "10.0.20.12/24"]
+  default     = ["10.0.20.11/24", "10.0.20.12/24", "10.0.20.13/24"]
   validation {
     condition     = length(var.worker_ips_cidr) >= 1 && alltrue([for ip in var.worker_ips_cidr : can(cidrhost(ip, 0))])
     error_message = "worker_ips_cidr doit contenir au moins une IP en CIDR valide."
@@ -157,9 +157,9 @@ variable "worker_sizing" {
     cpu_type  : string
   })
   default = {
-    cores     = 4
-    memory_mb = 12288
-    disk_gb   = 100
+    cores     = 6
+    memory_mb = 24597
+    disk_gb   = 300
     cpu_type  = "host"
   }
   validation {

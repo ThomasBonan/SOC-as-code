@@ -8,6 +8,13 @@ loki:
     accessModes:
       - ReadWriteOnce
     size: "{{ monitoring_loki_storage_size }}"
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
   config:
     auth_enabled: false
     ingester:
@@ -36,13 +43,6 @@ loki:
         shared_store: filesystem
       filesystem:
         directory: /data/loki/chunks
-  resources:
-    requests:
-      cpu: 100m
-      memory: 256Mi
-    limits:
-      cpu: 500m
-      memory: 1Gi
 
 promtail:
   enabled: true
@@ -66,8 +66,8 @@ promtail:
             target_label: container
   resources:
     requests:
-      cpu: 50m
-      memory: 64Mi
+      cpu: 10m
+      memory: 32Mi
     limits:
       cpu: 200m
       memory: 256Mi
