@@ -1,0 +1,27 @@
+---
+# vault/tasks/_resolve_vault_token.yml
+#
+# Lit le root token depuis le K8s Secret vault-unseal-keys et définit
+# les facts _vault_root_token et _vault_exec pour les opérations Vault.
+#
+# Usage :
+#   - name: Résoudre le root token Vault
+#     ansible.builtin.include_tasks: _resolve_vault_token.yml
+
+- name: Vault | Lire le root token depuis le K8s Secret
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ vault_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ vault_unseal_keys_secret_namespace }}"
+    name: "{{ vault_unseal_keys_secret_name }}"
+  register: _vault_token_secret
+  no_log: true
+  failed_when: _vault_token_secret.resources | length == 0
+
+- name: Vault | Extraire le root token et définir le préfixe exec
+  ansible.builtin.set_fact:
+    _vault_root_token: "{{ _vault_token_secret.resources[0].data.root_token | b64decode }}"
+    _vault_exec: >-
+      kubectl exec -n {{ vault_namespace }} vault-0 --
+      env VAULT_TOKEN={{ _vault_token_secret.resources[0].data.root_token | b64decode }}
+  no_log: true

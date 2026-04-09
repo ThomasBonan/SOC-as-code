@@ -1,0 +1,58 @@
+---
+# wazuh/tasks/_rescue_diagnostics.yml
+#
+# Tâches de diagnostic communes aux blocs rescue des 3 phases de déploiement.
+# Inclure avec :
+#   include_tasks: _rescue_diagnostics.yml
+#   vars:
+#     _wazuh_phase: "Phase 1 (Indexer)"
+
+- name: "Helm status ({{ _wazuh_phase }})"
+  ansible.builtin.command: >
+    {{ helm_binary_path }} -n {{ wazuh_namespace }} status {{ wazuh_release_name }}
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: "Pods/PVC ({{ _wazuh_phase }})"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    get pods,pvc -o wide
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: "Events ({{ _wazuh_phase }})"
+  ansible.builtin.shell: |
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }} \
+      get events --sort-by=.lastTimestamp | tail -n 200
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: "Describe + logs for non-ready pods ({{ _wazuh_phase }})"
+  ansible.builtin.shell: |
+    set +e
+    K="kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}"
+    pods="$($K get pods --no-headers 2>/dev/null | awk '($3!="Running" && $3!="Completed") || ($3=="Running" && $2 !~ /^([0-9]+)\/\1$/){print $1}')"
+    for p in $pods; do
+      echo "==== describe pod/$p ===="
+      $K describe pod "$p" | tail -n 200
+      echo "==== logs pod/$p (all containers) ===="
+      $K logs "$p" --all-containers --tail=200 2>/dev/null | tail -n 200
+    done
+  args:
+    executable: /bin/bash
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: "Fail ({{ _wazuh_phase }})"
+  ansible.builtin.fail:
+    msg: "{{ _wazuh_phase }} failed. Check pods/pvc/events/describe/logs above."

@@ -1,6 +1,7 @@
 ---
 - name: Deploy SOC core databases (TheHive/Cortex/MISP)
-  hosts: master
-  gather_facts: true
+  hosts: localhost
+  connection: local
+  gather_facts: false
   roles:
     - databases

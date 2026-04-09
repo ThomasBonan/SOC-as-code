@@ -20,6 +20,10 @@
       kind: Namespace
       metadata:
         name: "{{ soc_core_namespace }}"
+        labels:
+          # PSS warn mode — signale les violations sans bloquer (enforce serait trop risqué en lab)
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/audit: restricted
 
 # -------------------------
 # Secrets (create-once)
@@ -241,6 +245,13 @@
                     ports:
                       - containerPort: "{{ misp_modules_container_port }}"
                         name: http
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "256Mi"
+                      limits:
+                        cpu: "500m"
+                        memory: "512Mi"
                     readinessProbe:
                       tcpSocket:
                         port: "{{ misp_modules_container_port }}"
@@ -325,7 +336,7 @@
                           /var/www/MISP/app/tmp/logs/misp-workers.log \
                           /var/www/MISP/app/tmp/logs/error.log \
                           /var/www/MISP/app/tmp/logs/debug.log || true
-                        chmod -R 0777 /var/www/MISP/app/tmp
+                        chmod -R 0770 /var/www/MISP/app/tmp
                         chown -R 33:33 /var/www/MISP/app/tmp || true
                     volumeMounts:
                       - name: misp-tmp
@@ -352,6 +363,13 @@
                         name: http
                       - containerPort: 443
                         name: https
+                    resources:
+                      requests:
+                        cpu: "500m"
+                        memory: "1Gi"
+                      limits:
+                        cpu: "2"
+                        memory: "2Gi"
 
                     volumeMounts:
                       - name: misp-tmp
@@ -396,9 +414,9 @@
                             key: redis-password
 
                       - name: TRUSTED_PROXIES
-                        value: "0.0.0.0/0"
+                        value: "{{ pod_cidr }}"
                       - name: CAKEPHP_TRUSTED_PROXIES
-                        value: "0.0.0.0/0"
+                        value: "{{ pod_cidr }}"
 
                     lifecycle:
                       postStart:
@@ -431,10 +449,10 @@
                       httpGet:
                         path: /users/login
                         port: 80
-                      initialDelaySeconds: 600
+                      initialDelaySeconds: 120
                       periodSeconds: 20
                       timeoutSeconds: 2
-                      failureThreshold: 3
+                      failureThreshold: 10
 
 - name: Delete baseurl job if exists (so it reruns)
   kubernetes.core.k8s:
@@ -516,7 +534,7 @@
     "set -e;
     cd /var/www/MISP;
     mkdir -p app/tmp/cache/persistent app/tmp/cache/models app/tmp/cache/views app/tmp/sessions app/tmp/logs;
-    chmod -R 0777 app/tmp || true;
+    chmod -R 0770 app/tmp || true;
     chown -R 33:33 app/tmp || true;
     run() { su -s /bin/sh www-data -c \"$1\" 2>/dev/null || sh -lc \"$1\"; };
     run './app/Console/cake User init' || run './app/Console/cake userInit -q' || true;
@@ -554,6 +572,7 @@
 
           # Client -> Ingress : HTTPS only
           nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          nginx.ingress.kubernetes.io/ssl-min-tls-version: "TLSv1.2"
 
           # Ingress -> Backend : HTTPS (sinon boucle 301)
           nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"

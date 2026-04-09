@@ -2,27 +2,8 @@
 # vault/tasks/configure_auth.yml — Configuration Kubernetes auth + AppRole
 
 # --- Token root ---
-- name: Vault auth | Lire le root token depuis le K8s Secret
-  kubernetes.core.k8s_info:
-    kubeconfig: "{{ vault_kubeconfig_path }}"
-    kind: Secret
-    namespace: "{{ vault_unseal_keys_secret_namespace }}"
-    name: "{{ vault_unseal_keys_secret_name }}"
-  register: _vault_keys_secret_auth
-  no_log: true
-
-- name: Vault auth | Extraire le root token
-  ansible.builtin.set_fact:
-    _vault_root_token: "{{ _vault_keys_secret_auth.resources[0].data.root_token | b64decode }}"
-  no_log: true
-
-# Préfixe pour toutes les commandes vault dans le pod (transmet VAULT_TOKEN via env)
-- name: Vault auth | Définir le préfixe kubectl exec
-  ansible.builtin.set_fact:
-    _vault_exec: >-
-      kubectl exec -n {{ vault_namespace }} vault-0 --
-      env VAULT_TOKEN={{ _vault_root_token }}
-  no_log: true
+- name: Vault auth | Résoudre le root token
+  ansible.builtin.include_tasks: _resolve_vault_token.yml
 
 # --- Kubernetes auth ---
 - name: Vault auth | Activer le Kubernetes auth si absent

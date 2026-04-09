@@ -10,7 +10,7 @@
 #   - Loki + Promtail (agrégation logs)
 #   - Blackbox Exporter (probes HTTP SOC)
 #   - Datasources Grafana (Loki, Wazuh OpenSearch)
-#   - Dashboards SSI (8 dashboards)
+#   - Dashboards SSI (4 dashboards : infra-kubernetes, ssi-alerts, ssi-cases, ssi-overview)
 #   - PrometheusRules (alertes infra + services SOC)
 #
 # Usage :
@@ -39,6 +39,15 @@
       when:
         - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
         - grafana_admin_password is defined
+      no_log: true
+      tags: always
+
+    - name: Monitoring | Appliquer le mot de passe OpenSearch Wazuh résolu
+      ansible.builtin.set_fact:
+        monitoring_wazuh_opensearch_password: "{{ wazuh_dashboard_password }}"
+      when:
+        - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+        - wazuh_dashboard_password is defined
       no_log: true
       tags: always
   roles:

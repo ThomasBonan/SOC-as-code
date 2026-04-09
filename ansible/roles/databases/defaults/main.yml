@@ -1,4 +1,3 @@
-kubeconfig_path: "/home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf"
 helm_binary_path: "helm"
 
 soc_core_namespace: "soc-core"
@@ -18,7 +17,6 @@ mariadb_chart_ref: "bitnami/mariadb"
 # Versions (pin = bonne pratique)
 postgres_chart_version: "15.5.38"
 mariadb_chart_version: "24.0.3"
-bitnami_postgresql_chart_version: "15.5.38"
 
 
 k8s_ansible_venv: /opt/ansible-k8s-venv

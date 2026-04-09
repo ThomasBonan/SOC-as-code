@@ -147,7 +147,7 @@
   kubernetes.core.helm:
     name: thehive-postgresql
     chart_ref: bitnami/postgresql
-    chart_version: "{{ bitnami_postgresql_chart_version }}"
+    chart_version: "{{ postgres_chart_version }}"
     release_namespace: "{{ soc_core_namespace }}"
     create_namespace: true
     kubeconfig: "{{ kubeconfig_path }}"

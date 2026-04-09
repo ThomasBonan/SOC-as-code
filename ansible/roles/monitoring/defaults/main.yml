@@ -49,7 +49,7 @@ monitoring_grafana_clusterissuer: "{{ cert_manager_clusterissuer_name }}"
 # ============================================================
 monitoring_wazuh_opensearch_url: "https://wazuh-core-indexer-rest.{{ soc_namespaces.wazuh }}.svc:9200"
 monitoring_wazuh_opensearch_user: "admin"
-monitoring_wazuh_opensearch_password: "SecretPassword"  # Surchargeable via Vault
+monitoring_wazuh_opensearch_password: ""  # Résolu depuis Vault (soc/credentials/wazuh-credentials → dashboard_password)
 
 # ============================================================
 # Blackbox probes (6 cibles SOC)

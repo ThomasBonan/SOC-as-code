@@ -2,14 +2,13 @@
 cortex_namespace: "soc-cortex"
 
 helm_binary_path: "helm"
-kubeconfig_path: "/home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf"
 
 strangebee_repo_name: strangebee
 strangebee_repo_url: https://strangebeecorp.github.io/helm-charts
 
 cortex_release_name: cortex
 cortex_chart_ref: strangebee/cortex
-cortex_chart_version: ""   # optionnel, laisse vide pour latest
+cortex_chart_version: "1.1.1"
 
 # FQDN si tu veux un ingress ensuite (optionnel)
 cortex_fqdn: cortex.apps.soc.lab

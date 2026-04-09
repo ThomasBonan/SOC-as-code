@@ -1,5 +1,5 @@
 ---
-# 165-shuffle.yml
+# 185-shuffle.yml
 # Shuffle SOAR — Orchestrateur central du pipeline SOC.
 # Remplace les CronJobs Python de 160 et 180 par une architecture event-driven
 # (webhooks Wazuh en temps réel → workflows visuels → apps natives TheHive/Cortex/MISP).
@@ -13,19 +13,19 @@
 #
 # Prérequis : 170-soc-foundations.yml et 180-soc-automation.yml doivent être exécutés avant.
 # La chaîne d'exécution recommandée :
-#   170 → 165 → 180 → 190 → 200 → 210
+#   170 → 180 → 185 → 180 (re-run pour webhook Wazuh) → 190 → 200 → 210
 #
 # Override d'environnement via variable SOC_ENV (dev/staging/prod) :
-#   SOC_ENV=prod ansible-playbook 165-shuffle.yml -e @envs/prod.yml
+#   SOC_ENV=prod ansible-playbook 185-shuffle.yml -e @envs/prod.yml
 #
 # Exemples d'utilisation :
-#   ansible-playbook 165-shuffle.yml                       # run complet
-#   ansible-playbook 165-shuffle.yml --tags bootstrap      # preflight seul
-#   ansible-playbook 165-shuffle.yml --tags deploy         # Helm install seul
-#   ansible-playbook 165-shuffle.yml --tags configure      # config apps seul
-#   ansible-playbook 165-shuffle.yml --tags workflows      # import workflows seul
+#   ansible-playbook 185-shuffle.yml                       # run complet
+#   ansible-playbook 185-shuffle.yml --tags bootstrap      # preflight seul
+#   ansible-playbook 185-shuffle.yml --tags deploy         # Helm install seul
+#   ansible-playbook 185-shuffle.yml --tags configure      # config apps seul
+#   ansible-playbook 185-shuffle.yml --tags workflows      # import workflows seul
 
-- name: 165 | Shuffle SOAR — Orchestration engine
+- name: 185 | Shuffle SOAR — Orchestration engine
   hosts: localhost
   gather_facts: false
   vars:

@@ -13,18 +13,24 @@
 
 - name: Ensure namespace exists
   kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
       metadata:
         name: "{{ thehive_namespace }}"
+        labels:
+          # PSS warn mode — signale les violations sans bloquer (enforce serait trop risqué en lab)
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/audit: restricted
 
 # -------------------------
 # Secrets (create-once)
 # -------------------------
 - name: Check TheHive secret exists
   kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
     api_version: v1
     kind: Secret
     name: "{{ thehive_secret_name }}"
@@ -33,6 +39,7 @@
 
 - name: Create TheHive secret (create-once)
   kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     definition:
       api_version: v1
@@ -50,6 +57,7 @@
 
 - name: Read TheHive secret values
   kubernetes.core.k8s_info:
+    kubeconfig: "{{ kubeconfig_path }}"
     api_version: v1
     kind: Secret
     name: "{{ thehive_secret_name }}"
@@ -82,23 +90,32 @@
 # -------------------------
 # Deploy via Helm
 # -------------------------
-- name: Deploy TheHive via Helm (StrangeBee)
-  kubernetes.core.helm:
-    binary_path: "{{ helm_bin }}"
-    name: "{{ thehive_release_name }}"
-    chart_ref: "{{ thehive_helm_chart }}"
-    release_namespace: "{{ thehive_namespace }}"
-    create_namespace: false
-    values_files:
-      - /tmp/thehive.values.rendered.yml
-    wait: true
-    timeout: 3600s
-    state: present
+- name: Deploy and cleanup TheHive rendered values
+  block:
+    - name: Deploy TheHive via Helm (StrangeBee)
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        binary_path: "{{ helm_bin }}"
+        name: "{{ thehive_release_name }}"
+        chart_ref: "{{ thehive_helm_chart }}"
+        release_namespace: "{{ thehive_namespace }}"
+        create_namespace: false
+        values_files:
+          - /tmp/thehive.values.rendered.yml
+        wait: true
+        timeout: 3600s
+        state: present
+  always:
+    - name: Cleanup TheHive rendered values
+      ansible.builtin.file:
+        path: /tmp/thehive.values.rendered.yml
+        state: absent
 
 # -------------------------
 # Ingress
 # -------------------------
 - name: Apply TheHive ingress
   kubernetes.core.k8s:
+    kubeconfig: "{{ kubeconfig_path }}"
     state: present
     template: ingress.thehive.yml.j2

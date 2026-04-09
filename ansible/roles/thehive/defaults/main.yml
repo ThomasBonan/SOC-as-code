@@ -3,7 +3,7 @@ thehive_namespace: soc-thehive
 thehive_release_name: thehive
 
 # Helm
-helm_bin: /usr/local/bin/helm
+helm_bin: "helm"
 thehive_helm_repo_name: strangebee
 thehive_helm_repo_url: https://strangebeecorp.github.io/helm-charts
 thehive_helm_chart: strangebee/thehive
@@ -12,7 +12,7 @@ thehive_helm_chart: strangebee/thehive
 thehive_fqdn: thehive.apps.soc.lab
 thehive_ingress_class: nginx
 thehive_tls_secret: thehive-tls
-thehive_cluster_issuer: letsencrypt
+thehive_cluster_issuer: "{{ cert_manager_clusterissuer_name }}"
 
 # Storage (POC)
 thehive_storage_class: ""   # "" => default storageClass

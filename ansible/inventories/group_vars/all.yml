@@ -78,7 +78,7 @@ ingress_class: "nginx"
 
 # --- Longhorn (storage CNI) ---
 longhorn_namespace: longhorn-system
-longhorn_chart_version: ""   # optionnel (sinon latest)
+longhorn_chart_version: "1.11.1"
 longhorn_release: longhorn
 longhorn_set_default_sc: true
 
@@ -139,9 +139,18 @@ soc_http:
 # SOC Foundations - variables globales (rôle soc_foundations)
 # ============================================================
 
-# Environnement courant (dev / staging / prod)
+# Environnement courant — valeurs valides : dev | staging | prod
+# IMPACT SÉCURITÉ : cette variable contrôle plusieurs comportements critiques :
+#   - prod  : soc_validate_tls doit être true, réseau strict, pas de debug
+#   - staging : tests d'intégration, TLS optionnel
+#   - dev   : lab local, TLS désactivé, restrictions relâchées
 # Peut être surchargé via la variable d'env SOC_ENV dans le pipeline CI/CD
 soc_environment: "dev"
+
+# Validation TLS pour les appels HTTP Ansible (uri, get_url, etc.)
+# IMPORTANT : passer à true en production pour valider les certificats TLS.
+# En dev/staging : false est acceptable si un CA interne auto-signé est utilisé.
+soc_validate_tls: false
 
 # Backend de secrets actuel (pour traçabilité et migration future)
 # Valeurs : kubernetes-secrets | vault | eso (External Secrets Operator)
@@ -186,44 +195,10 @@ soc_service_accounts:
     role_id: 1              # wazuh-readonly built-in role (id=1)
 
 # ============================================================
-# SOC Risk Engine — variables globales (rôle soc_risk_engine)
-# Playbook 190 | Source-of-truth pour les poids et seuils.
-# Surchargeable via -e ou envs/prod.yml (SOC_ENV=prod).
+# SOC Risk Engine — surcharges site-specific (rôle soc_risk_engine)
+# Les valeurs par défaut (poids, seuils, asset_weights) sont dans
+# roles/soc_risk_engine/defaults/main.yml
 # ============================================================
-
-# Poids non-normalisés pour le scoring 5-dimensions.
-# La normalisation est faite au runtime : score = sum(dim * w) / sum(w)
-# Augmenter misp/cortex pour pencher vers threat intel.
-# Augmenter wazuh pour un SOC orienté SIEM pur.
-soc_risk_weights:
-  wazuh:     2   # Sévérité Wazuh (1-4) — poids modéré
-  cortex:    3   # Score analyzers Cortex (0-3) — poids fort
-  misp:      4   # Hit MISP IOC (binaire) — poids le plus fort
-  asset:     2   # Criticité asset (1-5) — poids modéré
-  frequency: 1   # Fréquence alertes similaires — poids faible
-
-# Seuils de décision (échelle 0-100).
-# Évaluation top-down, premier match gagne.
-#   >= escalate     → Critical + priority:critical
-#   >= auto_contain → Wazuh AR firewall-drop
-#   >= auto_promote → High severity
-#   <  auto_close   → Résolution FalsePositive
-#   sinon           → reviewed (aucune action automatique)
-soc_risk_thresholds:
-  auto_close:   15
-  auto_promote: 50
-  auto_contain: 75
-  escalate:     90
-
-# Mapping criticité asset (valeur du tag asset:<type> sur les cases TheHive).
-# Poids 1-5 : 1=lab (le moins critique), 5=serveur de production.
-# Ajouter d'autres types selon l'inventaire de l'organisation.
-soc_risk_asset_weights:
-  server-prod:     5
-  server-internal: 3
-  workstation:     2
-  lab:             1
-  default:         1   # Fallback si aucun tag asset: trouvé
 
 # ============================================================
 # SOC Compliance — variables globales (rôle soc_compliance)
@@ -246,30 +221,12 @@ soc_compliance_fail_on_drift: true
 soc_compliance_generate_artifact: true
 
 # ============================================================
-# Monitoring — variables globales (rôle monitoring)
-# Playbook 76 | Prometheus + Grafana + Loki + Blackbox Exporter
+# Monitoring — surcharges site-specific (rôle monitoring)
+# Les valeurs par défaut sont dans roles/monitoring/defaults/main.yml
 # ============================================================
 
-monitoring_namespace: "soc-monitoring"
-
-# Chart versions (épinglez en production)
-monitoring_prometheus_chart_version: "65.1.0"   # kube-prometheus-stack
-monitoring_loki_chart_version: "2.10.2"          # loki-stack
-monitoring_blackbox_chart_version: "9.0.1"       # blackbox-exporter
-
-# Stockage Longhorn
-monitoring_prometheus_storage_size: "50Gi"
-monitoring_prometheus_retention: "15d"
-monitoring_loki_storage_size: "20Gi"
-monitoring_grafana_storage_size: "5Gi"
-
-# Grafana
-monitoring_grafana_admin_user: "admin"
+# Grafana FQDN dépend du domaine apps — override explicite
 monitoring_grafana_ingress_host: "grafana.{{ apps_domain }}"
-
-# Scrape & évaluation
-monitoring_scrape_interval: "30s"
-monitoring_evaluation_interval: "30s"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SOC Self-Test (210) — Continuous E2E pipeline validation

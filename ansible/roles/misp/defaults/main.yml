@@ -2,8 +2,7 @@
 # Namespace
 soc_core_namespace: soc-core
 
-# Kubeconfig & Helm
-kubeconfig_path: "/etc/kubernetes/admin.conf"
+# Helm
 helm_binary_path: "helm"
 
 # Ingress
@@ -54,4 +53,4 @@ redis_chart_version: "20.6.2"
 
 misp_redis_image_registry: "docker.io"
 misp_redis_image_repository: "bitnami/redis"
-misp_redis_image_tag: "latest"   # ton values.yml peut override via digest/tag
+misp_redis_image_tag: "8.6.2"

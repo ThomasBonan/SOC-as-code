@@ -6,9 +6,9 @@ metadata:
   name: grafana
   namespace: "{{ monitoring_namespace }}"
   annotations:
-    kubernetes.io/ingress.class: "{{ ingress_class }}"
     cert-manager.io/cluster-issuer: "{{ monitoring_grafana_clusterissuer }}"
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-min-tls-version: "TLSv1.2"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
 spec:

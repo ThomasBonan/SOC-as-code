@@ -137,8 +137,25 @@
     grafana_admin_password: "{{ _vfb_grafana_pass.stdout }}"
   no_log: true
 
+# --- Wazuh OpenSearch dashboard password ---
+- name: Vault fetch | Lire wazuh_dashboard_password depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=dashboard_password
+    {{ _vfb_kv_mount }}/credentials/wazuh-credentials
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_wazuh_dashboard_pass
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_wazuh_dashboard_pass.rc != 0
+
+- name: Vault fetch | Définir wazuh_dashboard_password comme fact
+  ansible.builtin.set_fact:
+    wazuh_dashboard_password: "{{ _vfb_wazuh_dashboard_pass.stdout }}"
+  no_log: true
+
 - name: Vault fetch | Bootstrap passwords chargés depuis Vault
   ansible.builtin.debug:
     msg: >-
-      Bootstrap passwords résolus depuis Vault KV
-      ({{ _vfb_kv_mount }}/bootstrap/) pour TheHive, Cortex, Shuffle et Grafana.
+      Bootstrap passwords résolus depuis Vault KV pour TheHive, Cortex,
+      Shuffle, Grafana et Wazuh.

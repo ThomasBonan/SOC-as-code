@@ -22,6 +22,10 @@
       kind: Namespace
       metadata:
         name: "{{ cortex_namespace }}"
+        labels:
+          # PSS warn mode — signale les violations sans bloquer (enforce serait trop risqué en lab)
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/audit: restricted
   delegate_to: localhost
   run_once: true
 
@@ -95,23 +99,32 @@
   run_once: true
   changed_when: false
 
-- name: Deploy Cortex via Helm (StrangeBee)
-  kubernetes.core.helm:
-    name: "{{ cortex_release_name }}"
-    chart_ref: "{{ cortex_chart_ref }}"
-    chart_version: "{{ cortex_chart_version | default(omit) }}"
-    release_namespace: "{{ cortex_namespace }}"
-    create_namespace: false
-    kubeconfig: "{{ kubeconfig_path }}"
-    values_files:
-      - "/tmp/cortex.values.rendered.yml"
-    wait: true
-    atomic: false
-    timeout: "60m0s"
-    update_repo_cache: true
-    binary_path: "{{ helm_binary_path }}"
-  delegate_to: localhost
-  run_once: true
+- name: Deploy and cleanup Cortex rendered values
+  block:
+    - name: Deploy Cortex via Helm (StrangeBee)
+      kubernetes.core.helm:
+        name: "{{ cortex_release_name }}"
+        chart_ref: "{{ cortex_chart_ref }}"
+        chart_version: "{{ cortex_chart_version | default(omit) }}"
+        release_namespace: "{{ cortex_namespace }}"
+        create_namespace: false
+        kubeconfig: "{{ kubeconfig_path }}"
+        values_files:
+          - "/tmp/cortex.values.rendered.yml"
+        wait: true
+        atomic: false
+        timeout: "60m0s"
+        update_repo_cache: true
+        binary_path: "{{ helm_binary_path }}"
+      delegate_to: localhost
+      run_once: true
+  always:
+    - name: Cleanup Cortex rendered values
+      ansible.builtin.file:
+        path: /tmp/cortex.values.rendered.yml
+        state: absent
+      delegate_to: localhost
+      run_once: true
 
 # ------------------------------------------------------------
 # Wait / health
@@ -136,9 +149,15 @@
         name: "{{ cortex_release_name }}"
         namespace: "{{ cortex_namespace }}"
         annotations:
-          kubernetes.io/ingress.class: nginx
+          cert-manager.io/cluster-issuer: "{{ cert_manager_clusterissuer_name }}"
           nginx.ingress.kubernetes.io/ssl-redirect: "true"
+          nginx.ingress.kubernetes.io/ssl-min-tls-version: "TLSv1.2"
       spec:
+        ingressClassName: "{{ ingress_class }}"
+        tls:
+          - hosts:
+              - "{{ cortex_fqdn }}"
+            secretName: "cortex-tls"
         rules:
           - host: "{{ cortex_fqdn }}"
             http:
