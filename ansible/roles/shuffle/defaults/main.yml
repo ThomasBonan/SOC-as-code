@@ -28,11 +28,22 @@ shuffle_helm_repo_version:    "main"
 shuffle_helm_repo_local_path: "/tmp/shuffle-helm-repo"
 shuffle_helm_chart_ref:       "{{ shuffle_helm_repo_local_path }}/functions/kubernetes/charts/shuffle"
 shuffle_helm_chart_version:   ""   # empty = use Chart.yaml version; pin in prod
+
+# ── Image versions (pinned for reproducibility) ───────────────────
+# Pin to a known-good release to avoid supply-chain risks from :latest.
+# Update after validating the new release in staging.
+shuffle_image_tag: "1.4.0"
+
+# ── Network policy settings ───────────────────────────────────────
+# Autoriser l'egress vers Internet (VirusTotal, AbuseIPDB, Shodan via Cortex).
+# SÉCURITÉ : passer à false en production si une FQDN policy Cilium est disponible
+# pour restreindre les destinations autorisées au lieu d'ouvrir 0.0.0.0/0.
+shuffle_egress_internet_enabled: true
 shuffle_helm_wait_timeout:    "600s"  # OpenSearch JVM + image pull can take 5-8 min
 
 # ── Runtime settings ──────────────────────────────────────────────
 shuffle_kubeconfig_path:  "{{ kubeconfig_path }}"
-shuffle_validate_certs:   false
+shuffle_validate_certs:   "{{ soc_validate_tls | default(false) }}"
 shuffle_http_timeout:     "{{ soc_http.timeout | default(10) }}"
 shuffle_http_retries:     "{{ soc_http.retries | default(20) }}"
 shuffle_http_delay:       "{{ soc_http.delay   | default(3)  }}"

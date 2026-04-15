@@ -45,6 +45,9 @@
         labels:
           kubernetes.io/metadata.name: "{{ monitoring_namespace }}"
           app.kubernetes.io/managed-by: ansible
+          # PSS warn mode — signale les violations sans bloquer (enforce serait trop risqué en lab)
+          pod-security.kubernetes.io/warn: restricted
+          pod-security.kubernetes.io/audit: restricted
 
 - name: Monitoring | Preflight — valider que le mot de passe Grafana est résolu
   ansible.builtin.assert:

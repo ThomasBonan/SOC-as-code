@@ -1,4 +1,11 @@
 ---
+- name: soc_config | Preflight — assert Vault bootstrap credentials are populated
+  ansible.builtin.assert:
+    that:
+      - thehive_bootstrap_password | length > 0
+    fail_msg: "thehive_bootstrap_password is empty — check Vault fetch_bootstrap_vars.yml"
+  when: soc_vault_backend == 'vault'
+
 # --- THEHIVE secret (create-once) ---
 - name: Check TheHive integration secret exists
   kubernetes.core.k8s_info:

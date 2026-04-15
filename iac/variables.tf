@@ -1,6 +1,12 @@
 ############################################
 # Auth Proxmox (passées via TF_VAR_… ou env)
 ############################################
+variable "pm_tls_insecure" {
+  type        = bool
+  description = "Désactiver la vérification TLS du certificat Proxmox (true uniquement pour les labs avec certificat auto-signé)"
+  default     = false
+}
+
 variable "pm_api_url" {
   type        = string
   description = "URL API Proxmox (ex: https://<ip>:8006/api2/json)"

@@ -73,7 +73,7 @@ soc_selftest_alert_source: "soc-selftest"
 
 # ── Runtime settings ──────────────────────────────────────────────
 soc_selftest_kubeconfig_path: "{{ kubeconfig_path }}"
-soc_selftest_validate_certs:  false
+soc_selftest_validate_certs:  "{{ soc_validate_tls | default(false) }}"
 soc_selftest_http_timeout:    "{{ soc_http.timeout | default(10) }}"
 
 # ── Write SA for injection, verify and cleanup (created by 170-soc-foundations) ──

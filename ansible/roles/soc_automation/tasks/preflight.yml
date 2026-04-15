@@ -17,6 +17,15 @@
 #   _sa_wazuh_user    — Wazuh SA username
 #   _sa_wazuh_pass    — Wazuh SA password
 
+# ── Bootstrap credentials assertion ──────────────────────────────
+
+- name: "soc_automation | Preflight — assert Vault bootstrap credentials are populated"
+  ansible.builtin.assert:
+    that:
+      - thehive_bootstrap_password | length > 0
+    fail_msg: "thehive_bootstrap_password is empty — check Vault fetch_bootstrap_vars.yml"
+  when: soc_vault_backend == 'vault'
+
 # ── Read K8s Secrets ──────────────────────────────────────────────
 
 - name: "preflight | Read TheHive SA secret"

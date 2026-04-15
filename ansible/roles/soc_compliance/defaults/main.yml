@@ -25,7 +25,7 @@ soc_compliance_generate_artifact: true   # write JSON report to artifacts/
 
 # ── Runtime settings ──────────────────────────────────────────────
 soc_compliance_kubeconfig_path:   "{{ kubeconfig_path }}"
-soc_compliance_validate_certs:    false
+soc_compliance_validate_certs:    "{{ soc_validate_tls | default(false) }}"
 soc_compliance_http_timeout:      "{{ soc_http.timeout | default(10) }}"
 soc_compliance_http_retries:      3
 soc_compliance_http_delay:        5

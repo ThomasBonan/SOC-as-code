@@ -6,6 +6,7 @@ metadata:
   labels: {{ shuffle_labels | to_json }}
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-min-tls-version: "TLSv1.2"
     cert-manager.io/cluster-issuer: "{{ shuffle_cluster_issuer }}"
 spec:
   ingressClassName: {{ shuffle_ingress_class }}

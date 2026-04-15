@@ -25,7 +25,7 @@ soc_automation_kubeconfig_path: "{{ kubeconfig_path }}"
 soc_automation_http_timeout:    "{{ soc_http.timeout | default(10) }}"
 soc_automation_http_retries:    "{{ soc_http.retries | default(20) }}"
 soc_automation_http_delay:      "{{ soc_http.delay   | default(3)  }}"
-soc_automation_validate_certs:  false
+soc_automation_validate_certs:  "{{ soc_validate_tls | default(false) }}"
 # Preflight probes use a short retry count — services must already be running
 soc_automation_preflight_retries: 3
 soc_automation_preflight_delay:   5
@@ -60,6 +60,12 @@ soc_automation_wazuh_sa_key_pass:      "password"
 # ── TheHive bootstrap credentials (for org-admin operations) ─────
 # Required to create custom fields — the analyst SA profile returns 403 (not org-admin).
 # Reuses the same variables as soc_foundations (170): thehive_bootstrap_user / thehive_bootstrap_password.
+# IMPORTANT: thehive_bootstrap_password MUST be populated via Vault (path: soc/bootstrap/thehive).
+# It is fetched by fetch_bootstrap_vars.yml before this role runs.
+# An empty value will cause preflight assertions to fail — this is intentional.
+# NOTE: default('') is intentional — empty value triggers preflight assert (line 22-27).
+# Value MUST be injected by fetch_bootstrap_vars.yml via Vault before this role runs.
+# A missing value will cause an early-fail assertion, not a silent empty-credential run.
 soc_automation_thehive_bootstrap_user:     "{{ thehive_bootstrap_user     | default('admin@thehive.local') }}"
 soc_automation_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('') }}"
 

@@ -5,6 +5,7 @@ metadata:
   namespace: {{ thehive_namespace }}
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-min-tls-version: "TLSv1.2"
     cert-manager.io/cluster-issuer: "{{ thehive_cluster_issuer }}"
 spec:
   ingressClassName: {{ thehive_ingress_class }}

@@ -7,12 +7,8 @@
   ansible.builtin.include_tasks: _create_dashboard_configmap.yml
   loop:
     - "{{ role_path }}/files/dashboards/infra-kubernetes.json"
-    - "{{ role_path }}/files/dashboards/infra-databases.json"
-    - "{{ role_path }}/files/dashboards/infra-network.json"
     - "{{ role_path }}/files/dashboards/ssi-overview.json"
     - "{{ role_path }}/files/dashboards/ssi-alerts.json"
     - "{{ role_path }}/files/dashboards/ssi-cases.json"
-    - "{{ role_path }}/files/dashboards/ssi-risk.json"
-    - "{{ role_path }}/files/dashboards/ssi-pipeline.json"
   loop_control:
     loop_var: _dashboard_path

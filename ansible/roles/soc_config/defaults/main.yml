@@ -37,10 +37,14 @@ soc_config_thehive_api_key: "{{ thehive_api_key | default('') }}"
 soc_config_thehive_username: "{{ thehive_api_user | default('') }}"
 soc_config_thehive_password: "{{ thehive_api_password | default('') }}"
 soc_config_thehive_organisation: "{{ thehive_api_organisation | default('') }}"
-soc_config_thehive_validate_certs: false
+soc_config_thehive_validate_certs: "{{ soc_validate_tls | default(false) }}"
 soc_config_thehive_api_key_auto_bootstrap: true
 soc_config_thehive_api_key_secret_name: "thehive-api-auth"
 soc_config_thehive_api_key_secret_key: "api_key"
+# IMPORTANT: thehive_bootstrap_password MUST be populated via Vault (path: soc/bootstrap/thehive).
+# It is fetched by fetch_bootstrap_vars.yml before this role runs.
+# default('') is intentional — an empty value triggers the assert in main.yml (line 2-7).
+# An empty value at runtime means Vault fetch failed — check ESO/Vault integration.
 soc_config_thehive_bootstrap_user: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
 soc_config_thehive_bootstrap_password: "{{ thehive_bootstrap_password | default('') }}"
 
@@ -108,6 +112,7 @@ soc_config_wazuh_config_path: "{{ soc_config_wazuh_integration_dir }}/{{ soc_con
 soc_config_wazuh_api_key_path: "{{ soc_config_wazuh_integration_dir }}/{{ soc_config_wazuh_api_key_filename }}"
 
 soc_config_wazuh_thehive_alert_endpoint: "{{ soc_endpoints.thehive.api_base }}/v1/alert"
+# default('') triggers multi-level key resolution in wazuh_to_thehive.yml (SA secret → assert).
 soc_config_wazuh_thehive_api_key: "{{ thehive_alert_api_key | default('') }}"
 soc_config_wazuh_thehive_verify_tls: false
 soc_config_wazuh_thehive_alert_source: "wazuh"

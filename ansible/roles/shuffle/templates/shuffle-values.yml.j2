@@ -14,7 +14,7 @@ backend:
   replicaCount: 1
   image:
     repository: ghcr.io/shuffle/shuffle-backend
-    tag: "latest"
+    tag: "1.4.0"
     pullPolicy: IfNotPresent
   containerPorts:
     http: {{ shuffle_backend_port }}
@@ -26,7 +26,10 @@ backend:
     - name: SHUFFLE_DEFAULT_USERNAME
       value: "{{ shuffle_admin_username }}"
     - name: SHUFFLE_DEFAULT_PASSWORD
-      value: "{{ shuffle_admin_password }}"
+      valueFrom:
+        secretKeyRef:
+          name: soc-shuffle-admin-creds
+          key: password
   resourcesPreset: "small"
   resources:
     requests:
@@ -41,7 +44,7 @@ frontend:
   replicaCount: 1
   image:
     repository: ghcr.io/shuffle/shuffle-frontend
-    tag: "latest"
+    tag: "1.4.0"
     pullPolicy: IfNotPresent
   containerPorts:
     http: 80
@@ -63,7 +66,7 @@ orborus:
   replicaCount: 1
   image:
     repository: ghcr.io/shuffle/shuffle-orborus
-    tag: "latest"
+    tag: "1.4.0"
     pullPolicy: IfNotPresent
   executionConcurrency: 5
   manageWorkerDeployments: true
@@ -89,7 +92,7 @@ worker:
   enableHelmDeployment: false
   image:
     repository: ghcr.io/shuffle/shuffle-worker
-    tag: "latest"
+    tag: "1.4.0"
     pullPolicy: IfNotPresent
   containerPorts:
     http: 33333
@@ -110,7 +113,7 @@ app:
   image:
     registry: docker.io
     repository: frikky
-    tag: "latest"
+    tag: "1.4.0"
   containerSecurityContext:
     runAsUser: 0
     runAsNonRoot: false

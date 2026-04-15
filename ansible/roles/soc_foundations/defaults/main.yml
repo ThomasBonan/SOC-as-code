@@ -11,7 +11,7 @@ soc_foundations_kubeconfig_path: "{{ kubeconfig_path }}"
 soc_foundations_http_timeout: "{{ soc_http.timeout | default(10) }}"
 soc_foundations_http_retries: "{{ soc_http.retries | default(20) }}"
 soc_foundations_http_delay: "{{ soc_http.delay | default(3) }}"
-soc_foundations_validate_certs: false
+soc_foundations_validate_certs: "{{ soc_validate_tls | default(false) }}"
 
 # --- Feature toggles ---
 soc_foundations_enable_preflight: true

@@ -20,7 +20,12 @@
         _sh_ns_labels: >-
           {{ shuffle_labels | combine({
             'pod-security.kubernetes.io/enforce': 'privileged',
-            'pod-security.kubernetes.io/warn': 'privileged'
+            # NOTE SÉCURITÉ (C-02) : enforce:privileged est maintenu car Shuffle tourne en root (runAsUser: 0).
+            # Les app pods (http, tools, subflow, ai) bindent le port 80 ce qui requiert root ou CAP_NET_BIND_SERVICE.
+            # Compromis documenté et accepté pour ce lab. En production, revoir l'architecture Shuffle ou utiliser
+            # un port non-privilégié (> 1024) avec CAP_NET_BIND_SERVICE pour descendre à baseline.
+            # warn:restricted donne la visibilité sur les violations sans casser le déploiement.
+            'pod-security.kubernetes.io/warn': 'restricted'
           }) }}
       kubernetes.core.k8s:
         kubeconfig: "{{ shuffle_kubeconfig_path }}"
@@ -126,8 +131,12 @@
       metadata:
         name: "{{ shuffle_namespace }}"
         labels:
+          # NOTE SÉCURITÉ (C-02) : enforce:privileged est maintenu car Shuffle tourne en root (runAsUser: 0).
+          # Les app pods (http, tools, subflow, ai) bindent le port 80 ce qui requiert root.
+          # Compromis documenté et accepté pour ce lab. En production, revoir l'architecture Shuffle.
           pod-security.kubernetes.io/enforce: privileged
-          pod-security.kubernetes.io/warn: privileged
+          # warn:restricted donne la visibilité sur les violations PSS sans casser le déploiement.
+          pod-security.kubernetes.io/warn: restricted
 
 - name: "shuffle | Deploy - create pod-reader Role for shuffle-backend"
   kubernetes.core.k8s:

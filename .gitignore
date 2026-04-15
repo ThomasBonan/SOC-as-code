@@ -1,6 +1,43 @@
+# Secrets & credentials
+.secrets/
+*.pass
+*.key
+*.pem
+*.p12
+vault-unseal-keys
+vault-root-token
 .env
+.env.*
+!.env.example
 .envrc
+
+# Kubernetes artifacts
+ansible/playbooks/artifacts/
+admin.conf
+kubeconfig
+*.kubeconfig
+
+# Terraform / OpenTofu
+*.tfstate
+*.tfstate.backup
 **/.terraform/
-/terraform.tfstate
-**/.retry
-/ansible/playbooks/artifacts/admin.conf
+*.tfvars
+!*.tfvars.example
+
+# Ansible
+*.retry
+ansible/.vault_pass
+
+# OS
+.DS_Store
+*.swp
+
+# Claude
+.claude/CLAUDE.local.md
+.claude/settings.local.json
+.claude
+
+# Déjà présents mais à vérifier
+ansible/.secrets/
+ansible/playbooks/artifacts/admin.conf
+.env

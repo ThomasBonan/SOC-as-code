@@ -2,8 +2,8 @@
   "schema_version": "1.0",
   "playbook": "210-soc-selftest",
   "environment": "dev",
-  "run_id": "20260404121645",
-  "timestamp": "2026-04-04T12:17:05.980413",
+  "run_id": "20260408181952",
+  "timestamp": "2026-04-08T18:20:25.051709",
   "safe_mode": true,
   "inject_via_wazuh": true,
   "global_status": "healthy",
@@ -27,20 +27,20 @@
     }
   },
   "latency_seconds": {
-    "inject_to_thehive": 8,
-    "thehive_to_cortex": 8,
+    "inject_to_thehive": 9,
+    "thehive_to_cortex": 14,
     "cortex_to_risk":    1,
-    "total":             17
+    "total":             24
   },
   "artifacts": {
-    "alert_id": "~270368",
-    "case_id":  "~41574640",
+    "alert_id": "~8288",
+    "case_id":  "~16544",
     "misp_event_id": ""
   },
   "test_ioc": {
     "ip":  "203.0.113.250",
     "rfc": "RFC 5737 TEST-NET-3 (non-routable, safe for lab use)",
-    "tags": ["soc-selftest", "run:20260404121645"]
+    "tags": ["soc-selftest", "run:20260408181952"]
   },
   "meta": {
     "kubeconfig":         "admin.conf",

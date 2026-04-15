@@ -31,7 +31,7 @@ soc_risk_engine_kubeconfig_path: "{{ kubeconfig_path }}"
 soc_risk_engine_http_timeout:    "{{ soc_http.timeout | default(10) }}"
 soc_risk_engine_http_retries:    "{{ soc_http.retries | default(20) }}"
 soc_risk_engine_http_delay:      "{{ soc_http.delay   | default(3)  }}"
-soc_risk_engine_validate_certs:  false
+soc_risk_engine_validate_certs:  "{{ soc_validate_tls | default(false) }}"
 # Preflight probes use a short retry count — services must already be running
 soc_risk_engine_preflight_retries: 3
 soc_risk_engine_preflight_delay:   5

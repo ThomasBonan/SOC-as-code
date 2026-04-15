@@ -1,6 +1,6 @@
 ---
 # Access
-kubeconfig_path: "/home/mgmt-user/SOC-as-code/ansible/playbooks/artifacts/admin.conf"
+kubeconfig_path: "{{ kubeconfig_path }}"
 helm_binary_path: "helm"
 
 # Namespace
@@ -29,7 +29,7 @@ wazuh_app_id: "core"
 # Storage (Longhorn)
 storage_class_name: "longhorn"
 indexer_storage_size: "20Gi"     # lab: 20Gi OK (tu peux monter à 50Gi)
-manager_master_storage_size: "20Gi"
+manager_master_storage_size: "40Gi"
 
 # Replicas (lab)
 indexer_replicas: 1
