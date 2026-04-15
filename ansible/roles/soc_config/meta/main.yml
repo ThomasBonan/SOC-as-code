@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: soc_config
+  author: soc-admin
+  description: "Configure les intégrations Day-2 : TheHive↔Cortex, Cortex↔MISP, Wazuh↔TheHive"
+  company: SOC-as-code
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "22.04"
+        - "24.04"
+  galaxy_tags:
+    - kubernetes
+    - soc
+    - security
+
+dependencies: []
