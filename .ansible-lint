@@ -1,0 +1,43 @@
+# .ansible-lint — Configuration ansible-lint pour SOC-as-code
+# https://ansible.readthedocs.io/projects/lint/configuring/
+
+profile: production
+
+# Répertoires à analyser
+exclude_paths:
+  - .git/
+  - .pre-commit-hooks.yaml
+  - iac/
+
+# Règles désactivées avec justification
+warn_list:
+  - experimental             # Règles expérimentales non bloquantes
+  - role-name                # Conventions de nommage assouplies pour les rôles K8s
+
+skip_list:
+  - yaml[line-length]        # Lignes Jinja2 dépassent souvent 160 chars (templates K8s)
+  - no-changed-when          # Couvert manuellement tâche par tâche
+
+# Longueur de ligne tolérée (sync avec .yamllint)
+max_block_depth: 5
+
+# Ansible version cible
+supported_ansible_also: ">=2.15"
+
+# Verbosité du rapport
+verbosity: 1
+
+# ansible/.ansible-lint
+warn_list:
+  - yaml[line-length]
+  - name[missing]
+  - no-changed-when
+
+skip_list:
+  - no-log-password     # on gère no_log manuellement
+  - command-instead-of-module  # kubectl exec est intentionnel
+  - risky-shell-pipe
+
+exclude_paths:
+  - playbooks/artifacts/
+  - .secrets/

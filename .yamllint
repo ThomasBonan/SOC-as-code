@@ -1,0 +1,41 @@
+# .yamllint — Configuration yamllint pour SOC-as-code
+# https://yamllint.readthedocs.io/en/stable/configuration.html
+
+extends: default
+
+rules:
+  # Lignes longues tolérées pour les templates Jinja2 / K8s manifests
+  line-length:
+    max: 200
+    level: warning
+
+  # Commentaires inline autorisés (ex: # noqa)
+  comments-indentation: disable
+
+  # Indentation standard Ansible : 2 espaces
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  # Accepte les fichiers qui commencent par ---
+  document-start:
+    level: warning
+
+  # Pas de trailing spaces
+  trailing-spaces: enable
+
+  # Une ligne vide max entre blocs
+  empty-lines:
+    max: 2
+    max-start: 0
+    max-end: 1
+
+  # Truthy : n'accepter que true/false (pas yes/no/on/off)
+  truthy:
+    allowed-values: ["true", "false"]
+    check-keys: false
+
+ignore: |
+  iac/
+  .git/
