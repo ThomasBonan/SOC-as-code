@@ -20,6 +20,9 @@ spec:
           # Exclure les répertoires non-applicatifs
           - path: gitops/environments/lab/values-common.yml
             exclude: true
+          # Exclure eso/ : géré par soc-eso-externalsecrets (gitops/apps/soc-eso.yml)
+          - path: gitops/environments/lab/eso
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'
