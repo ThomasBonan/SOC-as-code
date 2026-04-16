@@ -1,0 +1,48 @@
+# soc-apps.yml — ApplicationSet pour les applications SOC
+# Génère automatiquement une Application par répertoire dans gitops/environments/lab/
+# Apps cibles : wazuh, misp, cortex, thehive, shuffle, risk-engine, databases
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: soc-apps
+  namespace: argocd
+  labels:
+    soc.lab/component: argocd
+    soc.lab/managed-by: gitops
+spec:
+  generators:
+    - git:
+        repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+        revision: main
+        directories:
+          - path: gitops/environments/lab/*
+          # Exclure les répertoires non-applicatifs
+          - path: gitops/environments/lab/values-common.yml
+            exclude: true
+  template:
+    metadata:
+      name: 'soc-{{path.basename}}'
+      labels:
+        soc.lab/component: argocd
+        soc.lab/layer: application
+        soc.lab/app: '{{path.basename}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+        targetRevision: main
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        # Le namespace est défini dans chaque kustomization.yaml
+        namespace: default
+      syncPolicy:
+        # Sync MANUEL par défaut — activer automated après validation de chaque app
+        # automated:
+        #   prune: false
+        #   selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true

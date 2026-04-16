@@ -13,6 +13,7 @@ soc_compliance_enable_audit_risk_model:   true
 soc_compliance_enable_audit_network:      true
 soc_compliance_enable_audit_secrets:      true
 soc_compliance_enable_audit_monitoring:   true
+soc_compliance_enable_audit_argocd:       true
 soc_compliance_enable_report:             true
 
 # ── Compliance mode ───────────────────────────────────────────────
@@ -86,6 +87,15 @@ soc_compliance_netpol_thehive: "ingress-api-thehive"
 soc_compliance_netpol_cortex:  "ingress-api-cortex"
 soc_compliance_netpol_misp:    "ingress-api-misp"
 soc_compliance_netpol_wazuh:   "ingress-api-wazuh"
+
+# ── ArgoCD audit targets ──────────────────────────────────────────
+soc_compliance_argocd_namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
+soc_compliance_argocd_deploy_server: "argocd-server"
+soc_compliance_argocd_deploy_controller: "argocd-application-controller"
+soc_compliance_argocd_deploy_repo: "argocd-repo-server"
+soc_compliance_argocd_secret_name: "argocd-secret"
+soc_compliance_argocd_rbac_cm_name: "argocd-rbac-cm"
+soc_compliance_argocd_marker_name: "soc-argocd-marker-deployed"
 
 # ── Report output ─────────────────────────────────────────────────
 soc_compliance_artifact_dir:  "{{ playbook_dir }}/artifacts"

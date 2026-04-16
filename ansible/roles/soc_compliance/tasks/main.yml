@@ -53,6 +53,13 @@
     - audit
     - soc_compliance
 
+- name: "soc_compliance | Audit ArgoCD — deployment health and GitOps configuration"
+  import_tasks: audit_argocd.yml
+  when: soc_compliance_enable_audit_argocd | bool
+  tags:
+    - audit
+    - soc_compliance
+
 - name: "soc_compliance | Report — generate structured compliance report"
   import_tasks: report.yml
   when: soc_compliance_enable_report | bool

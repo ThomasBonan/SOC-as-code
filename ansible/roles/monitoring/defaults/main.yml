@@ -73,6 +73,9 @@ monitoring_blackbox_targets:
   - name: risk-engine
     url: "http://risk-engine-svc.{{ soc_namespaces.thehive }}.svc:8080/health"
     module: http_2xx
+  - name: argocd
+    url: "http://argocd-server.{{ soc_namespaces.argocd | default('argocd') }}.svc:8080/healthz"
+    module: http_2xx
 
 # ============================================================
 # Cilium metrics scrape

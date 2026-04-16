@@ -1,0 +1,40 @@
+# values-common.yml — Valeurs partagées pour l'environnement lab
+# Référencées par les kustomization.yaml des applications.
+
+environment: lab
+domain: apps.soc.lab
+clusterIssuer: soc-lab-ca-issuer
+ingressClass: nginx
+storageClass: longhorn
+
+# Replicas réduits pour lab bare-metal (ressources limitées)
+replicas:
+  default: 1
+  databases: 1
+  wazuh_manager: 1
+  wazuh_indexer: 1
+  wazuh_dashboard: 1
+
+# Resource profiles (lab = minimal)
+resources:
+  small:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "200m"
+      memory: "256Mi"
+  medium:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  large:
+    requests:
+      cpu: "250m"
+      memory: "256Mi"
+    limits:
+      cpu: "1000m"
+      memory: "1Gi"

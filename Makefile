@@ -67,6 +67,29 @@ smoke: ## Smoke test cluster
 	kubectl --kubeconfig $(KCFG) -n metallb-system get all
 	kubectl --kubeconfig $(KCFG) -n smoke get svc -o wide
 
+# ── Ansible — SOC platform ────────────────────────────────────────────────────
+.PHONY: vault monitoring argocd netpol compliance selftest
+vault: ## Déployer Vault + ESO (75)
+	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml
+
+monitoring: ## Déployer la stack monitoring (76)
+	ansible-playbook $(ANS_DIR)/playbooks/76-monitoring.yml
+
+argocd: ## Déployer ArgoCD (77) — prérequis : 75-vault.yml --tags bootstrap
+	ansible-playbook $(ANS_DIR)/playbooks/77-argocd.yml
+
+argocd-seed: ## Seeder le secret ArgoCD dans Vault (75 --tags bootstrap)
+	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags bootstrap
+
+netpol: ## Appliquer les NetworkPolicies (150) — inclut argocd
+	ansible-playbook $(ANS_DIR)/playbooks/150-soc-netpol.yml
+
+compliance: ## Audit de conformité (200) — inclut ArgoCD
+	ansible-playbook $(ANS_DIR)/playbooks/200-soc-compliance.yml
+
+selftest: ## E2E selftest (210)
+	ansible-playbook $(ANS_DIR)/playbooks/210-soc-selftest.yml
+
 # ── Pre-commit ────────────────────────────────────────────────────────────────
 .PHONY: pre-commit pre-commit-install
 pre-commit: ## Exécuter tous les hooks pre-commit

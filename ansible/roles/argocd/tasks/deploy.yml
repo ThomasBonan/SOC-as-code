@@ -1,0 +1,135 @@
+---
+# argocd/tasks/deploy.yml — Déploiement Helm + certificat TLS + Ingress
+
+# --- Namespace ---
+- name: ArgoCD deploy | Créer le namespace {{ argocd_namespace }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ argocd_namespace }}"
+        labels:
+          kubernetes.io/metadata.name: "{{ argocd_namespace }}"
+          app.kubernetes.io/managed-by: soc-ansible
+          soc.lab/component: argocd
+
+# --- Certificat TLS via cert-manager ---
+- name: ArgoCD deploy | Créer le Certificate TLS
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    template: argocd-certificate.yml.j2
+  when: argocd_enable_certificate | bool
+
+- name: ArgoCD deploy | Attendre que le Secret TLS soit prêt
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ argocd_namespace }}"
+    name: "{{ argocd_tls_secret_name }}"
+  register: _argocd_tls_secret
+  until: _argocd_tls_secret.resources | length > 0
+  retries: 30
+  delay: 10
+  when: argocd_enable_certificate | bool
+
+# --- Admin secret (create-once, AVANT Helm pour éviter le CrashLoopBackOff) ---
+- name: ArgoCD deploy | Vérifier si le Secret argocd-secret existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    namespace: "{{ argocd_namespace }}"
+    name: argocd-secret
+  register: _argocd_existing_secret
+  no_log: true
+
+- name: ArgoCD deploy | Vérifier si admin.password est déjà défini
+  ansible.builtin.set_fact:
+    _argocd_password_already_set: >-
+      {{
+        _argocd_existing_secret.resources | length > 0
+        and _argocd_existing_secret.resources[0].data is defined
+        and 'admin.password' in _argocd_existing_secret.resources[0].data
+      }}
+
+- name: ArgoCD deploy | Générer le hash bcrypt du mot de passe admin
+  ansible.builtin.set_fact:
+    _argocd_admin_password_bcrypt: "{{ argocd_admin_password | password_hash('bcrypt', rounds=10) }}"
+    _argocd_password_mtime: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+    _argocd_server_secretkey: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}"
+  no_log: true
+  when: not _argocd_password_already_set | bool
+
+- name: ArgoCD deploy | Appliquer le Secret admin ArgoCD
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    template: argocd-admin-secret.yml.j2
+  no_log: true
+  when: not _argocd_password_already_set | bool
+
+- name: ArgoCD deploy | Redémarrer les deployments ArgoCD si le secret vient d'être créé
+  ansible.builtin.command: >
+    kubectl rollout restart deployment -n {{ argocd_namespace }}
+  environment:
+    KUBECONFIG: "{{ argocd_kubeconfig_path }}"
+  when: not _argocd_password_already_set | bool
+  failed_when: false
+  changed_when: true
+
+# --- Helm install/upgrade ---
+- name: ArgoCD deploy | Écrire les values Helm dans un fichier temporaire
+  ansible.builtin.copy:
+    content: "{{ lookup('template', 'argocd-values.yml.j2') }}"
+    dest: /tmp/argocd-values-rendered.yml
+    mode: "0600"
+
+- name: ArgoCD deploy | Installer/mettre à jour ArgoCD via Helm
+  ansible.builtin.command: >
+    helm upgrade --install {{ argocd_release_name }}
+    {{ argocd_chart_name }}
+    --version {{ argocd_chart_version }}
+    --namespace {{ argocd_namespace }}
+    --values /tmp/argocd-values-rendered.yml
+    --wait --timeout 10m
+  environment:
+    KUBECONFIG: "{{ argocd_kubeconfig_path }}"
+  changed_when: true
+
+- name: ArgoCD deploy | Nettoyer le fichier de values temporaire
+  ansible.builtin.file:
+    path: /tmp/argocd-values-rendered.yml
+    state: absent
+
+# --- Attendre que argocd-server soit Ready ---
+- name: ArgoCD deploy | Attendre que argocd-server soit Running
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ argocd_namespace }}"
+    name: "argocd-server"
+  register: _argocd_server_deploy
+  until: >-
+    _argocd_server_deploy.resources | length > 0
+    and (_argocd_server_deploy.resources[0].status.readyReplicas | default(0)) >= 1
+  retries: 30
+  delay: 10
+
+# --- Ingress ---
+- name: ArgoCD deploy | Créer l'Ingress ArgoCD
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    template: argocd-ingress.yml.j2
+  when: argocd_enable_ingress | bool
+
+- name: ArgoCD deploy | ArgoCD déployé
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD déployé : argocd-server Ready dans {{ argocd_namespace }}.
+      UI disponible à https://{{ argocd_ingress_host }}

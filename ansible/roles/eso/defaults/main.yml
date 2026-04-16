@@ -188,3 +188,13 @@ eso_external_secrets:
         remoteKey: WAZUH_USER
       - secretKey: WAZUH_PASS
         remoteKey: WAZUH_PASS
+
+  # ArgoCD admin credentials (créés par 77-argocd, seedés par 75-vault --tags bootstrap)
+  - name: argocd-admin-creds
+    namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
+    vault_path: "bootstrap/argocd"
+    data:
+      - secretKey: username
+        remoteKey: username
+      - secretKey: password
+        remoteKey: password

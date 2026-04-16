@@ -77,6 +77,16 @@
       "wazuh_sa":     "{{ _comp_sec_result.wazuh_sa     | default('unknown') }}",
       "worker_creds": "{{ _comp_sec_result.worker_creds | default('unknown') }}",
       "findings":     {{ _comp_sec_result.findings | default([]) | to_json }}
+    },
+    "argocd": {
+      "status":              "{{ _comp_argocd_result.status | default('skipped') }}",
+      "server_running":      {{ _comp_argocd_result.server_running | default(false) | bool | lower }},
+      "controller_running":  {{ _comp_argocd_result.controller_running | default(false) | bool | lower }},
+      "repo_server_running": {{ _comp_argocd_result.repo_server_running | default(false) | bool | lower }},
+      "secret_present":      {{ _comp_argocd_result.secret_present | default(false) | bool | lower }},
+      "rbac_configured":     {{ _comp_argocd_result.rbac_configured | default(false) | bool | lower }},
+      "applications_count":  {{ _comp_argocd_result.applications_count | default(0) }},
+      "findings":            {{ _comp_argocd_result.findings | default([]) | to_json }}
     }
   },
   "all_findings": {{ _comp_all_findings | to_json }},

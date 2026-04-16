@@ -1,0 +1,70 @@
+---
+# argocd/tasks/preflight.yml — Vérification des prérequis
+
+- name: ArgoCD preflight | Vérifier que Helm est disponible
+  ansible.builtin.command: helm version --short
+  register: _argocd_helm_version
+  changed_when: false
+  failed_when: _argocd_helm_version.rc != 0
+
+- name: ArgoCD preflight | Afficher la version Helm
+  ansible.builtin.debug:
+    msg: "Helm disponible : {{ _argocd_helm_version.stdout }}"
+
+- name: ArgoCD preflight | Vérifier que cert-manager est opérationnel
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ cert_manager_namespace }}"
+    name: cert-manager
+  register: _argocd_cm_check
+  failed_when: >-
+    _argocd_cm_check.resources | length == 0
+    or (_argocd_cm_check.resources[0].status.readyReplicas | default(0)) < 1
+
+- name: ArgoCD preflight | Vérifier que le ClusterIssuer existe
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    api_version: cert-manager.io/v1
+    kind: ClusterIssuer
+    name: "{{ argocd_cluster_issuer_name }}"
+  register: _argocd_issuer_check
+  failed_when: _argocd_issuer_check.resources | length == 0
+
+- name: ArgoCD preflight | Vérifier que ingress-nginx est opérationnel
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ ingress_nginx_namespace }}"
+    name: ingress-nginx-controller
+  register: _argocd_ingress_check
+  failed_when: >-
+    _argocd_ingress_check.resources | length == 0
+    or (_argocd_ingress_check.resources[0].status.readyReplicas | default(0)) < 1
+
+- name: ArgoCD preflight | Vérifier que argocd_admin_password est défini
+  ansible.builtin.assert:
+    that:
+      - argocd_admin_password | length > 0
+    fail_msg: >-
+      argocd_admin_password est vide. Assurez-vous que 75-vault.yml a été exécuté
+      avec --tags bootstrap et que fetch_bootstrap_vars.yml est inclus dans les pre_tasks.
+    success_msg: "argocd_admin_password résolu depuis Vault."
+
+- name: ArgoCD preflight | Ajouter le repo Helm Argo
+  ansible.builtin.command: >
+    helm repo add {{ argocd_chart_repo_name }} {{ argocd_chart_repo_url }}
+  register: _argocd_repo_add
+  changed_when: "'already exists' not in _argocd_repo_add.stdout"
+
+- name: ArgoCD preflight | Mettre à jour les repos Helm
+  ansible.builtin.command: helm repo update
+  changed_when: false
+
+- name: ArgoCD preflight | Tous les prérequis validés
+  ansible.builtin.debug:
+    msg: >-
+      Prérequis ArgoCD OK : Helm {{ _argocd_helm_version.stdout }},
+      cert-manager, ClusterIssuer {{ argocd_cluster_issuer_name }}, ingress-nginx.

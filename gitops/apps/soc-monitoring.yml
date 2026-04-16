@@ -1,0 +1,30 @@
+# soc-monitoring.yml — Application monitoring SOC
+# Gère : kube-prometheus-stack, Loki, blackbox-exporter
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: soc-monitoring
+  namespace: argocd
+  labels:
+    soc.lab/component: argocd
+    soc.lab/managed-by: gitops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+    targetRevision: main
+    path: gitops/environments/lab/monitoring
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-monitoring
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

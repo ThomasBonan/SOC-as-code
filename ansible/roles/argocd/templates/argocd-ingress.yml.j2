@@ -1,0 +1,32 @@
+# argocd-ingress.yml.j2 — Ingress ArgoCD (TLS terminé à ingress-nginx)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: argocd-server
+  namespace: "{{ argocd_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: soc-ansible
+    soc.lab/component: argocd
+  annotations:
+    cert-manager.io/cluster-issuer: "{{ argocd_cluster_issuer_name }}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: "{{ ingress_class }}"
+  tls:
+    - hosts:
+        - "{{ argocd_ingress_host }}"
+      secretName: "{{ argocd_tls_secret_name }}"
+  rules:
+    - host: "{{ argocd_ingress_host }}"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80

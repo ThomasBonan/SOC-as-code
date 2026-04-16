@@ -1,0 +1,105 @@
+---
+# ============================================================
+# argocd — Role defaults
+# Rôle 77 | Déploiement ArgoCD single-replica (lab)
+# Toutes les variables préfixées argocd_ selon convention projet.
+# ============================================================
+
+# ── Helm ──────────────────────────────────────────────────────
+argocd_chart_repo_name: "argo"
+argocd_chart_repo_url: "https://argoproj.github.io/argo-helm"
+argocd_chart_name: "argo/argo-cd"
+argocd_chart_version: "7.7.15"
+argocd_release_name: "argocd"
+argocd_namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
+
+# ── Replicas (single pour lab) ────────────────────────────────
+argocd_server_replicas: 1
+argocd_repo_server_replicas: 1
+argocd_controller_replicas: 1
+
+# ── TLS (cert-manager) ────────────────────────────────────────
+argocd_tls_secret_name: "argocd-server-tls"
+argocd_certificate_name: "argocd-server-tls"
+argocd_cluster_issuer_name: "{{ cert_manager_clusterissuer_name }}"
+argocd_ingress_host: "argocd.{{ apps_domain }}"
+argocd_dns_names:
+  - "argocd-server.{{ argocd_namespace }}.svc"
+  - "argocd-server.{{ argocd_namespace }}.svc.cluster.local"
+  - "{{ argocd_ingress_host }}"
+
+# ── Admin password (résolu depuis Vault via pre_tasks du playbook) ──
+argocd_admin_password: ""
+
+# ── RBAC ──────────────────────────────────────────────────────
+argocd_rbac_policy_default: "role:readonly"
+argocd_rbac_scopes: "[groups]"
+
+# ── Repo Git (App of Apps) ────────────────────────────────────
+# Laisser vide pour déployer ArgoCD sans App of Apps
+argocd_repo_url: "{{ argocd_repo_url | default('') }}"
+argocd_repo_target_revision: "main"
+argocd_repo_path_apps: "gitops/apps"
+
+# ── Resources requests/limits (tuned pour lab bare-metal) ────
+argocd_server_resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+argocd_repo_server_resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"
+
+argocd_controller_resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+argocd_redis_resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "100m"
+    memory: "128Mi"
+
+argocd_applicationset_resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "128Mi"
+
+argocd_notifications_resources:
+  requests:
+    cpu: "25m"
+    memory: "32Mi"
+  limits:
+    cpu: "100m"
+    memory: "64Mi"
+
+# ── Feature toggles ───────────────────────────────────────────
+argocd_enable_metrics: true
+argocd_enable_ingress: true
+argocd_enable_certificate: true
+argocd_enable_rbac_cm: true
+argocd_enable_notifications: false      # Phase ultérieure
+argocd_enable_app_of_apps: true         # Désactivé si argocd_repo_url est vide
+
+# ── Kubeconfig ────────────────────────────────────────────────
+argocd_kubeconfig_path: "{{ kubeconfig_path }}"
+
+# ── Idempotence marker ────────────────────────────────────────
+argocd_marker_name: "soc-argocd-marker-deployed"

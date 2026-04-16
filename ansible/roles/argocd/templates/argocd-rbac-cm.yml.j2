@@ -1,0 +1,37 @@
+# argocd-rbac-cm.yml.j2 — RBAC ConfigMap ArgoCD
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  namespace: "{{ argocd_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: soc-ansible
+    soc.lab/component: argocd
+data:
+  policy.default: "{{ argocd_rbac_policy_default }}"
+  scopes: "{{ argocd_rbac_scopes }}"
+  policy.csv: |
+    # ── Rôle admin : accès complet ──────────────────────────────
+    p, role:admin, applications, *,      */*, allow
+    p, role:admin, clusters,     *,      *,   allow
+    p, role:admin, repositories, *,      *,   allow
+    p, role:admin, certificates, *,      *,   allow
+    p, role:admin, accounts,     *,      *,   allow
+    p, role:admin, gpgkeys,      *,      *,   allow
+    p, role:admin, logs,         *,      */*, allow
+    p, role:admin, exec,         *,      */*, allow
+
+    # ── Rôle soc-operator : sync uniquement, pas de suppression ─
+    p, role:soc-operator, applications, get,      */*, allow
+    p, role:soc-operator, applications, sync,     */*, allow
+    p, role:soc-operator, applications, action/*, */*, allow
+    p, role:soc-operator, logs,         get,      */*, allow
+
+    # ── Rôle readonly (défaut) : lecture seule ──────────────────
+    p, role:readonly, applications, get, */*, allow
+    p, role:readonly, logs,         get, */*, allow
+
+    # ── Bindings de groupes ─────────────────────────────────────
+    g, admin,        role:admin
+    g, soc-ops,      role:soc-operator
+    g, soc-viewer,   role:readonly

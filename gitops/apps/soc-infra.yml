@@ -1,0 +1,45 @@
+# soc-infra.yml — ApplicationSet pour l'infrastructure K8s
+# Gère : cert-manager, ingress-nginx, MetalLB, Longhorn
+# NOTE : ces composants sont actuellement bootstrappés par Ansible.
+#        Cette Application gère uniquement la configuration post-install.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: soc-infra
+  namespace: argocd
+  labels:
+    soc.lab/component: argocd
+    soc.lab/managed-by: gitops
+spec:
+  generators:
+    - list:
+        elements:
+          - name: cert-manager-config
+            namespace: cert-manager
+            path: gitops/environments/lab/cert-manager
+          - name: ingress-nginx-config
+            namespace: ingress-nginx
+            path: gitops/environments/lab/ingress-nginx
+  template:
+    metadata:
+      name: 'infra-{{name}}'
+      labels:
+        soc.lab/component: argocd
+        soc.lab/layer: infrastructure
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+        targetRevision: main
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true

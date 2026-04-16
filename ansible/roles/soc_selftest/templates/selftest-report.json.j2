@@ -13,7 +13,13 @@
     "cortex":          "{{ _st_cortex_status }}",
     "risk_engine":     "{{ _st_risk_status }}",
     "misp":            "{{ _st_misp_status }}",
-    "active_response": "{{ _st_ar_status }}"
+    "active_response": "{{ _st_ar_status }}",
+    "argocd":          "{{ _st_argocd_status }}"
+  },
+  "argocd": {
+    "status":          "{{ _st_argocd_status }}",
+    "degraded_apps":   {{ _st_argocd_degraded_apps | default([]) | to_json }},
+    "ui_url":          "https://{{ soc_selftest_argocd_ingress_host }}"
   },
   "risk_engine_result": {
     "score":         {{ _st_risk_score | default(-1) }},

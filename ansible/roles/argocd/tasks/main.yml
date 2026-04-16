@@ -1,0 +1,21 @@
+---
+# argocd/tasks/main.yml — Orchestrateur du rôle
+# Tags : preflight, deploy, configure, argocd
+
+- name: "argocd | Preflight — vérifier les prérequis"
+  import_tasks: preflight.yml
+  tags:
+    - argocd
+    - preflight
+
+- name: "argocd | Deploy — installer ArgoCD via Helm"
+  import_tasks: deploy.yml
+  tags:
+    - argocd
+    - deploy
+
+- name: "argocd | Configure — RBAC, admin password, App of Apps"
+  import_tasks: configure.yml
+  tags:
+    - argocd
+    - configure

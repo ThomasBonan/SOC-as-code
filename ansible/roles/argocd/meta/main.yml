@@ -1,0 +1,19 @@
+---
+galaxy_info:
+  role_name: argocd
+  author: soc-admin
+  description: "Déploie ArgoCD, configure RBAC, TLS, et bootstrap App of Apps GitOps"
+  min_ansible_version: "2.14"
+  platforms:
+    - name: EL
+      versions: [8, 9]
+    - name: Ubuntu
+      versions: [22.04]
+  galaxy_tags:
+    - kubernetes
+    - soc
+    - gitops
+    - argocd
+    - k8s
+
+dependencies: []

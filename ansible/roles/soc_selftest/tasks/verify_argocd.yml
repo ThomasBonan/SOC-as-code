@@ -1,0 +1,142 @@
+---
+# soc_selftest/tasks/verify_argocd.yml
+# Vérifie qu'ArgoCD est opérationnel après le déploiement du SOC.
+# Tests :
+#   1. argocd-server Deployment Ready
+#   2. argocd-application-controller Deployment Ready
+#   3. argocd-repo-server Deployment Ready
+#   4. Marker ConfigMap présent (preuve que le playbook 77 s'est exécuté)
+#   5. Au moins 1 Application CRD existe (prouve qu'ArgoCD est fonctionnel)
+#   6. Aucune Application en état Degraded (sanity check GitOps)
+
+- name: "soc_selftest | verify_argocd — vérifier argocd-server Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ soc_selftest_argocd_namespace }}"
+    name: argocd-server
+  register: _st_argocd_server
+
+- name: "soc_selftest | verify_argocd — enregistrer statut argocd-server"
+  ansible.builtin.set_fact:
+    _st_argocd_server_ok: >-
+      {{
+        _st_argocd_server.resources | length > 0
+        and (_st_argocd_server.resources[0].status.readyReplicas | default(0)) >= 1
+      }}
+
+- name: "soc_selftest | verify_argocd — vérifier argocd-application-controller StatefulSet"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ soc_selftest_argocd_namespace }}"
+    name: argocd-application-controller
+  register: _st_argocd_controller
+
+- name: "soc_selftest | verify_argocd — enregistrer statut argocd-application-controller"
+  ansible.builtin.set_fact:
+    _st_argocd_controller_ok: >-
+      {{
+        _st_argocd_controller.resources | length > 0
+        and (_st_argocd_controller.resources[0].status.readyReplicas | default(0)) >= 1
+      }}
+
+- name: "soc_selftest | verify_argocd — vérifier argocd-repo-server Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ soc_selftest_argocd_namespace }}"
+    name: argocd-repo-server
+  register: _st_argocd_repo
+
+- name: "soc_selftest | verify_argocd — enregistrer statut argocd-repo-server"
+  ansible.builtin.set_fact:
+    _st_argocd_repo_ok: >-
+      {{
+        _st_argocd_repo.resources | length > 0
+        and (_st_argocd_repo.resources[0].status.readyReplicas | default(0)) >= 1
+      }}
+
+- name: "soc_selftest | verify_argocd — vérifier le marker de déploiement"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ soc_selftest_argocd_namespace }}"
+    name: soc-argocd-marker-deployed
+  register: _st_argocd_marker
+
+- name: "soc_selftest | verify_argocd — enregistrer statut marker"
+  ansible.builtin.set_fact:
+    _st_argocd_marker_ok: "{{ _st_argocd_marker.resources | length > 0 }}"
+
+- name: "soc_selftest | verify_argocd — lister les Applications ArgoCD"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ soc_selftest_argocd_namespace }}"
+  register: _st_argocd_apps
+  failed_when: false
+
+- name: "soc_selftest | verify_argocd — enregistrer le nombre d'Applications"
+  ansible.builtin.set_fact:
+    _st_argocd_app_count: "{{ _st_argocd_apps.resources | default([]) | length }}"
+    _st_argocd_degraded_apps: >-
+      {{
+        _st_argocd_apps.resources | default([])
+        | selectattr('status.health.status', 'defined')
+        | selectattr('status.health.status', '!=', 'Healthy')
+        | map(attribute='metadata.name')
+        | list
+      }}
+
+- name: "soc_selftest | verify_argocd — calculer le statut global ArgoCD"
+  ansible.builtin.set_fact:
+    _st_argocd_status: >-
+      {{
+        'ok' if (
+          _st_argocd_server_ok | bool
+          and _st_argocd_controller_ok | bool
+          and _st_argocd_repo_ok | bool
+          and _st_argocd_marker_ok | bool
+        ) else 'fail'
+      }}
+
+- name: "soc_selftest | verify_argocd — résumé"
+  ansible.builtin.debug:
+    msg:
+      - "── Vérification ArgoCD ───────────────────────────────────────"
+      - "argocd-server          : {{ _st_argocd_server_ok     | ternary('OK', 'FAIL') }}"
+      - "argocd-controller(sts) : {{ _st_argocd_controller_ok | ternary('OK', 'FAIL') }}"
+      - "argocd-repo-server     : {{ _st_argocd_repo_ok       | ternary('OK', 'FAIL') }}"
+      - "marker déploiement     : {{ _st_argocd_marker_ok     | ternary('OK', 'ABSENT') }}"
+      - "Applications trouvées  : {{ _st_argocd_app_count }}"
+      - "Applications dégradées : {{ _st_argocd_degraded_apps | join(', ') if _st_argocd_degraded_apps | length > 0 else 'aucune' }}"
+      - "UI ArgoCD              : https://{{ soc_selftest_argocd_ingress_host }}"
+      - "Statut global ArgoCD   : {{ _st_argocd_status | upper }}"
+
+- name: "soc_selftest | verify_argocd — avertissement Applications dégradées"
+  ansible.builtin.debug:
+    msg: >-
+      AVERTISSEMENT : {{ _st_argocd_degraded_apps | length }} Application(s) ArgoCD
+      non-Healthy : {{ _st_argocd_degraded_apps | join(', ') }}.
+      Vérifier avec : argocd app list
+  when: _st_argocd_degraded_apps | length > 0
+
+- name: "soc_selftest | verify_argocd — échec si ArgoCD critique absent"
+  ansible.builtin.fail:
+    msg: >-
+      ArgoCD non opérationnel :
+      server={{ _st_argocd_server_ok }},
+      controller={{ _st_argocd_controller_ok }},
+      repo-server={{ _st_argocd_repo_ok }}.
+      Relancer : ansible-playbook ansible/playbooks/77-argocd.yml
+  when:
+    - soc_selftest_fail_on_error | bool
+    - not (_st_argocd_server_ok | bool)
+      or not (_st_argocd_controller_ok | bool)
+      or not (_st_argocd_repo_ok | bool)

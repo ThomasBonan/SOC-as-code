@@ -1,0 +1,31 @@
+# argocd-certificate.yml.j2 — Certificate cert-manager pour ArgoCD TLS
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: "{{ argocd_certificate_name }}"
+  namespace: "{{ argocd_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: soc-ansible
+    soc.lab/component: argocd
+spec:
+  secretName: "{{ argocd_tls_secret_name }}"
+  duration: 8760h    # 1 an
+  renewBefore: 720h  # Renouveler 30j avant expiration
+  subject:
+    organizations:
+      - soc-lab
+  isCA: false
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+{% for dns in argocd_dns_names %}
+    - "{{ dns }}"
+{% endfor %}
+  issuerRef:
+    name: "{{ argocd_cluster_issuer_name }}"
+    kind: ClusterIssuer
+    group: cert-manager.io

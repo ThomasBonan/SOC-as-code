@@ -1,0 +1,131 @@
+# argocd-values.yml.j2 — Helm values pour ArgoCD (single-replica lab)
+# Généré par le rôle Ansible argocd
+
+global:
+  domain: "{{ argocd_ingress_host }}"
+
+# ── Server ────────────────────────────────────────────────────
+server:
+  replicas: {{ argocd_server_replicas }}
+
+  resources:
+{{ argocd_server_resources | to_yaml | indent(4, first=True) }}
+
+  # TLS terminé à ingress-nginx — ArgoCD écoute en HTTP
+  extraArgs:
+    - --insecure
+
+  metrics:
+    enabled: {{ argocd_enable_metrics | bool | lower }}
+    serviceMonitor:
+      enabled: {{ argocd_enable_metrics | bool | lower }}
+      additionalLabels:
+        release: kube-prometheus-stack
+
+  service:
+    type: ClusterIP
+
+# ── Application Controller ────────────────────────────────────
+controller:
+  replicas: {{ argocd_controller_replicas }}
+
+  resources:
+{{ argocd_controller_resources | to_yaml | indent(4, first=True) }}
+
+  metrics:
+    enabled: {{ argocd_enable_metrics | bool | lower }}
+    serviceMonitor:
+      enabled: {{ argocd_enable_metrics | bool | lower }}
+      additionalLabels:
+        release: kube-prometheus-stack
+
+# ── Repo Server ───────────────────────────────────────────────
+repoServer:
+  replicas: {{ argocd_repo_server_replicas }}
+
+  resources:
+{{ argocd_repo_server_resources | to_yaml | indent(4, first=True) }}
+
+  metrics:
+    enabled: {{ argocd_enable_metrics | bool | lower }}
+    serviceMonitor:
+      enabled: {{ argocd_enable_metrics | bool | lower }}
+      additionalLabels:
+        release: kube-prometheus-stack
+
+# ── Redis ─────────────────────────────────────────────────────
+redis:
+  resources:
+{{ argocd_redis_resources | to_yaml | indent(4, first=True) }}
+
+  metrics:
+    enabled: {{ argocd_enable_metrics | bool | lower }}
+    serviceMonitor:
+      enabled: {{ argocd_enable_metrics | bool | lower }}
+      additionalLabels:
+        release: kube-prometheus-stack
+
+# ── ApplicationSet Controller ─────────────────────────────────
+applicationSet:
+  replicas: 1
+
+  resources:
+{{ argocd_applicationset_resources | to_yaml | indent(4, first=True) }}
+
+  metrics:
+    enabled: {{ argocd_enable_metrics | bool | lower }}
+    serviceMonitor:
+      enabled: {{ argocd_enable_metrics | bool | lower }}
+      additionalLabels:
+        release: kube-prometheus-stack
+
+# ── Notifications Controller ──────────────────────────────────
+notifications:
+  enabled: {{ argocd_enable_notifications | bool | lower }}
+
+  resources:
+{{ argocd_notifications_resources | to_yaml | indent(4, first=True) }}
+
+  metrics:
+    enabled: {{ argocd_enable_metrics | bool | lower }}
+    serviceMonitor:
+      enabled: {{ argocd_enable_metrics | bool | lower }}
+      additionalLabels:
+        release: kube-prometheus-stack
+
+# ── Configuration globale ─────────────────────────────────────
+configs:
+  params:
+    # TLS terminé à ingress-nginx
+    server.insecure: true
+    # Méthode de tracking des ressources K8s (annotation = plus safe pour adoption)
+    application.resourceTrackingMethod: annotation
+
+  cm:
+    # Comptes locaux (en plus du compte admin)
+    accounts.soc-operator: apiKey, login
+    accounts.soc-viewer: login
+    # Suivi des ressources personnalisées (CRDs SOC)
+    resource.customizations: |
+      argoproj.io/Application:
+        health.lua: |
+          hs = {}
+          hs.status = "Progressing"
+          hs.message = ""
+          if obj.status ~= nil then
+            if obj.status.health ~= nil then
+              hs.status = obj.status.health.status
+              if obj.status.health.message ~= nil then
+                hs.message = obj.status.health.message
+              end
+            end
+          end
+          return hs
+
+  # Le RBAC est géré via le template argocd-rbac-cm.yml.j2
+  # Ne pas définir rbac ici pour éviter les conflits
+
+  # Désactiver l'Ingress géré par le chart (on le gère via template séparé)
+  secret:
+    # Le secret argocd-secret est géré via le template argocd-admin-secret.yml.j2
+    createSecret: false

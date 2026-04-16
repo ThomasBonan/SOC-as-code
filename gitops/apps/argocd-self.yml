@@ -1,0 +1,31 @@
+# argocd-self.yml — Auto-gestion ArgoCD (self-management via GitOps)
+# ArgoCD gère sa propre configuration à partir de gitops/base/argocd/
+# NOTE : ce fichier est appliqué manuellement après le bootstrap Ansible.
+#        Remplacer https://github.com/ThomasBonan/SOC-as-code.git par l'URL réelle du dépôt.
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: argocd
+  namespace: argocd
+  labels:
+    soc.lab/component: argocd
+    soc.lab/managed-by: gitops
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+    targetRevision: main
+    path: gitops/base/argocd
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

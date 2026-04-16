@@ -14,6 +14,7 @@ soc_selftest_enable_verify_risk_decision:   true
 soc_selftest_enable_verify_misp:            true
 soc_selftest_enable_verify_active_response: true
 soc_selftest_enable_cleanup:                true
+soc_selftest_enable_verify_argocd:          true
 soc_selftest_enable_report:                 true
 
 # ── Runtime behavior ──────────────────────────────────────────────
@@ -122,6 +123,10 @@ soc_selftest_artifact_dir:     "{{ playbook_dir }}/artifacts"
 soc_selftest_artifact_file:    "{{ soc_selftest_artifact_dir }}/soc-selftest-report.json"
 soc_selftest_report_configmap: "soc-selftest-report"
 soc_selftest_report_ns:        "{{ soc_namespaces.thehive }}"
+
+# ── ArgoCD verify settings ────────────────────────────────────────
+soc_selftest_argocd_namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
+soc_selftest_argocd_ingress_host: "{{ argocd_ingress_host | default('argocd.apps.soc.lab') }}"
 
 # ── K8s resource labels ───────────────────────────────────────────
 soc_selftest_labels:

@@ -1,0 +1,117 @@
+---
+# soc_compliance/tasks/audit_argocd.yml
+# Audit ArgoCD : déploiement, configuration, health
+
+- name: "soc_compliance | ArgoCD | Vérifier argocd-server Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ soc_compliance_argocd_namespace }}"
+    name: "{{ soc_compliance_argocd_deploy_server }}"
+  register: _comp_argocd_server
+
+- name: "soc_compliance | ArgoCD | Vérifier argocd-application-controller Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ soc_compliance_argocd_namespace }}"
+    name: "{{ soc_compliance_argocd_deploy_controller }}"
+  register: _comp_argocd_controller
+
+- name: "soc_compliance | ArgoCD | Vérifier argocd-repo-server Deployment"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: apps/v1
+    kind: Deployment
+    namespace: "{{ soc_compliance_argocd_namespace }}"
+    name: "{{ soc_compliance_argocd_deploy_repo }}"
+  register: _comp_argocd_repo
+
+- name: "soc_compliance | ArgoCD | Vérifier le Secret argocd-secret"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: v1
+    kind: Secret
+    namespace: "{{ soc_compliance_argocd_namespace }}"
+    name: "{{ soc_compliance_argocd_secret_name }}"
+  register: _comp_argocd_secret
+  no_log: true
+
+- name: "soc_compliance | ArgoCD | Vérifier le ConfigMap RBAC"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ soc_compliance_argocd_namespace }}"
+    name: "{{ soc_compliance_argocd_rbac_cm_name }}"
+  register: _comp_argocd_rbac_cm
+
+- name: "soc_compliance | ArgoCD | Compter les Applications ArgoCD"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ soc_compliance_argocd_namespace }}"
+  register: _comp_argocd_applications
+  failed_when: false
+
+- name: "soc_compliance | ArgoCD | Évaluer les résultats"
+  ansible.builtin.set_fact:
+    _comp_argocd_result:
+      status: "{{ 'ok' if (
+        _comp_argocd_server.resources | length > 0
+        and (_comp_argocd_server.resources[0].status.readyReplicas | default(0)) >= 1
+        and _comp_argocd_controller.resources | length > 0
+        and (_comp_argocd_controller.resources[0].status.readyReplicas | default(0)) >= 1
+        and _comp_argocd_repo.resources | length > 0
+        and (_comp_argocd_repo.resources[0].status.readyReplicas | default(0)) >= 1
+        and _comp_argocd_secret.resources | length > 0
+        and _comp_argocd_rbac_cm.resources | length > 0
+        ) else 'drift' }}"
+      server_running: "{{ (_comp_argocd_server.resources | length > 0
+        and (_comp_argocd_server.resources[0].status.readyReplicas | default(0)) >= 1) | bool }}"
+      controller_running: "{{ (_comp_argocd_controller.resources | length > 0
+        and (_comp_argocd_controller.resources[0].status.readyReplicas | default(0)) >= 1) | bool }}"
+      repo_server_running: "{{ (_comp_argocd_repo.resources | length > 0
+        and (_comp_argocd_repo.resources[0].status.readyReplicas | default(0)) >= 1) | bool }}"
+      secret_present: "{{ (_comp_argocd_secret.resources | length > 0) | bool }}"
+      rbac_configured: "{{ (_comp_argocd_rbac_cm.resources | length > 0) | bool }}"
+      applications_count: "{{ _comp_argocd_applications.resources | default([]) | length }}"
+      findings: >-
+        {{
+          ([] if (_comp_argocd_server.resources | length > 0 and (_comp_argocd_server.resources[0].status.readyReplicas | default(0)) >= 1)
+              else [{'severity': 'critical', 'message': 'argocd-server Deployment absent ou non-ready'}])
+          + ([] if (_comp_argocd_controller.resources | length > 0 and (_comp_argocd_controller.resources[0].status.readyReplicas | default(0)) >= 1)
+              else [{'severity': 'critical', 'message': 'argocd-application-controller absent ou non-ready'}])
+          + ([] if (_comp_argocd_repo.resources | length > 0 and (_comp_argocd_repo.resources[0].status.readyReplicas | default(0)) >= 1)
+              else [{'severity': 'critical', 'message': 'argocd-repo-server absent ou non-ready'}])
+          + ([] if _comp_argocd_secret.resources | length > 0
+              else [{'severity': 'high', 'message': 'Secret argocd-secret absent (admin password non configuré)'}])
+          + ([] if _comp_argocd_rbac_cm.resources | length > 0
+              else [{'severity': 'medium', 'message': 'ConfigMap argocd-rbac-cm absent (RBAC non configuré)'}])
+        }}
+
+- name: "soc_compliance | ArgoCD | Rapport audit"
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD audit :
+      server={{ _comp_argocd_result.server_running }},
+      controller={{ _comp_argocd_result.controller_running }},
+      repo-server={{ _comp_argocd_result.repo_server_running }},
+      secret={{ _comp_argocd_result.secret_present }},
+      rbac={{ _comp_argocd_result.rbac_configured }},
+      applications={{ _comp_argocd_result.applications_count }},
+      status={{ _comp_argocd_result.status }},
+      findings={{ _comp_argocd_result.findings | length }}.
+
+- name: "soc_compliance | ArgoCD | Échouer si dérive critique détectée"
+  ansible.builtin.fail:
+    msg: >-
+      ArgoCD drift détecté ({{ _comp_argocd_result.findings | length }} finding(s)).
+      Relancer : ansible-playbook ansible/playbooks/77-argocd.yml
+  when:
+    - soc_compliance_fail_on_drift | bool
+    - _comp_argocd_result.status == 'drift'
+    - _comp_argocd_result.findings | selectattr('severity', 'equalto', 'critical') | list | length > 0

@@ -1,0 +1,26 @@
+# kustomization.yaml — Kustomize overlay pour ArgoCD self-management
+# Appliqué par l'Application argocd-self (gitops/apps/argocd-self.yml)
+# Permet de versionner la configuration ArgoCD dans Git.
+---
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: argocd
+
+# Resources gérées par GitOps (non-gérées par Helm pour éviter les conflits)
+resources:
+  - argocd-rbac-cm.yaml
+  - argocd-app-of-apps.yaml
+
+# Patches sur des ressources existantes (créées par Helm)
+# Exemple : patcher le ConfigMap argocd-cm pour ajouter des repos
+# patches:
+#   - target:
+#       kind: ConfigMap
+#       name: argocd-cm
+#     patch: |-
+#       - op: add
+#         path: /data/repositories
+#         value: |
+#           - url: https://gitea.apps.soc.lab/soc/SOC-as-code.git
+#             type: git

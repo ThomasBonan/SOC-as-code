@@ -56,6 +56,10 @@
   tags: [verify, monitoring, soc_selftest]
   when: soc_selftest_enable_verify_monitoring | default(true) | bool
 
+- import_tasks: verify_argocd.yml
+  tags: [verify, argocd, soc_selftest]
+  when: soc_selftest_enable_verify_argocd | default(true) | bool
+
 - import_tasks: report.yml
   tags: [report, soc_selftest]
   when: soc_selftest_enable_report | bool

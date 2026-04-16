@@ -1,9 +1,9 @@
 # netpol-monitoring.yml.j2 — NetworkPolicies pour soc-monitoring
 #
 # Règles :
-#   1. Prometheus → pods SOC (scrape métriques)
+#   1. Prometheus → pods SOC (scrape métriques) + ArgoCD (8082)
 #   2. Prometheus → node-exporter (9100)
-#   3. blackbox-exporter → services SOC (probes HTTP)
+#   3. blackbox-exporter → services SOC (probes HTTP) + ArgoCD (8080)
 #   4. Grafana → Prometheus (9090)
 #   5. Grafana → Loki (3100)
 #   6. Grafana → Wazuh OpenSearch (9200)
@@ -54,6 +54,18 @@ spec:
           port: {{ monitoring_cilium_agent_port }}
         - protocol: TCP
           port: {{ monitoring_cilium_operator_port }}
+    # Scrape ArgoCD metrics (namespace argocd)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.argocd | default('argocd') }}"
+      ports:
+        - protocol: TCP
+          port: 8082   # argocd-server metrics
+        - protocol: TCP
+          port: 8083   # argocd-application-controller metrics
+        - protocol: TCP
+          port: 8084   # argocd-repo-server metrics
 ---
 # Règle 2 : Grafana → Prometheus
 apiVersion: networking.k8s.io/v1
@@ -163,6 +175,14 @@ spec:
       ports:
         - protocol: TCP
           port: 5001
+    # Probe HTTP ArgoCD
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: "{{ soc_namespaces.argocd | default('argocd') }}"
+      ports:
+        - protocol: TCP
+          port: 8080   # argocd-server HTTP
 ---
 # Règle 5 : DNS egress pour soc-monitoring
 apiVersion: networking.k8s.io/v1

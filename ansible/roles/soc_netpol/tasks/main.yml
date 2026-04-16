@@ -204,6 +204,14 @@
     template: netpol-monitoring.yml.j2
   when: soc_netpol_enable_monitoring | bool
 
+# --- NetworkPolicies ArgoCD ---
+- name: Apply ArgoCD NetworkPolicies (namespace argocd)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
+    state: present
+    template: netpol-argocd.yml.j2
+  when: soc_netpol_enable_argocd | bool
+
 - name: Apply MISP internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
   vars:

@@ -41,6 +41,8 @@
     _st_thehive_epoch:  "{{ _st_thehive_epoch  | default(0) | int }}"
     _st_cortex_epoch:   "{{ _st_cortex_epoch   | default(0) | int }}"
     _st_risk_epoch:     "{{ _st_risk_epoch     | default(0) | int }}"
+    _st_argocd_status:  "{{ _st_argocd_status  | default('skipped') }}"
+    _st_argocd_degraded_apps: "{{ _st_argocd_degraded_apps | default([]) }}"
   changed_when: false
 
 # ── Compute propagation latencies ────────────────────────────────
@@ -123,6 +125,7 @@
         risk_status:     "{{ _st_risk_status }}"
         misp_status:     "{{ _st_misp_status }}"
         ar_status:       "{{ _st_ar_status }}"
+        argocd_status:   "{{ _st_argocd_status }}"
         risk_score:      "{{ _st_risk_score | string }}"
         risk_decision:   "{{ _st_risk_decision }}"
         cortex_score:    "{{ _st_cortex_score | string }}"
@@ -151,6 +154,7 @@
       - "  Risk Engine       : {{ _st_risk_status    | upper }}  (score={{ _st_risk_score }}, decision={{ _st_risk_decision }})"
       - "  MISP              : {{ _st_misp_status    | upper }}"
       - "  Active Response   : {{ _st_ar_status      | upper }}"
+      - "  ArgoCD GitOps     : {{ _st_argocd_status | upper }}{% if _st_argocd_degraded_apps | length > 0 %}  (degraded: {{ _st_argocd_degraded_apps | join(', ') }}){% endif %}"
       - "╠══════════════════════════════════════════════════════════════════════╣"
       - "  inject→thehive   : {{ _st_lat_inject_to_thehive }}s"
       - "  thehive→cortex   : {{ _st_lat_thehive_to_cortex }}s"

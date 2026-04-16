@@ -127,3 +127,56 @@ spec:
           annotations:
             summary: "Connexions PostgreSQL élevées ({{ "{{" }} $value {{ "}}" }})"
             description: "L'instance PostgreSQL {{ "{{" }} $labels.instance {{ "}}" }} dépasse {{ monitoring_alert_db_connections_max }} connexions actives."
+
+---
+# ── Alertes ArgoCD ──────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: soc-argocd-alerts
+  namespace: "{{ monitoring_namespace }}"
+  labels:
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: soc-argocd
+      interval: "{{ monitoring_evaluation_interval }}"
+      rules:
+
+        - alert: ArgocdAppOutOfSync
+          expr: argocd_app_info{sync_status!="Synced"} == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ArgoCD app {{ "{{" }} $labels.name {{ "}}" }} désynchronisée"
+            description: "L'application ArgoCD {{ "{{" }} $labels.name {{ "}}" }} est OutOfSync depuis 10 minutes."
+            runbook: "Vérifier argocd app diff {{ "{{" }} $labels.name {{ "}}" }}"
+
+        - alert: ArgocdAppDegraded
+          expr: argocd_app_info{health_status!="Healthy"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ArgoCD app {{ "{{" }} $labels.name {{ "}}" }} dégradée"
+            description: "L'application ArgoCD {{ "{{" }} $labels.name {{ "}}" }} n'est pas Healthy depuis 5 minutes."
+            runbook: "kubectl get events -n {{ "{{" }} $labels.dest_namespace {{ "}}" }}"
+
+        - alert: ArgocdSyncFailed
+          expr: argocd_app_sync_total{phase="Failed"} > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ArgoCD sync échoué pour {{ "{{" }} $labels.name {{ "}}" }}"
+            description: "La synchronisation de l'application {{ "{{" }} $labels.name {{ "}}" }} a échoué."
+
+        - alert: ArgocdDown
+          expr: probe_success{job=~".*blackbox.*", instance=~".*argocd.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ArgoCD server ne répond pas"
+            description: "Le serveur ArgoCD est inaccessible depuis 2 minutes. Impact : GitOps désactivé."

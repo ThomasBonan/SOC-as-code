@@ -1,0 +1,61 @@
+---
+# argocd/tasks/configure.yml — RBAC, App of Apps
+# Note : argocd-secret créé dans deploy.yml avant Helm install (évite CrashLoopBackOff)
+
+# --- RBAC ConfigMap ---
+- name: ArgoCD configure | Appliquer le ConfigMap RBAC
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    template: argocd-rbac-cm.yml.j2
+  when: argocd_enable_rbac_cm | bool
+
+# --- App of Apps ---
+- name: ArgoCD configure | Vérifier si l'Application soc-app-of-apps existe déjà
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ argocd_namespace }}"
+    name: soc-app-of-apps
+  register: _argocd_app_check
+  when:
+    - argocd_enable_app_of_apps | bool
+    - argocd_repo_url | length > 0
+
+- name: ArgoCD configure | Créer l'Application App of Apps
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    template: argocd-app-of-apps.yml.j2
+  when:
+    - argocd_enable_app_of_apps | bool
+    - argocd_repo_url | length > 0
+    - _argocd_app_check.resources | default([]) | length == 0
+
+- name: ArgoCD configure | Déposer l'idempotence marker
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ argocd_marker_name }}"
+        namespace: "{{ argocd_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          soc.lab/component: argocd
+          soc.lab/playbook: "77-argocd"
+      data:
+        deployed_at: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
+        chart_version: "{{ argocd_chart_version }}"
+        ingress_host: "{{ argocd_ingress_host }}"
+
+- name: ArgoCD configure | Résumé de la configuration
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD configuré :
+      RBAC={{ 'activé' if argocd_enable_rbac_cm else 'désactivé' }},
+      Admin password=géré dans deploy.yml (create-once avant Helm install),
+      App of Apps={{ 'activé' if (argocd_enable_app_of_apps and argocd_repo_url | length > 0) else 'désactivé (argocd_repo_url vide)' }}.

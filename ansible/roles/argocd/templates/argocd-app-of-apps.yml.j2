@@ -1,0 +1,30 @@
+# argocd-app-of-apps.yml.j2 — Application racine GitOps (App of Apps)
+# Déployé uniquement si argocd_repo_url est défini.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: soc-app-of-apps
+  namespace: "{{ argocd_namespace }}"
+  labels:
+    app.kubernetes.io/managed-by: soc-ansible
+    soc.lab/component: argocd
+    soc.lab/gitops-root: "true"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: "{{ argocd_repo_url }}"
+    targetRevision: "{{ argocd_repo_target_revision }}"
+    path: "{{ argocd_repo_path_apps }}"
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: "{{ argocd_namespace }}"
+  syncPolicy:
+    automated:
+      prune: false        # Sécurité : ne pas supprimer automatiquement
+      selfHeal: true      # Revenir à l'état Git si modifié manuellement
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

@@ -93,6 +93,16 @@ soc_namespaces:
   cortex: soc-cortex
   misp: soc-core
   monitoring: soc-monitoring
+  shuffle: soc-shuffle
+  argocd: argocd
+
+# ============================================================
+# ArgoCD — variables globales (rôle argocd)
+# ============================================================
+argocd_namespace: "argocd"
+argocd_ingress_host: "argocd.{{ apps_domain }}"
+argocd_repo_url: "https://github.com/ThomasBonan/SOC-as-code.git"
+argocd_repo_target_revision: "main"
 
 # Services
 soc_services:

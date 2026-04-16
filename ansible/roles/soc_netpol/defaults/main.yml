@@ -193,3 +193,10 @@ soc_netpol_misp_port: "{{ soc_ports.misp }}"
 # Uses CiliumNetworkPolicy toEntities: kube-apiserver (works regardless of ClusterIP DNAT)
 soc_netpol_enable_thehive_k8s_api_egress: true
 soc_netpol_thehive_k8s_api_policy_name: "egress-k8s-api"
+
+# ArgoCD NetworkPolicies
+soc_netpol_enable_argocd: true
+soc_netpol_argocd_namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
+soc_netpol_argocd_metrics_port: 8082    # argocd-server metrics
+soc_netpol_argocd_controller_metrics_port: 8083
+soc_netpol_argocd_repo_metrics_port: 8084

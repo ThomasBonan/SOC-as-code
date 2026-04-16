@@ -10,5 +10,6 @@
     - "{{ role_path }}/files/dashboards/ssi-overview.json"
     - "{{ role_path }}/files/dashboards/ssi-alerts.json"
     - "{{ role_path }}/files/dashboards/ssi-cases.json"
+    - "{{ role_path }}/files/dashboards/argocd.json"
   loop_control:
     loop_var: _dashboard_path

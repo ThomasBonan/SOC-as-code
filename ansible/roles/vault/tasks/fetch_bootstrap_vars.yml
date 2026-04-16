@@ -154,8 +154,25 @@
     wazuh_dashboard_password: "{{ _vfb_wazuh_dashboard_pass.stdout }}"
   no_log: true
 
+# --- ArgoCD admin password ---
+- name: Vault fetch | Lire argocd_admin_password depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=password
+    {{ _vfb_kv_mount }}/bootstrap/argocd
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_argocd_pass
+  changed_when: false
+  no_log: true
+  failed_when: _vfb_argocd_pass.rc != 0
+
+- name: Vault fetch | Définir argocd_admin_password comme fact
+  ansible.builtin.set_fact:
+    argocd_admin_password: "{{ _vfb_argocd_pass.stdout }}"
+  no_log: true
+
 - name: Vault fetch | Bootstrap passwords chargés depuis Vault
   ansible.builtin.debug:
     msg: >-
       Bootstrap passwords résolus depuis Vault KV pour TheHive, Cortex,
-      Shuffle, Grafana et Wazuh.
+      Shuffle, Grafana, Wazuh et ArgoCD.

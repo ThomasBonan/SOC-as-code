@@ -1,0 +1,43 @@
+# soc-security.yml — ApplicationSet pour la couche sécurité
+# Gère : Vault (configuration), ESO (ExternalSecrets)
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: soc-security
+  namespace: argocd
+  labels:
+    soc.lab/component: argocd
+    soc.lab/managed-by: gitops
+spec:
+  generators:
+    - list:
+        elements:
+          - name: vault-config
+            namespace: soc-vault
+            path: gitops/environments/lab/vault
+          - name: eso-config
+            namespace: soc-vault
+            path: gitops/environments/lab/eso
+  template:
+    metadata:
+      name: 'security-{{name}}'
+      labels:
+        soc.lab/component: argocd
+        soc.lab/layer: security
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+        targetRevision: main
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: false
+          selfHeal: true
+        syncOptions:
+          - ServerSideApply=true
+          - RespectIgnoreDifferences=true
