@@ -9,6 +9,15 @@ monitoring_enable_dashboards: true
 monitoring_enable_alerts: true
 
 # ============================================================
+# GitOps ownership (Phase 2)
+# Mettre à "gitops" pour déléguer à ArgoCD la gestion de ces ressources.
+# ============================================================
+monitoring_alerts_managed_by: "gitops"       # PrometheusRules
+monitoring_netpol_managed_by: "gitops"       # NetworkPolicies monitoring
+monitoring_ingress_managed_by: "gitops"      # Ingress Grafana
+monitoring_datasources_managed_by: "gitops"  # ConfigMaps datasources
+
+# ============================================================
 # Namespace & kubeconfig
 # ============================================================
 monitoring_namespace: "soc-monitoring"

@@ -1,0 +1,23 @@
+# grafana-datasource-loki.yaml — ConfigMap datasource Loki pour Grafana
+# Migré depuis ansible/roles/monitoring/tasks/configure_datasources.yml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasource-loki
+  namespace: soc-monitoring
+  labels:
+    grafana_datasource: "1"
+    app.kubernetes.io/managed-by: soc-gitops
+data:
+  loki-datasource.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki-stack.soc-monitoring.svc:3100
+        isDefault: false
+        jsonData:
+          timeout: 60
+          maxLines: 1000

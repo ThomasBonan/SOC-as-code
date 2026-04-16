@@ -1,4 +1,10 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Placeholder — kube-prometheus-stack, Loki, dashboards Grafana à versionner ici
-resources: []
+# Phase 2 GitOps — Monitoring : règles, réseau, ingress, datasources
+# Helm (kube-prometheus-stack, Loki, Blackbox) reste géré par Ansible (Day 1)
+# Dashboards JSON → à migrer en Phase 2b (fichiers volumineux)
+resources:
+  - prometheus-rules.yaml
+  - netpol-monitoring.yaml
+  - ingress-grafana.yaml
+  - grafana-datasource-loki.yaml

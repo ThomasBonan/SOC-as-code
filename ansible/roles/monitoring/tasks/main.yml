@@ -28,17 +28,21 @@
   tags: [monitoring, deploy]
   when: monitoring_enable_blackbox | bool
 
-- name: Monitoring | Configure datasources Grafana
+- name: Monitoring | Configure datasources Grafana (ignoré si géré par ArgoCD)
   ansible.builtin.import_tasks: configure_datasources.yml
   tags: [monitoring, datasources]
-  when: monitoring_enable_prometheus | bool
+  when:
+    - monitoring_enable_prometheus | bool
+    - monitoring_datasources_managed_by | default('ansible') != 'gitops'
 
 - name: Monitoring | Import dashboards Grafana
   ansible.builtin.import_tasks: configure_dashboards.yml
   tags: [monitoring, dashboards]
   when: monitoring_enable_dashboards | bool
 
-- name: Monitoring | Configure PrometheusRules (alertes)
+- name: Monitoring | Configure PrometheusRules (ignoré si géré par ArgoCD)
   ansible.builtin.import_tasks: configure_alerts.yml
   tags: [monitoring, alerts]
-  when: monitoring_enable_alerts | bool
+  when:
+    - monitoring_enable_alerts | bool
+    - monitoring_alerts_managed_by | default('ansible') != 'gitops'

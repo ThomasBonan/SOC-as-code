@@ -197,12 +197,14 @@
   when: soc_netpol_enable_vault | bool
 
 # --- NetworkPolicies Monitoring ---
-- name: Apply Monitoring NetworkPolicies (namespace soc-monitoring)
+- name: Apply Monitoring NetworkPolicies (ignoré si géré par ArgoCD)
   kubernetes.core.k8s:
     kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
     state: present
     template: netpol-monitoring.yml.j2
-  when: soc_netpol_enable_monitoring | bool
+  when:
+    - soc_netpol_enable_monitoring | bool
+    - monitoring_netpol_managed_by | default('ansible') != 'gitops'
 
 # --- NetworkPolicies ArgoCD ---
 - name: Apply ArgoCD NetworkPolicies (namespace argocd)

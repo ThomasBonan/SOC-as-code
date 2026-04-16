@@ -1,0 +1,184 @@
+# prometheus-rules.yaml — PrometheusRules SOC (infra + services + argocd)
+# Migré depuis ansible/roles/monitoring/templates/prometheus-rules.yml.j2
+---
+# ── Alertes Infrastructure ──────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: soc-infra-alerts
+  namespace: soc-monitoring
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  groups:
+    - name: soc-infrastructure
+      interval: "30s"
+      rules:
+
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total{namespace=~"soc-.*"}[1h]) > 5
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} crash-looping dans {{ $labels.namespace }}"
+            description: "{{ $labels.pod }} ({{ $labels.container }}) a redémarré plus de 5 fois en 1h."
+            runbook: "Vérifier kubectl logs {{ $labels.pod }} -n {{ $labels.namespace }}"
+
+        - alert: PodNotReady
+          expr: kube_pod_status_ready{condition="false", namespace=~"soc-.*"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.pod }} non-ready depuis 5 minutes"
+            description: "Le pod {{ $labels.pod }} dans {{ $labels.namespace }} n'est pas Ready."
+            runbook: "kubectl describe pod {{ $labels.pod }} -n {{ $labels.namespace }}"
+
+        - alert: PVCAlmostFull
+          expr: >
+            kubelet_volume_stats_used_bytes{namespace=~"soc-.*"}
+            / kubelet_volume_stats_capacity_bytes{namespace=~"soc-.*"}
+            > 0.85
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Volume {{ $labels.persistentvolumeclaim }} presque plein"
+            description: "PVC {{ $labels.persistentvolumeclaim }} dans {{ $labels.namespace }} est à {{ $value | humanizePercentage }}."
+
+        - alert: NodeNotReady
+          expr: kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Noeud K8s {{ $labels.node }} hors service"
+            description: "Le noeud {{ $labels.node }} n'est plus Ready depuis 5 minutes."
+
+        - alert: HighMemoryUsage
+          expr: >
+            container_memory_working_set_bytes{namespace=~"soc-.*"}
+            / container_spec_memory_limit_bytes{namespace=~"soc-.*"}
+            > 0.9
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Usage mémoire élevé pour {{ $labels.pod }}"
+            description: "{{ $labels.pod }} utilise {{ $value | humanizePercentage }} de sa limite mémoire."
+---
+# ── Alertes Services SOC ────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: soc-services-alerts
+  namespace: soc-monitoring
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  groups:
+    - name: soc-services
+      interval: "30s"
+      rules:
+
+        - alert: SOCServiceDown
+          expr: probe_success == 0
+          for: 3m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Service SOC {{ $labels.instance }} inaccessible"
+            description: "La probe HTTP vers {{ $labels.instance }} échoue depuis 3 minutes."
+            runbook: "Vérifier l'état du service et ses NetworkPolicies."
+
+        - alert: TheHiveDown
+          expr: probe_success{job=~".*blackbox.*", instance=~".*thehive.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "TheHive ne répond pas"
+            description: "TheHive est inaccessible depuis 2 minutes. Impact : ingestion d'alertes stoppée."
+
+        - alert: WazuhDown
+          expr: probe_success{job=~".*blackbox.*", instance=~".*wazuh.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "API Wazuh ne répond pas"
+            description: "L'API Wazuh est inaccessible depuis 2 minutes. Impact : détection dégradée."
+
+        - alert: HighProbeLatency
+          expr: probe_duration_seconds > 5
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Latence élevée vers {{ $labels.instance }}"
+            description: "La latence HTTP vers {{ $labels.instance }} dépasse 5s depuis 5 minutes."
+
+        - alert: DatabaseConnectionsHigh
+          expr: pg_stat_activity_count > 80
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Connexions PostgreSQL élevées ({{ $value }})"
+            description: "L'instance PostgreSQL {{ $labels.instance }} dépasse 80 connexions actives."
+---
+# ── Alertes ArgoCD ──────────────────────────────────────────────────────────
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: soc-argocd-alerts
+  namespace: soc-monitoring
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  groups:
+    - name: soc-argocd
+      interval: "30s"
+      rules:
+
+        - alert: ArgocdAppOutOfSync
+          expr: argocd_app_info{sync_status!="Synced"} == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "ArgoCD app {{ $labels.name }} désynchronisée"
+            description: "L'application ArgoCD {{ $labels.name }} est OutOfSync depuis 10 minutes."
+            runbook: "Vérifier argocd app diff {{ $labels.name }}"
+
+        - alert: ArgocdAppDegraded
+          expr: argocd_app_info{health_status!="Healthy"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ArgoCD app {{ $labels.name }} dégradée"
+            description: "L'application ArgoCD {{ $labels.name }} n'est pas Healthy depuis 5 minutes."
+            runbook: "kubectl get events -n {{ $labels.dest_namespace }}"
+
+        - alert: ArgocdSyncFailed
+          expr: argocd_app_sync_total{phase="Failed"} > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ArgoCD sync échoué pour {{ $labels.name }}"
+            description: "La synchronisation de l'application {{ $labels.name }} a échoué."
+
+        - alert: ArgocdDown
+          expr: probe_success{job=~".*blackbox.*", instance=~".*argocd.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "ArgoCD server ne répond pas"
+            description: "Le serveur ArgoCD est inaccessible depuis 2 minutes. Impact : GitOps désactivé."

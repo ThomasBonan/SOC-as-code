@@ -52,8 +52,9 @@
   until: >
     (_prom_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) >= 1
 
-- name: Monitoring | Prometheus — créer l'Ingress Grafana
+- name: Monitoring | Prometheus — créer l'Ingress Grafana (ignoré si géré par ArgoCD)
   kubernetes.core.k8s:
     kubeconfig: "{{ monitoring_kubeconfig_path }}"
     state: present
     template: ingress-grafana.yml.j2
+  when: monitoring_ingress_managed_by | default('ansible') != 'gitops'
