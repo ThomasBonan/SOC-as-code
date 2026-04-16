@@ -17,6 +17,11 @@ eso_vault_ca_bundle_secret: "soc-lab-ca-bundle"  # ConfigMap contenant le CA cer
 # --- Refresh interval des ExternalSecrets ---
 eso_refresh_interval: "1h"
 
+# --- GitOps ownership ---
+# Mettre à "gitops" pour déléguer la création des ExternalSecrets à ArgoCD.
+# Tant que cette variable vaut "ansible", le rôle ESO crée les 17 CRDs directement.
+eso_externalsecrets_managed_by: "gitops"
+
 # --- Kubeconfig ---
 eso_kubeconfig_path: "{{ kubeconfig_path }}"
 

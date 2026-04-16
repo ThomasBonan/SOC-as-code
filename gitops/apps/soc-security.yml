@@ -1,5 +1,6 @@
 # soc-security.yml — ApplicationSet pour la couche sécurité
-# Gère : Vault (configuration), ESO (ExternalSecrets)
+# Gère : Vault (configuration uniquement)
+# Note : ESO ExternalSecrets gérés par l'Application dédiée soc-eso-externalsecrets (gitops/apps/soc-eso.yml)
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -16,9 +17,6 @@ spec:
           - name: vault-config
             namespace: soc-vault
             path: gitops/environments/lab/vault
-          - name: eso-config
-            namespace: soc-vault
-            path: gitops/environments/lab/eso
   template:
     metadata:
       name: 'security-{{name}}'

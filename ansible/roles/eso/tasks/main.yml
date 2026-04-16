@@ -20,6 +20,7 @@
   ansible.builtin.import_tasks: configure.yml
   tags: [eso, configure]
 
-- name: ESO | ExternalSecrets — création des 17 CRDs
+- name: ESO | ExternalSecrets — création des 17 CRDs (ignoré si géré par ArgoCD)
   ansible.builtin.import_tasks: external_secrets.yml
   tags: [eso, external_secrets]
+  when: eso_externalsecrets_managed_by | default('ansible') != 'gitops'

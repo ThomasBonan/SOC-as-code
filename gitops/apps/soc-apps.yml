@@ -35,8 +35,7 @@ spec:
         path: '{{path}}'
       destination:
         server: https://kubernetes.default.svc
-        # Le namespace est défini dans chaque kustomization.yaml
-        namespace: default
+        # Pas de namespace ici : chaque kustomization.yaml déclare le sien
       syncPolicy:
         # Sync MANUEL par défaut — activer automated après validation de chaque app
         # automated:

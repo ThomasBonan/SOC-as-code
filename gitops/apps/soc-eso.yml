@@ -1,0 +1,28 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: soc-eso-externalsecrets
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: security
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+    targetRevision: main
+    path: gitops/environments/lab/eso
+  destination:
+    server: https://kubernetes.default.svc
+    # Pas de namespace ici : chaque ExternalSecret déclare le sien dans metadata.namespace
+  syncPolicy:
+    automated:
+      prune: false      # Sécurité : ne pas supprimer de secrets automatiquement
+      selfHeal: true    # Réconciliation automatique si drift détecté
+    syncOptions:
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+      - CreateNamespace=false   # Les namespaces SOC doivent déjà exister

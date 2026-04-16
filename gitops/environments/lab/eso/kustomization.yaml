@@ -1,4 +1,28 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Placeholder — ExternalSecrets et ClusterSecretStore à versionner ici
-resources: []
+# ExternalSecrets gérés par ArgoCD (migré depuis ansible/roles/eso/tasks/external_secrets.yml)
+# Chaque fichier déclare son propre metadata.namespace — ne pas surcharger ici.
+resources:
+  # Databases
+  - external-secret-thehive-postgresql-auth.yaml
+  - external-secret-cortex-postgresql-auth.yaml
+  - external-secret-misp-mariadb-auth.yaml
+  - external-secret-misp-redis.yaml
+  # Applications
+  - external-secret-misp-app-secret.yaml
+  - external-secret-thehive-secret.yaml
+  - external-secret-cortex-secret.yaml
+  - external-secret-soc-shuffle-admin-creds.yaml
+  # Credentials Wazuh
+  - external-secret-wazuh-credentials.yaml
+  - external-secret-wazuh-api-cred.yaml
+  # Service accounts
+  - external-secret-thehive-sa-foundations.yaml
+  - external-secret-thehive-selftest-foundations.yaml
+  - external-secret-cortex-sa-foundations.yaml
+  - external-secret-misp-sa-foundations.yaml
+  - external-secret-wazuh-sa-foundations.yaml
+  # Automation
+  - external-secret-soc-automation-worker-creds.yaml
+  # ArgoCD
+  - external-secret-argocd-admin-creds.yaml
