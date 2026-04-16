@@ -1,0 +1,47 @@
+# configmap-risk-policy.yaml — Politique de scoring 5 dimensions
+# Phase 4 GitOps — Risk Engine
+# Source : ansible/roles/soc_risk_engine/templates/scoring-policy.json.j2
+# Namespace : soc-thehive
+# Valeurs canoniques : ansible/inventories/group_vars/all.yml
+#   soc_risk_weights     : wazuh=2, cortex=3, misp=4, asset=2, frequency=1
+#   soc_risk_thresholds  : auto_close=15, auto_promote=50, auto_contain=75, escalate=90
+#
+# DRIFT GUARD : si les poids/seuils changent dans group_vars, mettre à jour CE fichier
+# puis relancer le drift_guard (190-soc-risk-engine --tags compliance) pour valider.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-risk-policy
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-risk-engine
+    app.kubernetes.io/component: soc-risk-engine
+    soc.lab/playbook: "190-soc-risk-engine"
+    soc.lab/environment: dev
+  annotations:
+    soc.lab/description: "SOC Risk Engine scoring policy — 5-dimension weighted model."
+    soc.lab/managed-by: "190-soc-risk-engine"
+data:
+  risk-policy.json: |
+    {
+      "version": "2.0",
+      "playbook": "190-soc-risk-engine",
+      "environment": "dev",
+      "weights": {
+        "wazuh":     2,
+        "cortex":    3,
+        "misp":      4,
+        "asset":     2,
+        "frequency": 1
+      },
+      "thresholds": {
+        "auto_close":   15,
+        "auto_promote": 50,
+        "auto_contain": 75,
+        "escalate":     90
+      },
+      "asset_criticality_configmap": "soc-asset-criticality",
+      "frequency_window_hours": 24,
+      "service_url": "http://risk-engine-svc.soc-thehive.svc:8080"
+    }

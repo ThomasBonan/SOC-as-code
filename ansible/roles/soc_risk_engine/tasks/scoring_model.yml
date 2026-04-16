@@ -138,17 +138,28 @@
     name: "{{ soc_risk_engine_marker_scoring }}"
   register: _sm_marker
   changed_when: false
+  when: soc_risk_engine_scoring_managed_by | default('ansible') != 'gitops'
 
 - name: "scoring_model | Already deployed — skip"
   ansible.builtin.debug:
     msg: "Scoring model already deployed (marker exists) — skipping."
-  when: _sm_marker.resources | length > 0
+  when:
+    - soc_risk_engine_scoring_managed_by | default('ansible') != 'gitops'
+    - _sm_marker.resources | length > 0
+  changed_when: false
+
+- name: "scoring_model | Géré par ArgoCD (GitOps) — skip ConfigMap K8s"
+  ansible.builtin.debug:
+    msg: "soc-risk-policy ConfigMap géré par ArgoCD (soc_risk_engine_scoring_managed_by=gitops) — skip."
+  when: soc_risk_engine_scoring_managed_by | default('ansible') == 'gitops'
   changed_when: false
 
 # ── Deploy scoring model block ────────────────────────────────────
 
 - name: "scoring_model | Deploy risk scoring model"
-  when: _sm_marker.resources | length == 0
+  when:
+    - soc_risk_engine_scoring_managed_by | default('ansible') != 'gitops'
+    - _sm_marker.resources | length == 0
   block:
 
     - name: "scoring_model | Deploy soc-risk-policy ConfigMap"

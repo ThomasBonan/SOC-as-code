@@ -1,0 +1,31 @@
+# service-risk-engine.yaml — Service ClusterIP du Risk Engine
+# Phase 4 GitOps — Risk Engine
+# Source : ansible/roles/soc_risk_engine/templates/service-risk-engine.yml.j2
+# Namespace : soc-thehive
+#
+# Accessible depuis Shuffle (soc-shuffle) via règle NetworkPolicy egress.
+# URL interne : http://risk-engine-svc.soc-thehive.svc:8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: risk-engine-svc
+  namespace: soc-thehive
+  labels:
+    app: risk-engine
+    app.kubernetes.io/managed-by: soc-risk-engine
+    app.kubernetes.io/component: soc-risk-engine
+    soc.lab/playbook: "190-soc-risk-engine"
+    soc.lab/environment: dev
+  annotations:
+    soc.lab/managed-by: "190-soc-risk-engine"
+    soc.lab/description: "ClusterIP for risk-engine Deployment — POST /score, GET /health"
+spec:
+  type: ClusterIP
+  selector:
+    app: risk-engine
+  ports:
+    - name:       http
+      port:       8080
+      targetPort: 8080
+      protocol:   TCP

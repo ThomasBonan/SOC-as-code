@@ -67,17 +67,28 @@
     name: "{{ soc_risk_engine_marker_asset }}"
   register: _ac_marker
   changed_when: false
+  when: soc_risk_engine_asset_managed_by | default('ansible') != 'gitops'
 
 - name: "asset_criticality | Already deployed — skip"
   ansible.builtin.debug:
     msg: "Asset criticality model already deployed (marker exists) — skipping."
-  when: _ac_marker.resources | length > 0
+  when:
+    - soc_risk_engine_asset_managed_by | default('ansible') != 'gitops'
+    - _ac_marker.resources | length > 0
+  changed_when: false
+
+- name: "asset_criticality | Géré par ArgoCD (GitOps) — skip ConfigMap K8s"
+  ansible.builtin.debug:
+    msg: "soc-asset-criticality ConfigMap géré par ArgoCD (soc_risk_engine_asset_managed_by=gitops) — skip."
+  when: soc_risk_engine_asset_managed_by | default('ansible') == 'gitops'
   changed_when: false
 
 # ── Deploy asset criticality model block ──────────────────────────
 
 - name: "asset_criticality | Deploy asset weight model"
-  when: _ac_marker.resources | length == 0
+  when:
+    - soc_risk_engine_asset_managed_by | default('ansible') != 'gitops'
+    - _ac_marker.resources | length == 0
   block:
 
     - name: "asset_criticality | Deploy soc-asset-criticality ConfigMap"

@@ -23,6 +23,10 @@ spec:
           # Exclure eso/ : géré par soc-eso-externalsecrets (gitops/apps/soc-eso.yml)
           - path: gitops/environments/lab/eso
             exclude: true
+          # Exclure risk-engine/ : géré par soc-risk-engine (gitops/apps/soc-risk-engine.yml)
+          # avec sync automatique et ignoreDifferences pour kubectl restartedAt
+          - path: gitops/environments/lab/risk-engine
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'

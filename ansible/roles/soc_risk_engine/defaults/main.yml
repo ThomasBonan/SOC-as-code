@@ -145,3 +145,12 @@ soc_risk_engine_labels:
 soc_risk_engine_marker_asset:    "soc-risk-marker-asset-criticality"
 soc_risk_engine_marker_scoring:  "soc-risk-marker-scoring-model"
 soc_risk_engine_marker_service:  "soc-risk-marker-service"
+
+# ── GitOps gating (Phase 4) ───────────────────────────────────────
+# Quand la valeur est "gitops", Ansible saute la création des ressources K8s
+# (ConfigMaps, Deployment, Service) — ArgoCD les gère à la place.
+# Les appels API TheHive (custom fields) s'exécutent toujours (idempotents par 400/409).
+# Passer à "ansible" pour revenir au mode Ansible-only (redéploiement complet sans GitOps).
+soc_risk_engine_asset_managed_by:    "gitops"   # soc-asset-criticality ConfigMap
+soc_risk_engine_scoring_managed_by:  "gitops"   # soc-risk-policy ConfigMap
+soc_risk_engine_service_managed_by:  "gitops"   # Deployment + Service + app script ConfigMap

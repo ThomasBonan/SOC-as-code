@@ -1,0 +1,130 @@
+# deployment-risk-engine.yaml — Déploiement Flask HTTP du Risk Engine SOC
+# Phase 4 GitOps — Risk Engine
+# Source : ansible/roles/soc_risk_engine/templates/deployment-risk-engine.yml.j2
+# Namespace : soc-thehive
+#
+# Architecture :
+#   Init container : installe Flask dans emptyDir /app/libs
+#   Main container : python:3.11-slim, PYTHONPATH=/app/libs, exécute risk-engine-app.py
+#   Config source  : script depuis ConfigMap soc-risk-engine-app-script (/app/)
+#                    poids assets depuis soc-asset-criticality (/config/)
+#   Sécurité       : readOnlyRootFilesystem=true, runAsUser=1000, non-root
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-engine
+  namespace: soc-thehive
+  labels:
+    app: risk-engine
+    app.kubernetes.io/managed-by: soc-risk-engine
+    app.kubernetes.io/component: soc-risk-engine
+    soc.lab/playbook: "190-soc-risk-engine"
+    soc.lab/environment: dev
+  annotations:
+    soc.lab/managed-by: "190-soc-risk-engine"
+    soc.lab/description: "SOC Risk Engine HTTP service — POST /score, GET /health"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: risk-engine
+  template:
+    metadata:
+      labels:
+        app: risk-engine
+        app.kubernetes.io/managed-by: soc-risk-engine
+        app.kubernetes.io/component: soc-risk-engine
+        soc.lab/playbook: "190-soc-risk-engine"
+        soc.lab/environment: dev
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      # ── Init container : installe Flask dans un emptyDir partagé ──────────────
+      initContainers:
+        - name: install-flask
+          image: python:3.11-slim
+          command:
+            - pip
+            - install
+            - "flask==3.1.0"
+            - "--target=/app/libs"
+            - "--no-cache-dir"
+            - "--quiet"
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: libs
+              mountPath: /app/libs
+
+      # ── Container principal : service Flask risk engine ───────────────────────
+      containers:
+        - name: risk-engine
+          image: python:3.11-slim
+          command: ["python", "/app/risk-engine-app.py"]
+          env:
+            - name: PYTHONPATH
+              value: /app/libs
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 1000
+          resources:
+            requests:
+              cpu:    50m
+              memory: 128Mi
+            limits:
+              cpu:    200m
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds:       30
+            failureThreshold:    3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds:       10
+            failureThreshold:    3
+          volumeMounts:
+            # Script applicatif (lecture seule depuis ConfigMap)
+            - name: app-script
+              mountPath: /app/risk-engine-app.py
+              subPath:   risk-engine-app.py
+              readOnly:  true
+            # Poids des assets (lecture seule depuis ConfigMap)
+            - name: asset-config
+              mountPath: /config/asset-criticality.json
+              subPath:   asset-criticality.json
+              readOnly:  true
+            # Volumes emptyDir accessibles en écriture
+            - name: libs
+              mountPath: /app/libs
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: app-script
+          configMap:
+            name: soc-risk-engine-app-script
+        - name: asset-config
+          configMap:
+            name: soc-asset-criticality
+        - name: libs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Phase 4 GitOps — Risk Engine (Deployment, Service, Ingress, ConfigMaps)
+# Helm et bootstrap TheHive custom fields restent gérés par Ansible (Day 1)
+# Les ressources K8s Day 2 sont gérées ici ; Ansible les saute via _managed_by=gitops
+resources:
+  - configmap-asset-criticality.yaml
+  - configmap-risk-policy.yaml
+  - configmap-app-script.yaml
+  - deployment-risk-engine.yaml
+  - service-risk-engine.yaml
+  - ingress-risk-engine.yaml

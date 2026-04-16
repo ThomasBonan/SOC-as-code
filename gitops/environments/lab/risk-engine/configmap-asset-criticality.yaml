@@ -1,0 +1,33 @@
+# configmap-asset-criticality.yaml — Modèle de criticité des assets
+# Phase 4 GitOps — Risk Engine
+# Source : ansible/roles/soc_risk_engine/tasks/asset_criticality.yml
+# Namespace : soc-thehive (même namespace que le Deployment risk-engine)
+# Valeurs canoniques : ansible/inventories/group_vars/all.yml → soc_risk_asset_weights
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-asset-criticality
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-risk-engine
+    app.kubernetes.io/component: soc-risk-engine
+    soc.lab/playbook: "190-soc-risk-engine"
+    soc.lab/environment: dev
+  annotations:
+    soc.lab/description: "Asset criticality weights for 190-soc-risk-engine. Maps asset:<type> tags on TheHive cases to integer weights (1-5)."
+    soc.lab/managed-by: "190-soc-risk-engine"
+data:
+  asset-criticality.json: |
+    {
+      "version": "1.0",
+      "description": "Asset criticality weight mapping (1=lowest, 5=highest). Applied as dimension 4 in risk_score_v2 computation.",
+      "weights": {
+        "server-prod":     5,
+        "server-internal": 3,
+        "workstation":     2,
+        "lab":             1,
+        "default":         1
+      },
+      "environment": "dev"
+    }

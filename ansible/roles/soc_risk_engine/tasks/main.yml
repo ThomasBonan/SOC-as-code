@@ -36,7 +36,9 @@
 
 - name: "soc_risk_engine | Risk Engine service — deploy Flask HTTP service (Deployment + ClusterIP)"
   import_tasks: risk_engine_service.yml
-  when: soc_risk_engine_enable_risk_engine_service | bool
+  when:
+    - soc_risk_engine_enable_risk_engine_service | bool
+    - soc_risk_engine_service_managed_by | default('ansible') != 'gitops'
   tags:
     - decision
     - soc_risk_engine
