@@ -9,7 +9,9 @@
         soc_netpol_namespaces.cortex: soc_netpol_cortex_pod_selectors + soc_netpol_cortex_job_pod_selectors,
         soc_netpol_namespaces.misp:   soc_netpol_misp_pod_selectors
       } }}"
-  when: soc_netpol_enable_dns | bool
+  when:
+    - soc_netpol_enable_dns | bool
+    - soc_netpol_dns_managed_by | default('ansible') != 'gitops'
 
 # Note: dns_selectors (from vars:) is NOT available in the outer when: of include_tasks.
 # Use _soc_netpol_dns_selectors_map directly in when: to avoid the scoping issue.
@@ -22,7 +24,8 @@
     loop_var: dns_ns
   when:
     - soc_netpol_enable_dns | bool
-    - _soc_netpol_dns_selectors_map[dns_ns] | default([]) | length > 0
+    - soc_netpol_dns_managed_by | default('ansible') != 'gitops'
+    - (_soc_netpol_dns_selectors_map | default({}))[dns_ns] | default([]) | length > 0
 
 - name: Apply Wazuh -> TheHive egress policies
   kubernetes.core.k8s:
@@ -42,7 +45,9 @@
     netpol_ports:
       - protocol: TCP
         port: "{{ soc_netpol_thehive_port }}"
-  when: soc_netpol_enable_wazuh_to_thehive | bool
+  when:
+    - soc_netpol_enable_wazuh_to_thehive | bool
+    - soc_netpol_wazuh_managed_by | default('ansible') != 'gitops'
 
 - name: Apply Wazuh internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
@@ -60,6 +65,7 @@
     index_var: wazuh_idx
   when:
     - soc_netpol_enable_internal_egress | bool
+    - soc_netpol_wazuh_managed_by | default('ansible') != 'gitops'
     - wazuh_dests | length > 0
 
 - name: Remove legacy standard NetworkPolicy for TheHive K8s API (replaced by CiliumNetworkPolicy)
@@ -71,7 +77,9 @@
     namespace: "{{ soc_netpol_namespaces.thehive }}"
     state: absent
   loop: "{{ range(soc_netpol_thehive_pod_selectors | length) | list }}"
-  when: soc_netpol_enable_thehive_k8s_api_egress | bool
+  when:
+    - soc_netpol_enable_thehive_k8s_api_egress | bool
+    - soc_netpol_thehive_managed_by | default('ansible') != 'gitops'
 
 - name: Apply TheHive -> K8s API egress policies (Pekko cluster bootstrap)
   kubernetes.core.k8s:
@@ -86,7 +94,9 @@
     netpol_namespace: "{{ soc_netpol_namespaces.thehive }}"
     netpol_name: "{{ soc_netpol_thehive_k8s_api_policy_name }}-{{ thehive_k8s_api_idx }}"
     netpol_pod_selector: "{{ thehive_k8s_api_selector }}"
-  when: soc_netpol_enable_thehive_k8s_api_egress | bool
+  when:
+    - soc_netpol_enable_thehive_k8s_api_egress | bool
+    - soc_netpol_thehive_managed_by | default('ansible') != 'gitops'
 
 - name: Apply TheHive -> Cortex egress policies
   kubernetes.core.k8s:
@@ -106,7 +116,9 @@
     netpol_ports:
       - protocol: TCP
         port: "{{ soc_netpol_cortex_port }}"
-  when: soc_netpol_enable_thehive_to_cortex | bool
+  when:
+    - soc_netpol_enable_thehive_to_cortex | bool
+    - soc_netpol_thehive_managed_by | default('ansible') != 'gitops'
 
 - name: Apply TheHive internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
@@ -124,6 +136,7 @@
     index_var: thehive_idx
   when:
     - soc_netpol_enable_internal_egress | bool
+    - soc_netpol_thehive_managed_by | default('ansible') != 'gitops'
     - thehive_dests | length > 0
 
 - name: Build Cortex selectors (include jobs)
@@ -147,6 +160,7 @@
     cnp_ports: "{{ soc_netpol_cortex_internet_ports }}"
   when:
     - soc_netpol_enable_cortex_internet_egress | bool
+    - soc_netpol_cortex_managed_by | default('ansible') != 'gitops'
     - (soc_netpol_cortex_internet_fqdns | default([]) | length) > 0
     - (soc_netpol_cortex_internet_ports | default([]) | length) > 0
 
@@ -168,7 +182,9 @@
     netpol_ports:
       - protocol: TCP
         port: "{{ soc_netpol_misp_port }}"
-  when: soc_netpol_enable_cortex_to_misp | bool
+  when:
+    - soc_netpol_enable_cortex_to_misp | bool
+    - soc_netpol_cortex_managed_by | default('ansible') != 'gitops'
 
 - name: Apply Cortex internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
@@ -186,6 +202,7 @@
     index_var: cortex_idx
   when:
     - soc_netpol_enable_internal_egress | bool
+    - soc_netpol_cortex_managed_by | default('ansible') != 'gitops'
     - cortex_dests | length > 0
 
 # --- NetworkPolicies Vault ---
@@ -194,7 +211,9 @@
     kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
     state: present
     template: netpol-vault.yml.j2
-  when: soc_netpol_enable_vault | bool
+  when:
+    - soc_netpol_enable_vault | bool
+    - soc_netpol_vault_managed_by | default('ansible') != 'gitops'
 
 # --- NetworkPolicies Monitoring ---
 - name: Apply Monitoring NetworkPolicies (ignoré si géré par ArgoCD)
@@ -212,7 +231,9 @@
     kubeconfig: "{{ soc_netpol_kubeconfig_path }}"
     state: present
     template: netpol-argocd.yml.j2
-  when: soc_netpol_enable_argocd | bool
+  when:
+    - soc_netpol_enable_argocd | bool
+    - soc_netpol_argocd_managed_by | default('ansible') != 'gitops'
 
 - name: Apply MISP internal egress policies
   ansible.builtin.include_tasks: internal_egress_for_source.yml
@@ -230,4 +251,5 @@
     index_var: misp_idx
   when:
     - soc_netpol_enable_internal_egress | bool
+    - soc_netpol_misp_managed_by | default('ansible') != 'gitops'
     - misp_dests | length > 0

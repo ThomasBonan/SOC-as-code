@@ -1,0 +1,128 @@
+# netpol-vault.yaml — NetworkPolicies pour le namespace soc-vault
+# Phase 3 GitOps — depuis ansible/roles/soc_netpol/templates/netpol-vault.yml.j2
+#
+# Règles :
+#   1. ESO → Vault (8200/TCP) : synchronisation des secrets
+#   2. Ingress-nginx → Vault UI (8200/TCP)
+#   3. Controller Ansible / bastion (ipBlock) → Vault API (8200/TCP)
+#   4. Vault → K8s API (443/6443) : token review
+#   5. DNS egress pour Vault
+---
+# Règle 1 : ESO → Vault (ingress dans soc-vault depuis pods ESO)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-from-eso
+  namespace: soc-vault
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-vault
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: external-secrets
+      ports:
+        - protocol: TCP
+          port: 8200
+---
+# Règle 2 : Ingress-nginx → Vault UI
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-from-nginx
+  namespace: soc-vault
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8200
+---
+# Règle 3 : Controller Ansible / réseau de gestion → Vault API
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-from-controller
+  namespace: soc-vault
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - ipBlock:
+            cidr: "10.0.0.0/8"
+        - ipBlock:
+            cidr: "172.16.0.0/12"
+      ports:
+        - protocol: TCP
+          port: 8200
+---
+# Règle 4 : Vault → K8s API server (token review pour Kubernetes auth)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-k8s-api
+  namespace: soc-vault
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+---
+# Règle 5 : DNS egress pour Vault
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns
+  namespace: soc-vault
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vault
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

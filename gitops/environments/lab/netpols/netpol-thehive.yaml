@@ -1,0 +1,377 @@
+# netpol-thehive.yaml — NetworkPolicies pour le namespace soc-thehive
+# Phase 3 GitOps — adopté depuis ansible/roles/soc_netpol
+#
+# Règles :
+#   1. DNS egress (× 2 pod selectors)
+#   2. TheHive → Cortex (port 9001, × 2 pod selectors)
+#   3. TheHive → K8s API (CiliumNetworkPolicy toEntities, × 2 pod selectors)
+#   4. TheHive internal : cassandra, elasticsearch, minio (× 2 sources)
+---
+# Règle 1a : DNS egress — source: app.kubernetes.io/name=thehive
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-0
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 1b : DNS egress — source: app=thehive
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-1
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 2a : TheHive → Cortex — source: app.kubernetes.io/name=thehive
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-cortex-0
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cortex
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app: cortex
+      ports:
+        - protocol: TCP
+          port: 9001
+---
+# Règle 2b : TheHive → Cortex — source: app=thehive
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-cortex-1
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cortex
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app: cortex
+      ports:
+        - protocol: TCP
+          port: 9001
+---
+# Règle 3a : TheHive → K8s API (Pekko cluster bootstrap)
+# CiliumNetworkPolicy toEntities: kube-apiserver — source: app.kubernetes.io/name=thehive
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-k8s-api-0
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  egress:
+    - toEntities:
+        - kube-apiserver
+---
+# Règle 3b : TheHive → K8s API — source: app=thehive
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-k8s-api-1
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  endpointSelector:
+    matchLabels:
+      app: thehive
+  egress:
+    - toEntities:
+        - kube-apiserver
+---
+# Règle 4a : TheHive internal — source: app.kubernetes.io/name=thehive → cassandra
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-internal-0-cassandra
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cassandra
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: cassandra
+      ports:
+        - protocol: TCP
+          port: 9042
+---
+# Règle 4b : TheHive internal — source: app.kubernetes.io/name=thehive → elasticsearch
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-internal-0-elasticsearch
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+# Règle 4c : TheHive internal — source: app.kubernetes.io/name=thehive → minio
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-internal-0-minio
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# Règle 4d : TheHive internal — source: app=thehive → cassandra
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-internal-1-cassandra
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cassandra
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: cassandra
+      ports:
+        - protocol: TCP
+          port: 9042
+---
+# Règle 4e : TheHive internal — source: app=thehive → elasticsearch
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-internal-1-elasticsearch
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+# Règle 4f : TheHive internal — source: app=thehive → minio
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-internal-1-minio
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: thehive
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: minio
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: minio
+      ports:
+        - protocol: TCP
+          port: 9000

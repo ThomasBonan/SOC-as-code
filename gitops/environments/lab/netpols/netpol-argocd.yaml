@@ -1,0 +1,162 @@
+# netpol-argocd.yaml — NetworkPolicies pour le namespace argocd
+# Phase 3 GitOps — depuis ansible/roles/soc_netpol/templates/netpol-argocd.yml.j2
+#
+# Règles :
+#   1. Ingress-nginx → argocd-server (port 8080) — accès UI/API
+#   2. ArgoCD (server + controller) → K8s API (6443/443) — apply des manifests
+#   3. argocd-repo-server → Git (443/22) — clone/fetch
+#   4. Trafic intra-namespace ArgoCD
+#   5. Prometheus → ArgoCD métriques (8082/8083/8084/8080)
+#   6. DNS egress pour ArgoCD
+---
+# Règle 1 : Ingress-nginx → argocd-server (UI/API)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-from-nginx-argocd
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-server
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# Règle 2 : ArgoCD → K8s API (réconciliation et apply des manifests)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-argocd-k8s-api
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: argocd
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 6443
+        - protocol: TCP
+          port: 443
+---
+# Règle 3 : argocd-repo-server → Git (clone/fetch)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-argocd-repo-git
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: argocd-repo-server
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 22
+---
+# Règle 4 : Trafic intra-namespace ArgoCD (server ↔ redis, controller ↔ redis, etc.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-argocd-internal
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: argocd
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: argocd
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: argocd
+---
+# Règle 5 : Prometheus → ArgoCD métriques (scrape)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-prometheus-argocd-metrics
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: argocd
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8082   # argocd-server metrics
+        - protocol: TCP
+          port: 8083   # argocd-application-controller metrics
+        - protocol: TCP
+          port: 8084   # argocd-repo-server metrics
+        - protocol: TCP
+          port: 8080   # health probe blackbox
+---
+# Règle 6 : DNS egress pour le namespace argocd
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-argocd
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

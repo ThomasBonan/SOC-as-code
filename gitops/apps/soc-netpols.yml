@@ -1,0 +1,30 @@
+# soc-netpols.yml — Application NetworkPolicies applicatives SOC
+# Phase 3 GitOps — Wazuh, TheHive, Cortex, MISP, Vault, ArgoCD
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: soc-netpols
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: network
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+    targetRevision: main
+    path: gitops/environments/lab/netpols
+  destination:
+    server: https://kubernetes.default.svc
+    # Pas de namespace ici : chaque NetworkPolicy déclare le sien (soc-wazuh, soc-thehive, etc.)
+  syncPolicy:
+    automated:
+      prune: false      # Sécurité : ne pas supprimer de policies automatiquement
+      selfHeal: true    # Réconciliation automatique si drift détecté
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false   # Les namespaces SOC doivent déjà exister

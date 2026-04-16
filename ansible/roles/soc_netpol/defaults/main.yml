@@ -200,3 +200,14 @@ soc_netpol_argocd_namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
 soc_netpol_argocd_metrics_port: 8082    # argocd-server metrics
 soc_netpol_argocd_controller_metrics_port: 8083
 soc_netpol_argocd_repo_metrics_port: 8084
+
+# Phase 3 GitOps — NetworkPolicies applicatives
+# Valeur 'gitops' = Ansible saute les tâches (ArgoCD a la responsabilité)
+# Valeur 'ansible' (défaut) = Ansible applique les tâches normalement
+soc_netpol_dns_managed_by: "gitops"      # DNS egress (soc-wazuh, soc-thehive, soc-cortex, soc-core)
+soc_netpol_wazuh_managed_by: "gitops"    # soc-wazuh NetworkPolicies applicatives
+soc_netpol_thehive_managed_by: "gitops"  # soc-thehive NetworkPolicies applicatives
+soc_netpol_cortex_managed_by: "gitops"   # soc-cortex NetworkPolicies applicatives
+soc_netpol_misp_managed_by: "gitops"     # soc-core (MISP) NetworkPolicies applicatives
+soc_netpol_vault_managed_by: "gitops"    # soc-vault NetworkPolicies
+soc_netpol_argocd_managed_by: "gitops"   # argocd NetworkPolicies

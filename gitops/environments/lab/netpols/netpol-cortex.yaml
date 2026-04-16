@@ -1,0 +1,262 @@
+# netpol-cortex.yaml — NetworkPolicies pour le namespace soc-cortex
+# Phase 3 GitOps — adopté depuis ansible/roles/soc_netpol
+#
+# Règles :
+#   1. DNS egress (× 2 pod selectors)
+#   2. Cortex → MISP/soc-core (port 443, × 2 pod selectors)
+#   3. Cortex → Internet FQDN (CiliumNetworkPolicy, × 2 pod selectors)
+#   4. Cortex internal : elasticsearch (× 2 sources)
+---
+# Règle 1a : DNS egress — source: app.kubernetes.io/name=cortex
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-0
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cortex
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 1b : DNS egress — source: app=cortex
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-1
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: cortex
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 2a : Cortex → MISP — source: app.kubernetes.io/name=cortex
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-misp-0
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cortex
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app: misp
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Règle 2b : Cortex → MISP — source: app=cortex
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-misp-1
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: cortex
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app: misp
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Règle 3a : Cortex → Internet FQDN (Cilium)
+# Analyzer downloads depuis GitHub, PyPI, Docker Hub
+# Source: app.kubernetes.io/name=cortex
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-internet-fqdn-0
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cortex
+  egress:
+    - toFQDNs:
+        - matchName: "github.com"
+        - matchName: "api.github.com"
+        - matchName: "raw.githubusercontent.com"
+        - matchName: "objects.githubusercontent.com"
+        - matchName: "pypi.org"
+        - matchName: "files.pythonhosted.org"
+        - matchName: "auth.docker.io"
+        - matchName: "registry-1.docker.io"
+        - matchName: "ghcr.io"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# Règle 3b : Cortex → Internet FQDN (Cilium) — source: app=cortex
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-internet-fqdn-1
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  endpointSelector:
+    matchLabels:
+      app: cortex
+  egress:
+    - toFQDNs:
+        - matchName: "github.com"
+        - matchName: "api.github.com"
+        - matchName: "raw.githubusercontent.com"
+        - matchName: "objects.githubusercontent.com"
+        - matchName: "pypi.org"
+        - matchName: "files.pythonhosted.org"
+        - matchName: "auth.docker.io"
+        - matchName: "registry-1.docker.io"
+        - matchName: "ghcr.io"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+---
+# Règle 4a : Cortex internal — source: app.kubernetes.io/name=cortex → elasticsearch
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-cortex-internal-0-elasticsearch
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cortex
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+# Règle 4b : Cortex internal — source: app=cortex → elasticsearch
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-cortex-internal-1-elasticsearch
+  namespace: soc-cortex
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: cortex
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: elasticsearch
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-cortex
+          podSelector:
+            matchLabels:
+              app: elasticsearch
+      ports:
+        - protocol: TCP
+          port: 9200

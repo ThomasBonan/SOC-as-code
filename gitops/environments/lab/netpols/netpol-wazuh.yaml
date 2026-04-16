@@ -1,0 +1,279 @@
+# netpol-wazuh.yaml — NetworkPolicies pour le namespace soc-wazuh
+# Phase 3 GitOps — adopté depuis ansible/roles/soc_netpol
+#
+# Règles :
+#   1. DNS egress (× 2 pod selectors)
+#   2. Wazuh → TheHive (port 9000, × 2 pod selectors)
+#   3. Wazuh internal : manager-api + indexer (× 2 sources)
+---
+# Règle 1a : DNS egress — source: app=wazuh-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-0
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 1b : DNS egress — source: app.kubernetes.io/component=wazuh-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-1
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 2a : Wazuh → TheHive — source: app=wazuh-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-0
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: thehive
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: thehive
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# Règle 2b : Wazuh → TheHive — source: app.kubernetes.io/component=wazuh-manager
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-thehive-1
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: thehive
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-thehive
+          podSelector:
+            matchLabels:
+              app: thehive
+      ports:
+        - protocol: TCP
+          port: 9000
+---
+# Règle 3a : Wazuh internal — source: app=wazuh-manager → manager-api
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-wazuh-internal-0-manager-api
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app: wazuh-manager
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: wazuh-manager
+      ports:
+        - protocol: TCP
+          port: 55000
+---
+# Règle 3b : Wazuh internal — source: app=wazuh-manager → indexer
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-wazuh-internal-0-indexer
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app: wazuh-indexer
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: indexer
+      ports:
+        - protocol: TCP
+          port: 9200
+---
+# Règle 3c : Wazuh internal — source: app.kubernetes.io/component=wazuh-manager → manager-api
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-wazuh-internal-1-manager-api
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app: wazuh-manager
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: wazuh-manager
+      ports:
+        - protocol: TCP
+          port: 55000
+---
+# Règle 3d : Wazuh internal — source: app.kubernetes.io/component=wazuh-manager → indexer
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-wazuh-internal-1-indexer
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: wazuh-manager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app: wazuh-indexer
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-wazuh
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: indexer
+      ports:
+        - protocol: TCP
+          port: 9200

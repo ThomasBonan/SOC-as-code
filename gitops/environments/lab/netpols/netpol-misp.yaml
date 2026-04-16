@@ -1,0 +1,136 @@
+# netpol-misp.yaml — NetworkPolicies pour le namespace soc-core (MISP)
+# Phase 3 GitOps — adopté depuis ansible/roles/soc_netpol
+#
+# Règles :
+#   1. DNS egress (source: app=misp)
+#   2. MISP internal : mariadb (3306), redis (6379), misp-modules (6666)
+---
+# Règle 1 : DNS egress — source: app=misp
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-dns-0
+  namespace: soc-core
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: misp
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: coredns
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: coredns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Règle 2a : MISP internal — source: app=misp → mariadb
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-misp-internal-0-mariadb
+  namespace: soc-core
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: misp
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mariadb
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app: mariadb
+      ports:
+        - protocol: TCP
+          port: 3306
+---
+# Règle 2b : MISP internal — source: app=misp → redis
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-misp-internal-0-redis
+  namespace: soc-core
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: misp
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app: redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# Règle 2c : MISP internal — source: app=misp → misp-modules
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-misp-internal-0-misp-modules
+  namespace: soc-core
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app: misp
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-core
+          podSelector:
+            matchLabels:
+              app: misp-modules
+      ports:
+        - protocol: TCP
+          port: 6666
