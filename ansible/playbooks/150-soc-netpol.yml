@@ -1,7 +1,125 @@
-- name: SOC network policies (minimal flows)
+---
+# 150-soc-netpol.yml — NetworkPolicies SOC
+#
+# Phase 3 GitOps : toutes les NetworkPolicies applicatives (Wazuh, TheHive,
+# Cortex, MISP, Vault, ArgoCD) sont gérées par ArgoCD (app soc-netpols).
+# Ce playbook sert de gate de validation : il force un refresh ArgoCD puis
+# attend que l'app soit Synced + Healthy avant de continuer le pipeline.
+#
+# Le rôle soc_netpol est conservé pour les politiques résiduelles éventuelles
+# (toutes sont actuellement gérées via GitOps donc toutes skippées).
+#
+# Variables clés (group_vars/all.yml) :
+#   soc_netpol_*_managed_by: "gitops"  → tâches Ansible skippées
+#
+# Usage :
+#   ansible-playbook ansible/playbooks/150-soc-netpol.yml
+#   ansible-playbook ansible/playbooks/150-soc-netpol.yml --tags netpol
+#   ansible-playbook ansible/playbooks/150-soc-netpol.yml --tags gitops-wait
+
+- name: "150 | SOC NetworkPolicies — gate de validation GitOps"
   hosts: localhost
   gather_facts: false
   vars:
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
-  roles:
-    - soc_netpol
+    _netpols_app_name: "soc-netpols"
+    _argocd_namespace: "{{ soc_namespaces.argocd | default('argocd') }}"
+    _sync_retries: 24        # 24 × 15 s = 6 min max
+    _sync_delay: 15
+
+  tasks:
+    # --- Rôle soc_netpol ---------------------------------------------------
+    # Toutes les tâches applicatives sont skippées (managed_by=gitops).
+    # Conservé pour rollback partiel futur ou politiques hors-périmètre GitOps.
+    - name: Appliquer les NetworkPolicies résiduelles (rôle soc_netpol)
+      ansible.builtin.include_role:
+        name: soc_netpol
+      tags:
+        - netpol
+
+    # --- Gate ArgoCD --------------------------------------------------------
+    - name: "GitOps | Vérifier que soc-netpols existe dans ArgoCD"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: "{{ _netpols_app_name }}"
+        namespace: "{{ _argocd_namespace }}"
+      register: _netpols_check
+      tags:
+        - gitops-wait
+
+    - name: "GitOps | Avertir si soc-netpols absent (1er déploiement possible)"
+      ansible.builtin.debug:
+        msg: >
+          WARN: l'app ArgoCD '{{ _netpols_app_name }}' n'existe pas encore.
+          soc-app-of-apps n'a pas encore synchronisé. Les NetworkPolicies
+          seront appliquées lors de la prochaine sync ArgoCD automatique.
+      when: _netpols_check.resources | length == 0
+      tags:
+        - gitops-wait
+
+    - name: "GitOps | Forcer un refresh hard de soc-netpols"
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: patched
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: "{{ _netpols_app_name }}"
+        namespace: "{{ _argocd_namespace }}"
+        definition:
+          metadata:
+            annotations:
+              argocd.argoproj.io/refresh: hard
+      when: _netpols_check.resources | length > 0
+      tags:
+        - gitops-wait
+
+    - name: "GitOps | Attendre Synced + Healthy (max {{ _sync_retries * _sync_delay }}s)"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: "{{ _netpols_app_name }}"
+        namespace: "{{ _argocd_namespace }}"
+      register: _netpols_status
+      until: >
+        (_netpols_status.resources | length > 0) and
+        (_netpols_status.resources[0].status.sync.status | default('') == 'Synced') and
+        (_netpols_status.resources[0].status.health.status | default('') == 'Healthy')
+      retries: "{{ _sync_retries }}"
+      delay: "{{ _sync_delay }}"
+      when: _netpols_check.resources | length > 0
+      failed_when: false    # Ne pas bloquer le pipeline ; le debug ci-dessous rapporte l'état
+      tags:
+        - gitops-wait
+
+    - name: "GitOps | Statut final soc-netpols"
+      ansible.builtin.debug:
+        msg: >
+          soc-netpols —
+          sync={{ _netpols_status.resources[0].status.sync.status | default('unknown') }},
+          health={{ _netpols_status.resources[0].status.health.status | default('unknown') }}
+      when:
+        - _netpols_check.resources | length > 0
+        - _netpols_status is defined
+        - _netpols_status.resources | length > 0
+      tags:
+        - gitops-wait
+
+    - name: "GitOps | FAIL si soc-netpols existe mais reste OutOfSync après timeout"
+      ansible.builtin.fail:
+        msg: >
+          soc-netpols est OutOfSync ou Degraded après {{ _sync_retries * _sync_delay }}s.
+          Vérifier : kubectl -n argocd get app soc-netpols
+          Sync forcé : kubectl -n argocd patch app soc-netpols --type=merge
+            -p '{"operation":{"sync":{"revision":"HEAD"}}}'
+      when:
+        - _netpols_check.resources | length > 0
+        - _netpols_status is defined
+        - _netpols_status.resources | length > 0
+        - >
+          (_netpols_status.resources[0].status.sync.status | default('') != 'Synced') or
+          (_netpols_status.resources[0].status.health.status | default('') != 'Healthy')
+      tags:
+        - gitops-wait
