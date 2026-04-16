@@ -54,3 +54,11 @@ redis_chart_version: "20.6.2"
 misp_redis_image_registry: "docker.io"
 misp_redis_image_repository: "bitnami/redis"
 misp_redis_image_tag: "8.6.2"
+
+# ============================================================
+# GitOps gating — Phase 5
+# Passer à "ansible" pour redéploiement complet sans ArgoCD opérationnel.
+# Remettre à "gitops" après synchronisation ArgoCD.
+# ============================================================
+misp_config_managed_by: "gitops"    # ConfigMap misp-config
+misp_ingress_managed_by: "gitops"   # Ingress misp.apps.soc.lab

@@ -192,6 +192,7 @@
         NUM_WORKERS_EMAIL: "{{ misp_num_workers_email }}"
         NUM_WORKERS_UPDATE: "{{ misp_num_workers_update }}"
         NUM_WORKERS_CACHE: "{{ misp_num_workers_cache }}"
+  when: misp_config_managed_by | default('ansible') != 'gitops'
 
 # -------------------------
 # MISP Modules (service + deployment)
@@ -596,6 +597,7 @@
                       name: misp
                       port:
                         number: 443
+  when: misp_ingress_managed_by | default('ansible') != 'gitops'
 
 # -------------------------
 # (Option) NetworkPolicy basique (tu peux la remettre plus tard)

@@ -1,0 +1,46 @@
+# configmap-misp-config.yaml — ConfigMap ENV attendue par misp-core
+# Phase 5 GitOps — MISP config
+# Namespace : soc-core
+#
+# Contient uniquement les variables non-sensibles.
+# Les secrets (MYSQL_PASSWORD, REDIS_PASSWORD, ADMIN_PASSWORD, etc.)
+# restent injectés via ExternalSecrets → Kubernetes Secrets (Day 1).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: misp-config
+  namespace: soc-core
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    app.kubernetes.io/component: misp
+    soc.lab/playbook: "100-misp"
+    soc.lab/environment: dev
+data:
+  # MySQL/MariaDB
+  MYSQL_HOST: "misp-mariadb.soc-core.svc.cluster.local"
+  MYSQL_USER: "misp"
+  MYSQL_DATABASE: "misp"
+
+  # Redis
+  REDIS_HOST: "misp-redis-master.soc-core.svc.cluster.local"
+  REDIS_PORT: "6379"
+
+  # Modules
+  MISP_MODULES_FQDN: "http://misp-modules"
+
+  # BaseURL externe
+  MISP_BASEURL: "https://misp.apps.soc.lab"
+  BASE_URL: "https://misp.apps.soc.lab"
+  BASEURL: "https://misp.apps.soc.lab"
+
+  # SMTP
+  SMTP_PORT: "25"
+
+  # Workers
+  WORKERS: "1"
+  NUM_WORKERS_DEFAULT: "5"
+  NUM_WORKERS_PRIO: "5"
+  NUM_WORKERS_EMAIL: "5"
+  NUM_WORKERS_UPDATE: "1"
+  NUM_WORKERS_CACHE: "5"

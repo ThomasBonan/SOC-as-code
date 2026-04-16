@@ -27,6 +27,9 @@ spec:
           # avec sync automatique et ignoreDifferences pour kubectl restartedAt
           - path: gitops/environments/lab/risk-engine
             exclude: true
+          # Exclure misp/ : géré par soc-misp (gitops/apps/soc-misp.yml)
+          - path: gitops/environments/lab/misp
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'
