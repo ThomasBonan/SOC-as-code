@@ -1,0 +1,12 @@
+apiVersion: metallb.io/v1beta2
+kind: BGPPeer
+metadata:
+  name: opnsense
+  namespace: metallb-system
+spec:
+  myASN: 65010
+  peerASN: 65000
+  peerAddress: 10.0.20.254
+  peerPort: 179
+  holdTime: 180s
+  keepaliveTime: 60s

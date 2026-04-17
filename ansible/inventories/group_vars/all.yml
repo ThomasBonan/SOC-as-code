@@ -30,6 +30,13 @@ cilium_prometheus_enabled: true   # métriques agent + operator
 cluster_dns: "10.96.0.10"            # IP kube-dns dans le service CIDR
 cluster_domain: "cluster.local"
 
+# ── GitOps managed_by — "gitops" = ArgoCD gère le Helm, Ansible skippe ──────
+# Mettre "ansible" pour revenir au déploiement Ansible classique.
+metallb_managed_by: "gitops"
+ingress_nginx_managed_by: "gitops"
+cert_manager_managed_by: "gitops"
+longhorn_managed_by: "gitops"
+
 # MetalLB
 metallb_namespace: metallb-system
 metallb_version: "0.14.9"          # exemple stable

@@ -1,0 +1,60 @@
+---
+# infra-cert-manager.yml — cert-manager (Helm)
+# Phase B GitOps — migré depuis le rôle Ansible cert-manager
+#
+# NOTE : La génération du CA (clé privée + cert) et la création du Secret soc-lab-ca
+#        restent gérés par Ansible (rôle cert-manager, 60-post-config-master.yml).
+#        Le ClusterIssuer soc-lab-ca-issuer est également créé par Ansible
+#        (dépend du Secret soc-lab-ca, non versionnable dans Git).
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-cert-manager
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://charts.jetstack.io
+    chart: cert-manager
+    targetRevision: v1.14.7
+    helm:
+      releaseName: cert-manager
+      values: |
+        installCRDs: true
+        replicaCount: 1
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi
+        webhook:
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+        cainjector:
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

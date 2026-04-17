@@ -1,4 +1,5 @@
 ---
+# Helm install — skipé si cert_manager_managed_by=gitops (ArgoCD gère le chart)
 - name: Add jetstack repo (once)
   kubernetes.core.helm_repository:
     name: jetstack
@@ -6,11 +7,13 @@
     binary_path: "{{ helm_binary_path }}"
   delegate_to: localhost
   run_once: true
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: Update helm repos (once)
   ansible.builtin.command: "{{ helm_binary_path }} repo update"
   delegate_to: localhost
   run_once: true
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: Install/upgrade cert-manager
   kubernetes.core.helm:
@@ -27,7 +30,9 @@
       installCRDs: "{{ cert_manager_install_crds }}"
   delegate_to: localhost
   run_once: true
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
+# CA generation + ClusterIssuer : toujours exécutés (clé privée non versionnable)
 - name: Ensure PKI dir exists (bastion)
   ansible.builtin.file:
     path: "{{ pki_dir }}"

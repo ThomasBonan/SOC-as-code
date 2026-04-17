@@ -1,0 +1,49 @@
+---
+# infra-metallb.yml — MetalLB Load Balancer (Helm + CRs)
+# Phase B GitOps — migré depuis le rôle Ansible metallb
+# Multi-source : chart Helm public + CRs versionnés dans Git
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-metallb
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: infrastructure
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  sources:
+    - repoURL: https://metallb.github.io/metallb
+      chart: metallb
+      targetRevision: 0.14.9
+      helm:
+        releaseName: metallb
+        values: |
+          speaker:
+            frr:
+              enabled: true
+          controller:
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+    - repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+      targetRevision: main
+      path: gitops/environments/lab/metallb
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: metallb-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+      - SkipDryRunOnMissingResource=true

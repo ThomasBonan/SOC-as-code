@@ -1,7 +1,18 @@
 ---
-- name: Installation of cert-manager
+# 60-post-config-master.yml — Post-config master : cert-manager + Longhorn
+# Phase B : Helm install délégable à ArgoCD via cert_manager_managed_by / longhorn_managed_by.
+# NOTE : même si cert_manager_managed_by=gitops, le rôle cert-manager
+#        DOIT être exécuté pour générer le CA et créer le Secret soc-lab-ca.
+- name: Installation of cert-manager and Longhorn
   hosts: master
   become: false
-  roles:
-    - cert-manager
-    - longhorn
+  tasks:
+    - name: Déployer cert-manager (Helm + CA + ClusterIssuer)
+      ansible.builtin.include_role:
+        name: cert-manager
+      # Le rôle gère lui-même le gating Helm via cert_manager_managed_by
+
+    - name: Déployer Longhorn (si non géré par GitOps)
+      ansible.builtin.include_role:
+        name: longhorn
+      when: longhorn_managed_by | default('ansible') != 'gitops'

@@ -1,8 +1,22 @@
 ---
+# 50-post.yml — Post-install K8s : MetalLB + ingress-nginx + smoke
+# Phase B : MetalLB et ingress-nginx peuvent être gérés par ArgoCD.
+# Mettre metallb_managed_by: "gitops" et ingress_nginx_managed_by: "gitops"
+# dans group_vars/all.yml pour déléguer le Helm install à ArgoCD.
 - name: Post-install (MetalLB + Ingress + smoke)
   hosts: master
   become: false
-  roles:
-    - metallb
-    - ingress_nginx
-    - postconfig
+  tasks:
+    - name: Déployer MetalLB (si non géré par GitOps)
+      ansible.builtin.include_role:
+        name: metallb
+      when: metallb_managed_by | default('ansible') != 'gitops'
+
+    - name: Déployer ingress-nginx (si non géré par GitOps)
+      ansible.builtin.include_role:
+        name: ingress_nginx
+      when: ingress_nginx_managed_by | default('ansible') != 'gitops'
+
+    - name: Post-config générale
+      ansible.builtin.include_role:
+        name: postconfig

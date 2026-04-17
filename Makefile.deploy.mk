@@ -81,6 +81,11 @@ wait-nodes: ## Attendre que tous les nœuds K8s soient Ready
 wait-argocd: ## Attendre que argocd-server soit Available
 	@bash $(SCRIPTS)/wait-argocd-ready.sh $(KCFG) 300
 
+wait-infra-synced: ## Attendre que les apps infra (MetalLB, Longhorn, cert-manager, ingress-nginx) soient Synced
+	@bash $(SCRIPTS)/wait-argocd-synced.sh \
+	  infra-metallb infra-longhorn infra-cert-manager infra-ingress-nginx \
+	  --kubeconfig $(KCFG) --timeout 900
+
 wait-argocd-synced: ## Attendre que les apps ArgoCD principales soient Synced+Healthy
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
 	  soc-apps soc-infra soc-security soc-eso \
@@ -102,7 +107,7 @@ vault-deploy: ## Vault + ESO (75)
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags bootstrap
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags external_secrets
 
-argocd-full: vault-deploy monitoring argocd wait-argocd ## Vault+Monitoring+ArgoCD + attente prêt
+argocd-full: vault-deploy monitoring argocd wait-argocd wait-infra-synced ## Vault+Monitoring+ArgoCD + attente infra GitOps synced
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
