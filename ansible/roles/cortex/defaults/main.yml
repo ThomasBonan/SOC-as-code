@@ -29,3 +29,7 @@ cortex_es_replicas: 1
 
 # Service account (le chart peut créer, mais on garde explicite)
 cortex_service_account_name: cortex
+
+# GitOps gating — Phase 7
+# Mettre "ansible" temporairement si ArgoCD n'est pas opérationnel lors d'un redéploiement
+cortex_ingress_managed_by: "gitops"

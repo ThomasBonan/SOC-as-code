@@ -1,7 +1,8 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Phase 6b GitOps — TheHive config (stub d'intégration webhook)
+# Phase 6b+7 GitOps — TheHive config (stub webhook) + Ingress
 # Helm release, Secrets, Deployments et bootstrap restent Ansible (Day 1)
 # thehive-env est géré par Helm — ne pas ajouter ici
 resources:
   - configmap-webhook-stub.yaml
+  - ingress-thehive.yaml

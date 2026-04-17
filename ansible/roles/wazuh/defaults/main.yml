@@ -60,3 +60,7 @@ secrets_dir: "{{ playbook_dir }}/../.secrets/wazuh"
 # Ansible k8s python venv (controller)
 k8s_ansible_venv: /opt/ansible-k8s-venv
 k8s_ansible_python: "{{ k8s_ansible_venv }}/bin/python"
+
+# GitOps gating — Phase 7
+# Mettre "ansible" temporairement si ArgoCD n'est pas opérationnel lors d'un redéploiement
+wazuh_ingress_managed_by: "gitops"

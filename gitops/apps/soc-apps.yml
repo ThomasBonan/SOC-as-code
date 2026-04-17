@@ -39,6 +39,9 @@ spec:
           # Exclure cortex/ : géré par soc-cortex (gitops/apps/soc-cortex.yml)
           - path: gitops/environments/lab/cortex
             exclude: true
+          # Exclure shuffle/ : géré par soc-shuffle (gitops/apps/soc-shuffle.yml)
+          - path: gitops/environments/lab/shuffle
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'

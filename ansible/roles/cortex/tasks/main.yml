@@ -169,6 +169,7 @@
                       name: cortex
                       port:
                         number: 9001
+  when: cortex_ingress_managed_by | default('ansible') != 'gitops'
 
 
 - name: Show Cortex pods

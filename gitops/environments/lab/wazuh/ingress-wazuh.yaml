@@ -1,0 +1,39 @@
+# ingress-wazuh.yaml — Ingress TLS pour Wazuh Dashboard
+# Phase 7 GitOps — Ingresses applicatifs
+# Namespace : soc-wazuh
+#
+# Migré depuis ansible/roles/wazuh/templates/ingress-dashboard.yml.j2
+# TLS assuré par cert-manager (wazuh-ca-issuer — CA spécifique Wazuh).
+# Helm release, Secrets et bootstrap restent Ansible (Day 1).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: wazuh-dashboard
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    app.kubernetes.io/component: wazuh
+    soc.lab/playbook: "90-wazuh"
+    soc.lab/environment: dev
+  annotations:
+    cert-manager.io/cluster-issuer: "wazuh-ca-issuer"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/ssl-min-tls-version: "TLSv1.2"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - wazuh.apps.soc.lab
+      secretName: wazuh-dashboard-tls
+  rules:
+    - host: wazuh.apps.soc.lab
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: wazuh-dashboard
+                port:
+                  number: 5601

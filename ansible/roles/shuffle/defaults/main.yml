@@ -125,3 +125,7 @@ shuffle_marker_deploy:     "soc-shuffle-marker-deploy"
 shuffle_marker_configure:  "soc-shuffle-marker-configure"
 shuffle_marker_workflows:  "soc-shuffle-marker-workflows"
 shuffle_marker_ns:         "{{ shuffle_namespace }}"
+
+# GitOps gating — Phase 7
+# Mettre "ansible" temporairement si ArgoCD n'est pas opérationnel lors d'un redéploiement
+shuffle_ingress_managed_by: "gitops"

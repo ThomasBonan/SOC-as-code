@@ -119,3 +119,4 @@
     kubeconfig: "{{ kubeconfig_path }}"
     state: present
     template: ingress.thehive.yml.j2
+  when: thehive_ingress_managed_by | default('ansible') != 'gitops'

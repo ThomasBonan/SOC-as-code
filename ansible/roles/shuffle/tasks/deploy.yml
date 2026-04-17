@@ -114,6 +114,7 @@
     kubeconfig: "{{ shuffle_kubeconfig_path }}"
     state: present
     definition: "{{ lookup('template', 'ingress-shuffle.yml.j2') | from_yaml }}"
+  when: shuffle_ingress_managed_by | default('ansible') != 'gitops'
 
 - name: "shuffle | Deploy - apply Shuffle NetworkPolicies"
   kubernetes.core.k8s:

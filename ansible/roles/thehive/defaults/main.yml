@@ -34,3 +34,7 @@ elasticsearch_jvm_opts: "-Xms1g -Xmx1g -Xmn200m"
 thehive_enable_cassandra: true
 thehive_enable_elasticsearch: true
 thehive_enable_minio: true
+
+# GitOps gating — Phase 7
+# Mettre "ansible" temporairement si ArgoCD n'est pas opérationnel lors d'un redéploiement
+thehive_ingress_managed_by: "gitops"

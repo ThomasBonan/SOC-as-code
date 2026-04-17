@@ -7,3 +7,4 @@ resources:
   - configmap-wazuh-thehive-integration.yaml
   - configmap-siem-connector-stub.yaml
   - servicemonitor-wazuh.yaml
+  - ingress-wazuh.yaml
