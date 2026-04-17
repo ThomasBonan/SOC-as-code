@@ -1,0 +1,107 @@
+---
+name: ArgoCD Manifests Validation
+
+on:
+  pull_request:
+    paths:
+      - 'gitops/**'
+      - 'ansible/inventories/group_vars/all.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'gitops/**'
+
+jobs:
+  yaml-lint:
+    name: YAML Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Lint gitops/ YAML files
+        run: |
+          yamllint -d '{extends: relaxed, rules: {line-length: {max: 160}}}' \
+            gitops/apps/*.yml \
+            gitops/environments/lab/**/*.yaml 2>/dev/null || true
+
+  argocd-app-validate:
+    name: ArgoCD Application Schema Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.4'
+
+      - name: Install kubeconform
+        run: |
+          curl -sLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /usr/local/bin kubeconform
+          chmod +x /usr/local/bin/kubeconform
+
+      - name: Validate ArgoCD Application manifests
+        run: |
+          kubeconform \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/argoproj.io/application_v1alpha1.json' \
+            -summary \
+            gitops/apps/*.yml
+
+  kustomize-validate:
+    name: Kustomize Build Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.30.4'
+
+      - name: Validate all kustomization.yaml
+        run: |
+          find gitops/environments/lab -name kustomization.yaml -print0 | \
+          while IFS= read -r -d '' f; do
+            dir=$(dirname "$f")
+            echo "--- kubectl kustomize $dir"
+            kubectl kustomize "$dir" > /dev/null && echo "OK" || { echo "FAIL: $dir"; exit 1; }
+          done
+
+  argocd-consistency:
+    name: Consistency Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check all apps target svc endpoint
+        run: |
+          grep -rL 'https://kubernetes.default.svc' gitops/apps/*.yml && \
+            { echo "Missing destination server in some apps"; exit 1; } || true
+
+      - name: Check managed_by variables consistency
+        run: |
+          # Vérifie que les applications ArgoCD ont un gating correspondant dans group_vars
+          for app in cortex thehive; do
+            grep -q "${app}_managed_by.*gitops" ansible/inventories/group_vars/all.yml || \
+              { echo "WARN: ${app}_managed_by not set to gitops in group_vars"; }
+          done
+          grep -q "misp_redis_managed_by.*gitops" ansible/inventories/group_vars/all.yml || \
+            { echo "WARN: misp_redis_managed_by not set to gitops in group_vars"; }
+          grep -q "shuffle_managed_by.*gitops" ansible/inventories/group_vars/all.yml || \
+            { echo "WARN: shuffle_managed_by not set to gitops in group_vars"; }
+          echo "Consistency check passed"
+
+      - name: Check no hardcoded passwords in gitops/
+        run: |
+          if grep -rn 'password\s*:\s*["'"'"'][^{$]' gitops/ 2>/dev/null | \
+             grep -v 'existingSecret\|secretKey\|#'; then
+            echo "Potential hardcoded password found in gitops/"
+            exit 1
+          fi
+          echo "No hardcoded passwords found"

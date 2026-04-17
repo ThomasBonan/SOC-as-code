@@ -86,6 +86,11 @@ wait-infra-synced: ## Attendre que les apps infra (MetalLB, Longhorn, cert-manag
 	  infra-metallb infra-longhorn infra-cert-manager infra-ingress-nginx \
 	  --kubeconfig $(KCFG) --timeout 900
 
+wait-soc-apps-synced: ## Attendre que les apps SOC Helm (Cortex, TheHive, MISP Redis, Shuffle) soient Synced
+	@bash $(SCRIPTS)/wait-argocd-synced.sh \
+	  infra-cortex infra-thehive infra-misp-redis infra-shuffle \
+	  --kubeconfig $(KCFG) --timeout 1200
+
 wait-argocd-synced: ## Attendre que les apps ArgoCD principales soient Synced+Healthy
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
 	  soc-apps soc-infra soc-security soc-eso \
@@ -100,14 +105,14 @@ preflight: ## Vérifier les prérequis avant deploy
 .PHONY: k8s-bootstrap vault-deploy argocd-full soc-day1 soc-security-layer \
         soc-automation-layer soc-validate
 
-k8s-bootstrap: prereqs bins workers-pre cp cni join post post-master ## K8s from scratch (00→60)
+k8s-bootstrap: prereqs bins cp cni join post post-master workers-pre ## K8s from scratch (00→70)
 
 vault-deploy: ## Vault + ESO (75)
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags bootstrap
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags external_secrets
 
-argocd-full: vault-deploy monitoring argocd wait-argocd wait-infra-synced ## Vault+Monitoring+ArgoCD + attente infra GitOps synced
+argocd-full: vault-deploy monitoring argocd wait-argocd wait-infra-synced wait-soc-apps-synced ## Vault+Monitoring+ArgoCD + attente infra+SOC apps GitOps synced
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
@@ -121,7 +126,7 @@ soc-validate: compliance selftest ## Conformité + selftest E2E (200→210)
 .PHONY: deploy
 
 ifeq ($(DEPLOY_IAC),1)
-_iac_step := iac-apply wait-vms
+_iac_step := iac-apply wait-vms k8s-bootstrap
 else
 _iac_step :=
 endif
