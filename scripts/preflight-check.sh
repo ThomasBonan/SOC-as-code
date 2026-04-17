@@ -52,10 +52,13 @@ echo "Accès Proxmox :"
 if [[ -f "/etc/soc-as-code/.env" ]]; then
   # shellcheck disable=SC1091
   set -a; source /etc/soc-as-code/.env; set +a
-  if curl -sk --max-time 5 "${PM_API_URL:-https://proxmox:8006}/api2/json/version" | grep -q version; then
-    echo "  ✅ API Proxmox joignable"
+  _proxmox_url="${TF_VAR_pm_api_url:-${PM_API_URL:-}}"
+  if [[ -z "${_proxmox_url}" ]]; then
+    echo "  ⚠️  TF_VAR_pm_api_url non défini dans .env — skip test Proxmox"
+  elif curl -sk --max-time 5 "${_proxmox_url}/api2/json/version" | grep -q version; then
+    echo "  ✅ API Proxmox joignable (${_proxmox_url})"
   else
-    echo "  ❌ API Proxmox inaccessible (${PM_API_URL:-PM_API_URL non défini})"
+    echo "  ❌ API Proxmox inaccessible (${_proxmox_url})"
     (( ERRORS++ ))
   fi
 fi
