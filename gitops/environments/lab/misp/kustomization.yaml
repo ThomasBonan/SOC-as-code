@@ -5,4 +5,5 @@ kind: Kustomization
 # Les ressources K8s Day 2 sont gérées ici ; Ansible les saute via _managed_by=gitops
 resources:
   - configmap-misp-config.yaml
+  - configmap-misp-feed-stub.yaml
   - ingress-misp.yaml

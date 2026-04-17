@@ -304,6 +304,12 @@ soc_foundations_stubs:
     connector_type: "siem-integration"
     target_service: "wazuh"
 
-# GitOps gating — quand "gitops", Ansible exclut soc-siem-connector-stub de la boucle
-# (géré par ArgoCD via gitops/environments/lab/wazuh/)
+# GitOps gating — quand "gitops", Ansible exclut le stub correspondant de la boucle
+# soc-siem-connector-stub  → géré par ArgoCD via gitops/environments/lab/wazuh/
+# soc-webhook-stub          → géré par ArgoCD via gitops/environments/lab/thehive/
+# soc-cortex-connector-stub → géré par ArgoCD via gitops/environments/lab/cortex/
+# soc-misp-feed-stub        → géré par ArgoCD via gitops/environments/lab/misp/
 soc_foundations_siem_stub_managed_by: "gitops"
+soc_foundations_webhook_stub_managed_by: "gitops"
+soc_foundations_cortex_stub_managed_by: "gitops"
+soc_foundations_misp_stub_managed_by: "gitops"

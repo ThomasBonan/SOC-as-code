@@ -1,0 +1,40 @@
+# configmap-webhook-stub.yaml
+# Phase 6b GitOps — TheHive config
+# Migré depuis soc_foundations Ansible role (integration_placeholders.yml)
+# Stub de configuration pour le connecteur webhook entrant vers TheHive (futur)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-webhook-stub
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: integration-stub
+    soc.lab/connector-type: webhook
+    soc.lab/target-service: thehive
+  annotations:
+    soc.lab/created-by: soc-gitops Phase 6b
+    soc.lab/description: Placeholder for future inbound webhook connector to TheHive
+    soc.lab/ready: "false"
+    soc.lab/status: placeholder
+    soc.lab/phase: "6b"
+data:
+  config: |
+    # Placeholder de configuration pour soc-webhook-stub
+    # Remplacer ce stub par la configuration réelle du connecteur.
+    # connector_type : webhook
+    # target_service : thehive
+    #
+    # Étapes pour activer :
+    #   1. Remplir les clés de configuration ci-dessous
+    #   2. Mettre enabled: "true"
+    #   3. Mettre l'annotation soc.lab/ready: "true"
+    endpoint: ""
+    auth_secret_ref: ""
+    enabled: "false"
+  connector_type: webhook
+  description: Placeholder for future inbound webhook connector to TheHive
+  enabled: "false"
+  status: placeholder
+  target_service: thehive

@@ -33,6 +33,12 @@ spec:
           # Exclure wazuh/ : géré par soc-wazuh (gitops/apps/soc-wazuh.yml)
           - path: gitops/environments/lab/wazuh
             exclude: true
+          # Exclure thehive/ : géré par soc-thehive (gitops/apps/soc-thehive.yml)
+          - path: gitops/environments/lab/thehive
+            exclude: true
+          # Exclure cortex/ : géré par soc-cortex (gitops/apps/soc-cortex.yml)
+          - path: gitops/environments/lab/cortex
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'

@@ -15,14 +15,7 @@
     kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
     state: present
     template: configmap-integration-stub.yml.j2
-  loop: >-
-    {{
-      soc_foundations_stubs
-      | rejectattr('name', 'equalto', 'soc-siem-connector-stub')
-      | list
-      if (soc_foundations_siem_stub_managed_by | default('ansible')) == 'gitops'
-      else soc_foundations_stubs
-    }}
+  loop: "{{ soc_foundations_stubs }}"
   loop_control:
     loop_var: stub_item
     label: "{{ stub_item.name }} ({{ stub_item.namespace }})"
@@ -32,6 +25,11 @@
     stub_description: "{{ stub_item.description }}"
     stub_connector_type: "{{ stub_item.connector_type }}"
     stub_target_service: "{{ stub_item.target_service }}"
+  when:
+    - not (stub_item.name == 'soc-siem-connector-stub' and (soc_foundations_siem_stub_managed_by | default('ansible')) == 'gitops')
+    - not (stub_item.name == 'soc-webhook-stub' and (soc_foundations_webhook_stub_managed_by | default('ansible')) == 'gitops')
+    - not (stub_item.name == 'soc-cortex-connector-stub' and (soc_foundations_cortex_stub_managed_by | default('ansible')) == 'gitops')
+    - not (stub_item.name == 'soc-misp-feed-stub' and (soc_foundations_misp_stub_managed_by | default('ansible')) == 'gitops')
 
 - name: Placeholders - rapport des stubs créés
   ansible.builtin.debug:

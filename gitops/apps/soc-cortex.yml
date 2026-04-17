@@ -1,0 +1,33 @@
+# soc-cortex.yml — Application ArgoCD Cortex
+# Phase 6b GitOps — ConfigMap soc-cortex-connector-stub
+# Helm release, Secrets, Deployments et bootstrap restent Ansible (Day 1)
+# cortex-env est géré par Helm — non inclus dans ce path
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: soc-cortex
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+    targetRevision: main
+    path: gitops/environments/lab/cortex
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-cortex
+  syncPolicy:
+    automated:
+      prune: false      # Sécurité : pas de suppression automatique tant que la migration n'est pas complète
+      selfHeal: true    # Réconciliation automatique si drift détecté
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false   # soc-cortex doit déjà exister (créé par Helm Day 1)
+      - RespectIgnoreDifferences=true

@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+# Phase 6b GitOps — Cortex config (stub d'intégration connecteur)
+# Helm release, Secrets, Deployments et bootstrap restent Ansible (Day 1)
+# cortex-env est géré par Helm — ne pas ajouter ici
+resources:
+  - configmap-cortex-connector-stub.yaml

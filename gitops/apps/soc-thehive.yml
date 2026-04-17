@@ -1,0 +1,33 @@
+# soc-thehive.yml — Application ArgoCD TheHive
+# Phase 6b GitOps — ConfigMap soc-webhook-stub
+# Helm release, Secrets, Deployments et bootstrap restent Ansible (Day 1)
+# thehive-env est géré par Helm — non inclus dans ce path
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: soc-thehive
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ThomasBonan/SOC-as-code.git
+    targetRevision: main
+    path: gitops/environments/lab/thehive
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-thehive
+  syncPolicy:
+    automated:
+      prune: false      # Sécurité : pas de suppression automatique tant que la migration n'est pas complète
+      selfHeal: true    # Réconciliation automatique si drift détecté
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false   # soc-thehive doit déjà exister (créé par Helm Day 1)
+      - RespectIgnoreDifferences=true

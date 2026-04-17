@@ -1,0 +1,40 @@
+# configmap-misp-feed-stub.yaml
+# Phase 6b GitOps — MISP config (ajout)
+# Migré depuis soc_foundations Ansible role (integration_placeholders.yml)
+# Stub de configuration pour la synchronisation de feeds MISP (futur)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-misp-feed-stub
+  namespace: soc-core
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: integration-stub
+    soc.lab/connector-type: feed-sync
+    soc.lab/target-service: misp
+  annotations:
+    soc.lab/created-by: soc-gitops Phase 6b
+    soc.lab/description: Placeholder for future MISP feed synchronization configuration
+    soc.lab/ready: "false"
+    soc.lab/status: placeholder
+    soc.lab/phase: "6b"
+data:
+  config: |
+    # Placeholder de configuration pour soc-misp-feed-stub
+    # Remplacer ce stub par la configuration réelle du connecteur.
+    # connector_type : feed-sync
+    # target_service : misp
+    #
+    # Étapes pour activer :
+    #   1. Remplir les clés de configuration ci-dessous
+    #   2. Mettre enabled: "true"
+    #   3. Mettre l'annotation soc.lab/ready: "true"
+    endpoint: ""
+    auth_secret_ref: ""
+    enabled: "false"
+  connector_type: feed-sync
+  description: Placeholder for future MISP feed synchronization configuration
+  enabled: "false"
+  status: placeholder
+  target_service: misp
