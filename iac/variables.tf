@@ -4,7 +4,7 @@
 variable "pm_tls_insecure" {
   type        = bool
   description = "Désactiver la vérification TLS du certificat Proxmox (true uniquement pour les labs avec certificat auto-signé)"
-  default     = false
+  default     = true
 }
 
 variable "pm_api_url" {
