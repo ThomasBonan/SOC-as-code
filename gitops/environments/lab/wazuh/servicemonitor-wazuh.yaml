@@ -32,13 +32,17 @@ spec:
       params:
         module: [http_401_tls_skip]
       relabelings:
-        - targetLabel: __param_target
+        - action: replace
+          targetLabel: __param_target
           replacement: "https://wazuh-manager-master-0.wazuh-core-cluster.soc-wazuh.svc:55000/"
-        - targetLabel: instance
+        - action: replace
+          targetLabel: instance
           replacement: "wazuh-api"
-        - targetLabel: job
+        - action: replace
+          targetLabel: job
           replacement: "wazuh-api"
-        - targetLabel: __address__
+        - action: replace
+          targetLabel: __address__
           replacement: "blackbox-exporter-prometheus-blackbox-exporter.soc-monitoring.svc:9115"
       metricRelabelings:
         - sourceLabels: [__name__]
@@ -52,13 +56,17 @@ spec:
       params:
         module: [http_2xx_tls_skip]
       relabelings:
-        - targetLabel: __param_target
+        - action: replace
+          targetLabel: __param_target
           replacement: "http://wazuh-dashboard.soc-wazuh.svc:5601/"
-        - targetLabel: instance
+        - action: replace
+          targetLabel: instance
           replacement: "wazuh-dashboard"
-        - targetLabel: job
+        - action: replace
+          targetLabel: job
           replacement: "wazuh-dashboard"
-        - targetLabel: __address__
+        - action: replace
+          targetLabel: __address__
           replacement: "blackbox-exporter-prometheus-blackbox-exporter.soc-monitoring.svc:9115"
       metricRelabelings:
         - sourceLabels: [__name__]
