@@ -10,7 +10,7 @@ elapsed=0
 
 echo "⏳ Attente SSH sur ${HOST} (timeout ${TIMEOUT}s)..."
 until ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=no \
-          root@"${HOST}" true 2>/dev/null; do
+          ubuntu@"${HOST}" true 2>/dev/null; do
   if (( elapsed >= TIMEOUT )); then
     echo "❌ Timeout: ${HOST} injoignable après ${TIMEOUT}s"
     exit 1
