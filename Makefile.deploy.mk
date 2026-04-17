@@ -26,7 +26,7 @@ ANS := ansible-playbook $(ANS_DIR)/playbooks
 # ── Override iac-apply : source SOC_ENV_FILE avant tofu ──────────────────────
 .PHONY: iac-apply
 iac-apply: ## Appliquer le plan IaC (source SOC_ENV_FILE pour les credentials Proxmox)
-	@$(_tofu_env) && cd $(IAC_DIR) && tofu apply
+	@$(_tofu_env) && cd $(IAC_DIR) && tofu apply -auto-approve
 
 # ── Cibles de bas niveau manquantes dans le Makefile principal ────────────────
 .PHONY: workers-pre post-master databases wazuh misp cortex thehive \
