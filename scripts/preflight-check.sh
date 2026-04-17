@@ -38,7 +38,12 @@ check yq          "brew install yq"
 
 echo ""
 echo "Fichiers de configuration :"
-check_file "iac/terraform.tfvars" "copier iac/terraform.tfvars.example"
+# terraform.tfvars est optionnel — les variables peuvent venir de TF_VAR_* dans /etc/soc-as-code/.env
+if [[ -f "iac/terraform.tfvars" ]]; then
+  echo "  ✅ iac/terraform.tfvars"
+else
+  echo "  ⚠️  iac/terraform.tfvars absent (OK si TF_VAR_* définis dans /etc/soc-as-code/.env)"
+fi
 check_file "ansible/inventories/k8s.ini" "vérifier l'inventaire Ansible"
 check_file "/etc/soc-as-code/.env"        "créer le fichier d'environnement SOC"
 
