@@ -55,7 +55,7 @@ if [[ -f "/etc/soc-as-code/.env" ]]; then
   _proxmox_url="${TF_VAR_pm_api_url:-${PM_API_URL:-}}"
   if [[ -z "${_proxmox_url}" ]]; then
     echo "  ⚠️  TF_VAR_pm_api_url non défini dans .env — skip test Proxmox"
-  elif curl -sk --max-time 5 "${_proxmox_url}/api2/json/version" | grep -q version; then
+  elif curl -sk --max-time 5 "${_proxmox_url}/version" | grep -q version; then
     echo "  ✅ API Proxmox joignable (${_proxmox_url})"
   else
     echo "  ❌ API Proxmox inaccessible (${_proxmox_url})"
