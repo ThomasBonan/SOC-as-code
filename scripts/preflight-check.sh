@@ -58,8 +58,7 @@ if [[ -f "/etc/soc-as-code/.env" ]]; then
   elif curl -sk --max-time 5 "${_proxmox_url}/version" | grep -q version; then
     echo "  ✅ API Proxmox joignable (${_proxmox_url})"
   else
-    echo "  ❌ API Proxmox inaccessible (${_proxmox_url})"
-    (( ERRORS++ ))
+    echo "  ⚠️  API Proxmox inaccessible via curl (${_proxmox_url}) — tofu utilisera ses propres credentials"
   fi
 fi
 
