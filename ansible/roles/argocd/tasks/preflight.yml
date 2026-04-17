@@ -22,6 +22,7 @@
   failed_when: >-
     _argocd_cm_check.resources | length == 0
     or (_argocd_cm_check.resources[0].status.readyReplicas | default(0)) < 1
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: ArgoCD preflight | Vérifier que le ClusterIssuer existe
   kubernetes.core.k8s_info:
@@ -31,6 +32,7 @@
     name: "{{ argocd_cluster_issuer_name }}"
   register: _argocd_issuer_check
   failed_when: _argocd_issuer_check.resources | length == 0
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: ArgoCD preflight | Vérifier que ingress-nginx est opérationnel
   kubernetes.core.k8s_info:
@@ -43,6 +45,7 @@
   failed_when: >-
     _argocd_ingress_check.resources | length == 0
     or (_argocd_ingress_check.resources[0].status.readyReplicas | default(0)) < 1
+  when: ingress_nginx_managed_by | default('ansible') != 'gitops'
 
 - name: ArgoCD preflight | Vérifier que argocd_admin_password est défini
   ansible.builtin.assert:

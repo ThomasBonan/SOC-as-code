@@ -19,6 +19,7 @@
     name: "{{ vault_storage_class }}"
   register: _vault_sc_check
   failed_when: _vault_sc_check.resources | length == 0
+  when: longhorn_managed_by | default('ansible') != 'gitops'
 
 - name: Vault preflight | Vérifier que cert-manager est opérationnel
   kubernetes.core.k8s_info:
@@ -31,6 +32,7 @@
   failed_when: >-
     _vault_cm_check.resources | length == 0
     or (_vault_cm_check.resources[0].status.readyReplicas | default(0)) < 1
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: Vault preflight | Vérifier que le ClusterIssuer soc-lab-ca-issuer existe
   kubernetes.core.k8s_info:
@@ -40,6 +42,7 @@
     name: "{{ vault_cluster_issuer_name }}"
   register: _vault_issuer_check
   failed_when: _vault_issuer_check.resources | length == 0
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: Vault preflight | Tous les prérequis validés
   ansible.builtin.debug:
