@@ -57,6 +57,9 @@ spec:
           # Exclure ingress-nginx/ : géré par soc-infra ApplicationSet
           - path: gitops/environments/lab/ingress-nginx
             exclude: true
+          # Exclure metallb/ : géré par infra-metallb (gitops/apps/infra-metallb.yml)
+          - path: gitops/environments/lab/metallb
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'
