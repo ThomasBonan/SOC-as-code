@@ -1,0 +1,24 @@
+---
+# 61-cert-manager-issuer.yml — Crée le ClusterIssuer soc-lab-ca-issuer
+# Doit être exécuté APRÈS qu'ArgoCD ait déployé cert-manager (CRD cert-manager.io/v1 requis).
+# Dans make deploy : appelé dans argocd-full après wait-infra-synced.
+- name: Create cert-manager ClusterIssuer (post-ArgoCD)
+  hosts: master
+  become: false
+  tasks:
+    - name: Créer le ClusterIssuer soc-lab-ca-issuer
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: "{{ cert_manager_clusterissuer_name }}"
+          spec:
+            ca:
+              secretName: "{{ soc_lab_ca_name }}"
+      delegate_to: localhost
+      run_once: true
+      vars:
+        ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python

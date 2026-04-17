@@ -131,3 +131,5 @@
   run_once: true
   vars:
     ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
+  # CRD cert-manager.io/v1 dispo seulement après ArgoCD sync infra-cert-manager
+  when: cert_manager_managed_by | default('ansible') != 'gitops'

@@ -34,7 +34,7 @@ iac-apply: ## Appliquer le plan IaC (source SOC_ENV_FILE pour les credentials Pr
 # ── Cibles de bas niveau manquantes dans le Makefile principal ────────────────
 .PHONY: workers-pre post-master databases wazuh misp cortex thehive \
         soc-config soc-smoke mtls foundations automation shuffle \
-        automation-rerun risk-engine
+        automation-rerun risk-engine cert-manager-issuer
 
 workers-pre: ## Prérequis Longhorn sur workers (70)
 	ansible-playbook $(ANS_DIR)/playbooks/70-post-config-worker.yml
@@ -124,7 +124,10 @@ vault-deploy: ## Vault + ESO (75)
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags bootstrap
 	ansible-playbook $(ANS_DIR)/playbooks/75-vault.yml --tags external_secrets
 
-argocd-full: vault-deploy monitoring argocd wait-argocd wait-infra-synced wait-soc-apps-synced ## Vault+Monitoring+ArgoCD + attente infra+SOC apps GitOps synced
+cert-manager-issuer: ## Créer ClusterIssuer soc-lab-ca-issuer (après ArgoCD sync infra-cert-manager)
+	$(ANS)/61-cert-manager-issuer.yml
+
+argocd-full: vault-deploy monitoring argocd wait-argocd wait-infra-synced cert-manager-issuer wait-soc-apps-synced ## Vault+Monitoring+ArgoCD + attente infra+SOC apps GitOps synced
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
