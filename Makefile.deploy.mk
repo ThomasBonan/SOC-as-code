@@ -143,7 +143,7 @@ deploy: preflight $(_iac_step) wait-nodes argocd-full soc-day1 soc-security-laye
 .PHONY: destroy-lab
 
 destroy-lab: ## ⚠️  DÉTRUIRE le lab Proxmox (demande CONFIRM=yes)
-	@[[ "$(CONFIRM)" == "yes" ]] || \
+	@test "$(CONFIRM)" = "yes" || \
 	  { echo "❌ Requiert CONFIRM=yes  — ex: make destroy-lab CONFIRM=yes"; exit 1; }
 	@echo "💣 Destruction du lab dans 5 secondes... (Ctrl-C pour annuler)"
 	@sleep 5
