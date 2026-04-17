@@ -1,0 +1,40 @@
+# configmap-siem-connector-stub.yaml
+# Phase 6 GitOps — Wazuh config
+# Migré depuis soc_foundations Ansible role (integration_placeholders.yml)
+# Stub de configuration pour l'intégration SIEM externe future (Wazuh)
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-siem-connector-stub
+  namespace: soc-wazuh
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: integration-stub
+    soc.lab/connector-type: siem-integration
+    soc.lab/target-service: wazuh
+  annotations:
+    soc.lab/created-by: soc-gitops Phase 6
+    soc.lab/description: Placeholder for future Wazuh SIEM external integration
+    soc.lab/ready: "false"
+    soc.lab/status: placeholder
+    soc.lab/phase: "6"
+data:
+  config: |
+    # Placeholder de configuration pour soc-siem-connector-stub
+    # Remplacer ce stub par la configuration réelle du connecteur.
+    # connector_type : siem-integration
+    # target_service : wazuh
+    #
+    # Étapes pour activer :
+    #   1. Remplir les clés de configuration ci-dessous
+    #   2. Mettre enabled: "true"
+    #   3. Mettre l'annotation soc.lab/ready: "true"
+    endpoint: ""
+    auth_secret_ref: ""
+    enabled: "false"
+  connector_type: siem-integration
+  description: Placeholder for future Wazuh SIEM external integration
+  enabled: "false"
+  status: placeholder
+  target_service: wazuh

@@ -82,6 +82,7 @@
   changed_when: false
 
 # ── Step 3: Deploy Python script ConfigMap (when upgrade needed) ──────────────
+# Skipé si wazuh_thehive_config_managed_by == "gitops" (géré par ArgoCD Phase 6)
 - name: "wazuh_to_thehive | Deploy Python integration ConfigMap"
   kubernetes.core.k8s:
     kubeconfig: "{{ soc_config_kubeconfig_path }}"
@@ -108,7 +109,9 @@
           }
         }}
   register: _wth_cm_result
-  when: _wth_needs_update | bool
+  when:
+    - _wth_needs_update | bool
+    - (wazuh_thehive_config_managed_by | default('ansible')) != 'gitops'
 
 # ── Step 4: Deploy TheHive API key Secret ─────────────────────────────────────
 - name: "wazuh_to_thehive | Create or update TheHive API key Secret"

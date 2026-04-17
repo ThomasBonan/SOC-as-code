@@ -30,6 +30,9 @@ spec:
           # Exclure misp/ : géré par soc-misp (gitops/apps/soc-misp.yml)
           - path: gitops/environments/lab/misp
             exclude: true
+          # Exclure wazuh/ : géré par soc-wazuh (gitops/apps/soc-wazuh.yml)
+          - path: gitops/environments/lab/wazuh
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'

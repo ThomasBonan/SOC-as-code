@@ -15,7 +15,14 @@
     kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
     state: present
     template: configmap-integration-stub.yml.j2
-  loop: "{{ soc_foundations_stubs }}"
+  loop: >-
+    {{
+      soc_foundations_stubs
+      | rejectattr('name', 'equalto', 'soc-siem-connector-stub')
+      | list
+      if (soc_foundations_siem_stub_managed_by | default('ansible')) == 'gitops'
+      else soc_foundations_stubs
+    }}
   loop_control:
     loop_var: stub_item
     label: "{{ stub_item.name }} ({{ stub_item.namespace }})"

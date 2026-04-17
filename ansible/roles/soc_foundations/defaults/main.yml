@@ -303,3 +303,7 @@ soc_foundations_stubs:
     description: "Placeholder for future Wazuh SIEM external integration"
     connector_type: "siem-integration"
     target_service: "wazuh"
+
+# GitOps gating — quand "gitops", Ansible exclut soc-siem-connector-stub de la boucle
+# (géré par ArgoCD via gitops/environments/lab/wazuh/)
+soc_foundations_siem_stub_managed_by: "gitops"

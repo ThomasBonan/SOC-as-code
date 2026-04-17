@@ -101,6 +101,10 @@ soc_config_wazuh_namespace: "{{ soc_namespaces.wazuh }}"
 soc_config_wazuh_manager_statefulset: "wazuh-manager-master"
 soc_config_wazuh_configmap_name: "wazuh-thehive-integration"
 soc_config_wazuh_secret_name: "wazuh-thehive-integration-secret"
+# GitOps gating — quand "gitops", Ansible saute la création/mise à jour du ConfigMap
+# (géré par ArgoCD via gitops/environments/lab/wazuh/)
+# Le Secret (API key) et le patch StatefulSet restent toujours gérés par Ansible
+wazuh_thehive_config_managed_by: "gitops"
 
 soc_config_wazuh_integration_dir: "/var/ossec/integrations"
 soc_config_wazuh_script_filename: "custom-thehive"

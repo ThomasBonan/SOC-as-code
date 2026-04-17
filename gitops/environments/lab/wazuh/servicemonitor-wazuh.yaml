@@ -1,0 +1,66 @@
+# servicemonitor-wazuh.yaml
+# Phase 6 GitOps — Wazuh config
+# ServiceMonitor Prometheus pour les endpoints Wazuh (API + Dashboard)
+# Utilise le blackbox exporter (soc-monitoring) pour les health checks HTTP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: wazuh-blackbox-probes
+  namespace: soc-wazuh
+  labels:
+    release: kube-prometheus-stack
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: monitoring
+    soc.lab/service: wazuh
+    soc.lab/phase: "6"
+spec:
+  jobLabel: wazuh
+  # Cible le service du blackbox exporter dans soc-monitoring
+  namespaceSelector:
+    matchNames:
+      - soc-monitoring
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus-blackbox-exporter
+  endpoints:
+    # Probe: Wazuh Manager REST API (port 55000, attend HTTP 401 sans auth)
+    - port: http
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /probe
+      params:
+        module: [http_401_tls_skip]
+      relabelings:
+        - targetLabel: __param_target
+          replacement: "https://wazuh-manager-master-0.wazuh-core-cluster.soc-wazuh.svc:55000/"
+        - targetLabel: instance
+          replacement: "wazuh-api"
+        - targetLabel: job
+          replacement: "wazuh-api"
+        - targetLabel: __address__
+          replacement: "blackbox-exporter-prometheus-blackbox-exporter.soc-monitoring.svc:9115"
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: "probe_.*"
+          action: keep
+    # Probe: Wazuh Dashboard (port 5601, attend HTTP 200)
+    - port: http
+      interval: 30s
+      scrapeTimeout: 10s
+      path: /probe
+      params:
+        module: [http_2xx_tls_skip]
+      relabelings:
+        - targetLabel: __param_target
+          replacement: "http://wazuh-dashboard.soc-wazuh.svc:5601/"
+        - targetLabel: instance
+          replacement: "wazuh-dashboard"
+        - targetLabel: job
+          replacement: "wazuh-dashboard"
+        - targetLabel: __address__
+          replacement: "blackbox-exporter-prometheus-blackbox-exporter.soc-monitoring.svc:9115"
+      metricRelabelings:
+        - sourceLabels: [__name__]
+          regex: "probe_.*"
+          action: keep
