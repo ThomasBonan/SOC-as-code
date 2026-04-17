@@ -4,7 +4,7 @@
 ##############################################################################
 
 ANS_DIR  ?= ansible
-KCFG     ?= $(ANS_DIR)/inventories/artifacts/admin.kubeconfig
+KCFG     ?= $(ANS_DIR)/playbooks/artifacts/admin.conf
 IAC_DIR  ?= iac
 
 .DEFAULT_GOAL := help
@@ -97,3 +97,6 @@ pre-commit: ## Exécuter tous les hooks pre-commit
 
 pre-commit-install: ## Installer les hooks pre-commit dans git
 	pre-commit install
+
+# ── Orchestration complète ────────────────────────────────────────────────────
+-include Makefile.deploy.mk
