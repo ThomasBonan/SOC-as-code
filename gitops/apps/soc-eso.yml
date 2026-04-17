@@ -29,7 +29,7 @@ spec:
         - ".spec.target.deletionPolicy"
   syncPolicy:
     automated:
-      prune: false      # Sécurité : ne pas supprimer de secrets automatiquement
+      prune: true       # Phase 8 — purge les secrets retirés de Git
       selfHeal: true    # Réconciliation automatique si drift détecté
     syncOptions:
       - ServerSideApply=true

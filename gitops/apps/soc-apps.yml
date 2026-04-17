@@ -1,6 +1,6 @@
 # soc-apps.yml — ApplicationSet pour les applications SOC
 # Génère automatiquement une Application par répertoire dans gitops/environments/lab/
-# Apps cibles : wazuh, misp, cortex, thehive, shuffle, risk-engine, databases
+# Apps cibles : toute nouvelle application déposée dans un sous-répertoire non-exclu
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
@@ -42,6 +42,21 @@ spec:
           # Exclure shuffle/ : géré par soc-shuffle (gitops/apps/soc-shuffle.yml)
           - path: gitops/environments/lab/shuffle
             exclude: true
+          # Exclure monitoring/ : géré par soc-monitoring (gitops/apps/soc-monitoring.yml)
+          - path: gitops/environments/lab/monitoring
+            exclude: true
+          # Exclure netpols/ : géré par soc-netpols (gitops/apps/soc-netpols.yml)
+          - path: gitops/environments/lab/netpols
+            exclude: true
+          # Exclure vault/ : géré par soc-security ApplicationSet (soc-infra.yml)
+          - path: gitops/environments/lab/vault
+            exclude: true
+          # Exclure cert-manager/ : géré par soc-infra ApplicationSet
+          - path: gitops/environments/lab/cert-manager
+            exclude: true
+          # Exclure ingress-nginx/ : géré par soc-infra ApplicationSet
+          - path: gitops/environments/lab/ingress-nginx
+            exclude: true
   template:
     metadata:
       name: 'soc-{{path.basename}}'
@@ -59,10 +74,9 @@ spec:
         server: https://kubernetes.default.svc
         # Pas de namespace ici : chaque kustomization.yaml déclare le sien
       syncPolicy:
-        # Sync MANUEL par défaut — activer automated après validation de chaque app
-        # automated:
-        #   prune: false
-        #   selfHeal: true
+        automated:
+          prune: true       # Phase 8 — purge les ressources retirées de Git
+          selfHeal: true    # Réconciliation automatique si drift détecté
         syncOptions:
           - CreateNamespace=true
           - ServerSideApply=true

@@ -22,7 +22,7 @@ spec:
     namespace: soc-monitoring
   syncPolicy:
     automated:
-      prune: false
+      prune: true       # Phase 8 — purge les ressources retirées de Git
       selfHeal: true
     syncOptions:
       - CreateNamespace=true

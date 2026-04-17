@@ -20,7 +20,7 @@ spec:
     namespace: argocd
   syncPolicy:
     automated:
-      prune: false
+      prune: true       # Phase 8 — purge les Applications retirées de gitops/apps/
       selfHeal: true
     syncOptions:
       - CreateNamespace=true

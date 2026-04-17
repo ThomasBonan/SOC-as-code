@@ -22,7 +22,7 @@ spec:
     namespace: "{{ argocd_namespace }}"
   syncPolicy:
     automated:
-      prune: false        # Sécurité : ne pas supprimer automatiquement
+      prune: true         # Phase 8 — purge les Applications retirées de gitops/apps/
       selfHeal: true      # Revenir à l'état Git si modifié manuellement
     syncOptions:
       - CreateNamespace=true

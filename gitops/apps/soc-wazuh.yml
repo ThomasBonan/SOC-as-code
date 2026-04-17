@@ -24,7 +24,7 @@ spec:
     namespace: soc-wazuh
   syncPolicy:
     automated:
-      prune: false      # Sécurité : pas de suppression automatique tant que la migration n'est pas complète
+      prune: true       # Phase 8 — purge les ressources retirées de Git
       selfHeal: true    # Réconciliation automatique si drift détecté
     syncOptions:
       - ServerSideApply=true

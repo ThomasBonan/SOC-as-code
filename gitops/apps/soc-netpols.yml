@@ -23,7 +23,7 @@ spec:
     # Pas de namespace ici : chaque NetworkPolicy déclare le sien (soc-wazuh, soc-thehive, etc.)
   syncPolicy:
     automated:
-      prune: false      # Sécurité : ne pas supprimer de policies automatiquement
+      prune: true       # Phase 8 — purge les policies retirées de Git
       selfHeal: true    # Réconciliation automatique si drift détecté
     syncOptions:
       - ServerSideApply=true
