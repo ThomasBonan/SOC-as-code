@@ -12,12 +12,21 @@
 #   SSH_TIMEOUT=300        — timeout SSH après tofu apply
 ##############################################################################
 
-MASTER_IP   ?= 10.0.20.10
-DEPLOY_IAC  ?= 1
-SSH_TIMEOUT ?= 300
-SCRIPTS     := scripts
+MASTER_IP    ?= 10.0.20.10
+DEPLOY_IAC   ?= 1
+SSH_TIMEOUT  ?= 300
+SCRIPTS      := scripts
+SOC_ENV_FILE ?= /etc/soc-as-code/.env
+
+# Source les credentials Proxmox depuis SOC_ENV_FILE avant chaque appel tofu
+_tofu_env = set -a && . $(SOC_ENV_FILE) && set +a
 
 ANS := ansible-playbook $(ANS_DIR)/playbooks
+
+# ── Override iac-apply : source SOC_ENV_FILE avant tofu ──────────────────────
+.PHONY: iac-apply
+iac-apply: ## Appliquer le plan IaC (source SOC_ENV_FILE pour les credentials Proxmox)
+	@$(_tofu_env) && cd $(IAC_DIR) && tofu apply
 
 # ── Cibles de bas niveau manquantes dans le Makefile principal ────────────────
 .PHONY: workers-pre post-master databases wazuh misp cortex thehive \
@@ -147,5 +156,5 @@ destroy-lab: ## ⚠️  DÉTRUIRE le lab Proxmox (demande CONFIRM=yes)
 	  { echo "❌ Requiert CONFIRM=yes  — ex: make destroy-lab CONFIRM=yes"; exit 1; }
 	@echo "💣 Destruction du lab dans 5 secondes... (Ctrl-C pour annuler)"
 	@sleep 5
-	@cd $(IAC_DIR) && tofu destroy -auto-approve
+	@$(_tofu_env) && cd $(IAC_DIR) && tofu destroy -auto-approve
 	@echo "✅ Lab détruit. Relancer make deploy pour recréer."
