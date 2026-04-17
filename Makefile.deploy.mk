@@ -18,6 +18,9 @@ SSH_TIMEOUT  ?= 300
 SCRIPTS      := scripts
 SOC_ENV_FILE ?= /etc/soc-as-code/.env
 
+# Ansible doit trouver ansible.cfg (roles_path, inventory) depuis n'importe quel CWD
+export ANSIBLE_CONFIG := $(ANS_DIR)/ansible.cfg
+
 # Source les credentials Proxmox depuis SOC_ENV_FILE avant chaque appel tofu
 _tofu_env = set -a && . $(SOC_ENV_FILE) && set +a
 
