@@ -4,5 +4,19 @@
   gather_facts: false
   vars:
     ansible_python_interpreter: /opt/ansible-k8s-venv/bin/python
-  roles:
-    - misp
+  tasks:
+    - name: Attendre infra-misp-redis (ArgoCD) Synced+Healthy
+      ansible.builtin.command: >
+        kubectl --kubeconfig={{ kubeconfig_path }}
+        -n argocd get application infra-misp-redis
+        -o jsonpath='{.status.health.status}/{.status.sync.status}'
+      register: _misp_redis_status
+      until: _misp_redis_status.stdout == 'Healthy/Synced'
+      retries: 60
+      delay: 10
+      changed_when: false
+      when: misp_redis_managed_by | default('ansible') == 'gitops'
+
+    - name: Déployer MISP via Ansible (si non géré par GitOps pour Redis)
+      ansible.builtin.include_role:
+        name: misp

@@ -42,5 +42,21 @@
       ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
       when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
       tags: always
-  roles:
-    - shuffle
+  tasks:
+    - name: Attendre infra-shuffle (ArgoCD) Synced+Healthy
+      ansible.builtin.command: >
+        kubectl --kubeconfig={{ kubeconfig_path }}
+        -n argocd get application infra-shuffle
+        -o jsonpath='{.status.health.status}/{.status.sync.status}'
+      register: _shuffle_status
+      until: _shuffle_status.stdout == 'Healthy/Synced'
+      retries: 60
+      delay: 10
+      changed_when: false
+      when: shuffle_managed_by | default('ansible') == 'gitops'
+      tags: always
+
+    - name: Shuffle SOAR — deploy + configure + workflows
+      ansible.builtin.include_role:
+        name: shuffle
+      tags: shuffle

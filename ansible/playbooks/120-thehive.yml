@@ -7,6 +7,18 @@
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
   gather_facts: false
   tasks:
+    - name: Attendre infra-thehive (ArgoCD) Synced+Healthy
+      ansible.builtin.command: >
+        kubectl --kubeconfig={{ kubeconfig_path }}
+        -n argocd get application infra-thehive
+        -o jsonpath='{.status.health.status}/{.status.sync.status}'
+      register: _thehive_status
+      until: _thehive_status.stdout == 'Healthy/Synced'
+      retries: 60
+      delay: 10
+      changed_when: false
+      when: thehive_managed_by | default('ansible') == 'gitops'
+
     - name: Déployer TheHive via Helm (si non géré par GitOps)
       ansible.builtin.include_role:
         name: thehive
