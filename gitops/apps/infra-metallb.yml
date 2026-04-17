@@ -11,8 +11,6 @@ metadata:
     app.kubernetes.io/managed-by: soc-gitops
     soc.lab/component: argocd
     soc.lab/layer: infrastructure
-  annotations:
-    argocd.argoproj.io/sync-wave: "0"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -38,6 +36,12 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: metallb-system
+  ignoreDifferences:
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+      jqPathExpressions:
+        - .spec.conversion.webhook.clientConfig.caBundle
+        - .metadata.annotations."kubectl.kubernetes.io/last-applied-configuration"
   syncPolicy:
     automated:
       prune: true
