@@ -1,0 +1,75 @@
+---
+# infra-cortex.yml — Cortex (StrangeBee Helm chart)
+# Phase C GitOps — migré depuis le rôle Ansible cortex (110-cortex.yml)
+# La configuration API post-install (analyzers, RBAC) reste dans Ansible 130-soc-config.yml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-cortex
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://strangebeecorp.github.io/helm-charts
+    chart: cortex
+    targetRevision: "1.1.1"
+    helm:
+      releaseName: cortex
+      values: |
+        cortex:
+          replicaCount: 1
+          updateStrategy:
+            type: Recreate
+          # Lit le httpSecret depuis le Secret K8s provisionné par ESO (Vault → soc-cortex)
+          k8sSecretName: "cortex-secret"
+          k8sSecretKey: "httpSecret"
+          config: |
+            auth.providers: [local, key]
+          persistentVolumeClaim:
+            create: true
+            storageClass: "longhorn"
+            accessModes:
+              - ReadWriteMany
+            size: "5Gi"
+          serviceAccount:
+            create: true
+            name: cortex
+        elasticsearch:
+          enabled: true
+          master:
+            replicaCount: 1
+          data:
+            replicaCount: 1
+          coordinating:
+            replicaCount: 0
+          ingest:
+            replicaCount: 0
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-cortex
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt

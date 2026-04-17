@@ -1,0 +1,75 @@
+---
+# infra-thehive.yml — TheHive 5 (StrangeBee Helm chart)
+# Phase C GitOps — migré depuis le rôle Ansible thehive (120-thehive.yml)
+# Les custom fields TheHive et le bootstrap API restent dans Ansible 130-soc-config.yml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-thehive
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://strangebeecorp.github.io/helm-charts
+    chart: thehive
+    targetRevision: "*"
+    helm:
+      releaseName: thehive
+      values: |
+        thehive:
+          replicas: 1
+          # Lit le httpSecret depuis le Secret K8s provisionné par ESO (même pattern Cortex)
+          k8sSecretName: "thehive-secret"
+          k8sSecretKey: "httpSecret"
+          jvmOpts: "-Xms1g -Xmx1g -Xmn200m"
+          service:
+            type: ClusterIP
+            port: 9000
+          persistence:
+            size: "10Gi"
+        cassandra:
+          enabled: true
+          replicaCount: 1
+          jvm:
+            extraOpts: "-Xms1g -Xmx1g -Xmn200m"
+            maxHeapSize: "1g"
+            newHeapSize: "200m"
+        elasticsearch:
+          enabled: true
+          master:
+            replicaCount: 1
+            heapSize: "1g"
+            extraEnvVars:
+              - name: JVM_OPTS
+                value: "-Xms1g -Xmx1g -Xmn200m"
+        minio:
+          enabled: true
+          mode: standalone
+          persistence:
+            enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-thehive
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates

@@ -36,6 +36,10 @@ metallb_managed_by: "gitops"
 ingress_nginx_managed_by: "gitops"
 cert_manager_managed_by: "gitops"
 longhorn_managed_by: "gitops"
+cortex_managed_by: "gitops"
+thehive_managed_by: "gitops"
+misp_redis_managed_by: "gitops"
+shuffle_managed_by: "gitops"
 
 # MetalLB
 metallb_namespace: metallb-system

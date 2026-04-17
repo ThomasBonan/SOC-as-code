@@ -1,7 +1,13 @@
+---
+# Phase C : Helm géré par ArgoCD (infra-thehive) quand thehive_managed_by=gitops.
+# Les custom fields et bootstrap API restent dans 130-soc-config.yml.
 - name: Deploy TheHive
   hosts: localhost
   vars:
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
   gather_facts: false
-  roles:
-    - role: thehive
+  tasks:
+    - name: Déployer TheHive via Helm (si non géré par GitOps)
+      ansible.builtin.include_role:
+        name: thehive
+      when: thehive_managed_by | default('ansible') != 'gitops'

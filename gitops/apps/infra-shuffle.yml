@@ -1,0 +1,135 @@
+---
+# infra-shuffle.yml — Shuffle SOAR (chart depuis GitHub officiel)
+# Phase C GitOps — migré depuis le rôle Ansible shuffle deploy.yml (185-shuffle.yml)
+# Les étapes configure.yml et workflows.yml restent dans Ansible (API calls post-deploy)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-shuffle
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Shuffle/Shuffle.git
+    targetRevision: main
+    path: functions/kubernetes/charts/shuffle
+    helm:
+      releaseName: shuffle
+      values: |
+        shuffle:
+          baseUrl: "http://shuffle-backend.soc-shuffle.svc:5001"
+          org: "SOC Lab"
+        backend:
+          replicaCount: 1
+          image:
+            repository: ghcr.io/shuffle/shuffle-backend
+            tag: "1.4.0"
+            pullPolicy: IfNotPresent
+          containerPorts:
+            http: 5001
+          openSearch:
+            url: "http://shuffle-opensearch-master-hl:9200"
+            skipSSLVerify: true
+          extraEnvVars:
+            - name: SHUFFLE_DEFAULT_USERNAME
+              value: "admin"
+            - name: SHUFFLE_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: soc-shuffle-admin-creds
+                  key: password
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+        frontend:
+          replicaCount: 1
+          image:
+            repository: ghcr.io/shuffle/shuffle-frontend
+            tag: "1.4.0"
+            pullPolicy: IfNotPresent
+          service:
+            type: ClusterIP
+            port: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+        orborus:
+          replicaCount: 1
+          image:
+            repository: ghcr.io/shuffle/shuffle-orborus
+            tag: "1.4.0"
+            pullPolicy: IfNotPresent
+          executionConcurrency: 5
+          manageWorkerDeployments: true
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"
+        app:
+          image:
+            registry: docker.io
+            repository: frikky
+            tag: "1.4.0"
+          containerSecurityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+        opensearch:
+          enabled: true
+          master:
+            replicaCount: 1
+            masterOnly: false
+            heapSize: "512m"
+            persistence:
+              enabled: true
+              storageClass: "longhorn"
+              size: "5Gi"
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "1000m"
+                memory: "2Gi"
+          coordinating:
+            replicaCount: 0
+          data:
+            replicaCount: 0
+          ingest:
+            replicaCount: 0
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-shuffle
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates

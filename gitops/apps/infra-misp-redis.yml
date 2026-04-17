@@ -1,0 +1,65 @@
+---
+# infra-misp-redis.yml — Redis pour MISP (Bitnami Helm chart)
+# Phase C GitOps — migré depuis le rôle Ansible misp (100-misp.yml)
+# Le déploiement MISP core reste géré par Ansible (déployé via Deployment manifest)
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: infra-misp-redis
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: argocd
+    soc.lab/layer: application
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: redis
+    targetRevision: "20.6.2"
+    helm:
+      releaseName: misp-redis
+      values: |
+        architecture: standalone
+        auth:
+          enabled: true
+          existingSecret: misp-redis
+          existingSecretPasswordKey: redis-password
+        image:
+          registry: docker.io
+          repository: bitnami/redis
+          tag: latest
+          digest: "sha256:b2ccacecba0945e1da5c93e8e9e6c4c7af579514941224a7d80a2fc8dfb09f6c"
+        master:
+          persistence:
+            enabled: true
+            size: 5Gi
+            storageClass: longhorn
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+        replica:
+          replicaCount: 0
+        metrics:
+          enabled: true
+          serviceMonitor:
+            enabled: true
+            labels:
+              release: kube-prometheus-stack
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: soc-core
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false
+      - ServerSideApply=true
+      - RespectIgnoreDifferences=true

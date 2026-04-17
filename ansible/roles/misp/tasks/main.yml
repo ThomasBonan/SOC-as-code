@@ -5,11 +5,13 @@
     repo_url: "{{ bitnami_repo_url }}"
     binary_path: "{{ helm_binary_path }}"
   run_once: true
+  when: misp_redis_managed_by | default('ansible') != 'gitops'
 
 - name: Update helm repos (once)
   ansible.builtin.command: "{{ helm_binary_path }} repo update"
   changed_when: false
   run_once: true
+  when: misp_redis_managed_by | default('ansible') != 'gitops'
 
 - name: Ensure namespace exists
   kubernetes.core.k8s:
@@ -150,6 +152,7 @@
     atomic: false
     timeout: "60m0s"
     binary_path: "{{ helm_binary_path }}"
+  when: misp_redis_managed_by | default('ansible') != 'gitops'
 
 # -------------------------
 # MISP ConfigMap (ENV attendu par misp-core officiel)

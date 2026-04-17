@@ -30,6 +30,7 @@
   gather_facts: false
   vars:
     ansible_python_interpreter: "{{ k8s_ansible_python | default('python3') }}"
+    shuffle_enable_deploy: "{{ (shuffle_managed_by | default('ansible')) != 'gitops' }}"
   pre_tasks:
     - name: Override soc_environment depuis la variable d'environnement SOC_ENV
       ansible.builtin.set_fact:
