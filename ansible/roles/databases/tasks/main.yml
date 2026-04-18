@@ -127,6 +127,116 @@
   vars:
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
 
+# --- Vault backend : lire les passwords depuis Vault KV et créer les K8s Secrets directement ---
+- block:
+    - name: Databases (Vault) | Lire le root token
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+        name: "vault-unseal-keys"
+      register: _db_vault_keys
+      no_log: true
+      failed_when: _db_vault_keys.resources | length == 0
+
+    - name: Databases (Vault) | Construire préfixe vault exec
+      ansible.builtin.set_fact:
+        _db_vault_exec: >-
+          kubectl exec -n {{ soc_vault_namespace | default('soc-vault') }} vault-0 --
+          env VAULT_TOKEN={{ _db_vault_keys.resources[0].data.root_token | b64decode }}
+      no_log: true
+
+    - name: Databases (Vault) | Lire thehive-postgresql depuis Vault
+      ansible.builtin.shell: >
+        {{ _db_vault_exec }} vault kv get -format=json
+        {{ soc_vault_kv_mount | default('soc') }}/databases/thehive-postgresql
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: _db_thehive_pg_vault
+      no_log: true
+      changed_when: false
+      failed_when: _db_thehive_pg_vault.rc != 0
+
+    - name: Databases (Vault) | Créer thehive-postgresql-auth (create-once)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: thehive-postgresql-auth
+            namespace: "{{ soc_core_namespace }}"
+          type: Opaque
+          stringData:
+            postgres-password: "{{ (_db_thehive_pg_vault.stdout | from_json).data.data['postgres-password'] }}"
+            password: "{{ (_db_thehive_pg_vault.stdout | from_json).data.data['password'] }}"
+      when: (thehive_pg_secret.resources | length) == 0
+      no_log: true
+
+    - name: Databases (Vault) | Lire cortex-postgresql depuis Vault
+      ansible.builtin.shell: >
+        {{ _db_vault_exec }} vault kv get -format=json
+        {{ soc_vault_kv_mount | default('soc') }}/databases/cortex-postgresql
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: _db_cortex_pg_vault
+      no_log: true
+      changed_when: false
+      failed_when: _db_cortex_pg_vault.rc != 0
+
+    - name: Databases (Vault) | Créer cortex-postgresql-auth (create-once)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: cortex-postgresql-auth
+            namespace: "{{ soc_core_namespace }}"
+          type: Opaque
+          stringData:
+            postgres-password: "{{ (_db_cortex_pg_vault.stdout | from_json).data.data['postgres-password'] }}"
+            password: "{{ (_db_cortex_pg_vault.stdout | from_json).data.data['password'] }}"
+      when: (cortex_pg_secret.resources | length) == 0
+      no_log: true
+
+    - name: Databases (Vault) | Lire misp-mariadb depuis Vault
+      ansible.builtin.shell: >
+        {{ _db_vault_exec }} vault kv get -format=json
+        {{ soc_vault_kv_mount | default('soc') }}/databases/misp-mariadb
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: _db_misp_mariadb_vault
+      no_log: true
+      changed_when: false
+      failed_when: _db_misp_mariadb_vault.rc != 0
+
+    - name: Databases (Vault) | Créer misp-mariadb-auth (create-once)
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: misp-mariadb-auth
+            namespace: "{{ soc_core_namespace }}"
+          type: Opaque
+          stringData:
+            mariadb-root-password: "{{ (_db_misp_mariadb_vault.stdout | from_json).data.data['mariadb-root-password'] }}"
+            mariadb-password: "{{ (_db_misp_mariadb_vault.stdout | from_json).data.data['mariadb-password'] }}"
+      when: (misp_mariadb_secret.resources | length) == 0
+      no_log: true
+
+  when: soc_vault_backend | default('kubernetes-secrets') == 'vault'
+  delegate_to: localhost
+  run_once: true
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+
 # --- DB Deployments ---
 - name: Check Longhorn system is healthy before DBs
   ansible.builtin.command: >
