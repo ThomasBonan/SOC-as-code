@@ -138,6 +138,7 @@
   no_log: true
 
 # --- Wazuh OpenSearch dashboard password ---
+# Seedé depuis K8s (soc-wazuh doit exister) — peut être absent en phase early.
 - name: Vault fetch | Lire wazuh_dashboard_password depuis Vault
   ansible.builtin.shell: >
     {{ _vfb_exec }} vault kv get -field=dashboard_password
@@ -147,12 +148,13 @@
   register: _vfb_wazuh_dashboard_pass
   changed_when: false
   no_log: true
-  failed_when: _vfb_wazuh_dashboard_pass.rc != 0
+  failed_when: false
 
 - name: Vault fetch | Définir wazuh_dashboard_password comme fact
   ansible.builtin.set_fact:
-    wazuh_dashboard_password: "{{ _vfb_wazuh_dashboard_pass.stdout }}"
+    wazuh_dashboard_password: "{{ _vfb_wazuh_dashboard_pass.stdout | default('') }}"
   no_log: true
+  when: _vfb_wazuh_dashboard_pass.rc == 0
 
 # --- ArgoCD admin password ---
 - name: Vault fetch | Lire argocd_admin_password depuis Vault
