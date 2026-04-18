@@ -12,10 +12,13 @@
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   register: _vault_k8s_auth_enable
-  changed_when: "'already enabled' not in _vault_k8s_auth_enable.stderr"
+  changed_when: >-
+    _vault_k8s_auth_enable.rc == 0
+    and 'already' not in _vault_k8s_auth_enable.stderr
   failed_when: >-
     _vault_k8s_auth_enable.rc != 0
-    and 'already enabled' not in _vault_k8s_auth_enable.stderr
+    and 'already' not in _vault_k8s_auth_enable.stderr
+    and 'path is already in use' not in _vault_k8s_auth_enable.stderr
   no_log: true
 
 - name: Vault auth | Configurer le Kubernetes auth (in-cluster)
@@ -48,10 +51,13 @@
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   register: _vault_approle_enable
-  changed_when: "'already enabled' not in _vault_approle_enable.stderr"
+  changed_when: >-
+    _vault_approle_enable.rc == 0
+    and 'already' not in _vault_approle_enable.stderr
   failed_when: >-
     _vault_approle_enable.rc != 0
-    and 'already enabled' not in _vault_approle_enable.stderr
+    and 'already' not in _vault_approle_enable.stderr
+    and 'path is already in use' not in _vault_approle_enable.stderr
   no_log: true
 
 - name: Vault auth | Créer le rôle AppRole soc-admin
