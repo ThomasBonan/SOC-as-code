@@ -101,6 +101,78 @@
   no_log: true
   when: soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
 
+# --- Vault backend : lire les credentials Wazuh depuis Vault KV ---
+- block:
+    - name: Wazuh (Vault) | Lire le root token
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+        name: "vault-unseal-keys"
+      register: _wazuh_vault_keys
+      no_log: true
+      failed_when: _wazuh_vault_keys.resources | length == 0
+
+    - name: Wazuh (Vault) | Lire credentials/wazuh-credentials depuis Vault
+      ansible.builtin.shell: >
+        kubectl exec -n {{ soc_vault_namespace | default('soc-vault') }} vault-0 --
+        env VAULT_TOKEN={{ _wazuh_vault_keys.resources[0].data.root_token | b64decode }}
+        vault kv get -format=json
+        {{ soc_vault_kv_mount | default('soc') }}/credentials/wazuh-credentials
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: _wazuh_vault_creds
+      no_log: true
+      changed_when: false
+      failed_when: _wazuh_vault_creds.rc != 0
+
+    - name: Wazuh (Vault) | Définir les passwords wazuh depuis Vault
+      ansible.builtin.set_fact:
+        wazuh_indexer_password: "{{ (_wazuh_vault_creds.stdout | from_json).data.data.indexer_password }}"
+        wazuh_dashboard_password: "{{ (_wazuh_vault_creds.stdout | from_json).data.data.dashboard_password }}"
+      no_log: true
+
+    - name: Wazuh (Vault) | Calculer les bcrypt hashes (cost 12)
+      ansible.builtin.set_fact:
+        wazuh_indexer_password_hash: "{{ wazuh_indexer_password | password_hash('bcrypt', rounds=12) }}"
+        wazuh_dashboard_password_hash: "{{ wazuh_dashboard_password | password_hash('bcrypt', rounds=12) }}"
+      no_log: true
+
+    - name: Wazuh (Vault) | Créer K8s Secret wazuh-credentials depuis Vault (create-once)
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ wazuh_namespace }}"
+        name: wazuh-credentials
+      register: _wazuh_creds_existing
+      no_log: true
+
+    - name: Wazuh (Vault) | Appliquer wazuh-credentials si absent
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: wazuh-credentials
+            namespace: "{{ wazuh_namespace }}"
+          type: Opaque
+          stringData:
+            indexer_password: "{{ wazuh_indexer_password }}"
+            indexer_password_hash: "{{ wazuh_indexer_password_hash }}"
+            dashboard_password: "{{ wazuh_dashboard_password }}"
+            dashboard_password_hash: "{{ wazuh_dashboard_password_hash }}"
+      when: (_wazuh_creds_existing.resources | length) == 0
+      no_log: true
+
+  when: soc_vault_backend | default('kubernetes-secrets') == 'vault'
+  delegate_to: localhost
+  run_once: true
+  become: false
+  vars:
+    ansible_python_interpreter: "{{ k8s_ansible_python }}"
+
 - name: Create/Update Wazuh credentials secret (kubernetes-secrets backend — ESO gère sinon)
   ansible.builtin.shell: |
     set -e
