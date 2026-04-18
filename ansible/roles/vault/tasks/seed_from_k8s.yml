@@ -194,12 +194,22 @@
 
 # ── Forcer la resynchronisation ESO ──────────────────────────────────────────
 
+- name: Vault seed | Vérifier si ESO est déployé
+  ansible.builtin.shell: >
+    kubectl --kubeconfig={{ vault_kubeconfig_path }}
+    get deployment/external-secrets
+    -n {{ vault_eso_namespace | default('soc-vault') }}
+    --ignore-not-found -o name
+  changed_when: false
+  register: _eso_deployment_exists
+
 - name: Vault seed | Redémarrer le déploiement ESO pour forcer la resync
   ansible.builtin.shell: >
     kubectl --kubeconfig={{ vault_kubeconfig_path }}
     rollout restart deployment/external-secrets
     -n {{ vault_eso_namespace | default('soc-vault') }}
   changed_when: true
+  when: _eso_deployment_exists.stdout | length > 0
 
 - name: Vault seed | Attendre que ESO soit prêt
   ansible.builtin.shell: >
@@ -208,6 +218,7 @@
     -n {{ vault_eso_namespace | default('soc-vault') }}
     --timeout=120s
   changed_when: false
+  when: _eso_deployment_exists.stdout | length > 0
 
 - name: Vault seed | Vérifier le statut des ExternalSecrets (attendre 30s)
   ansible.builtin.pause:
