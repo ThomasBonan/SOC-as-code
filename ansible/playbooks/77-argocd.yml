@@ -28,12 +28,22 @@
       tags: always
 
     - name: ArgoCD | Charger les bootstrap passwords depuis Vault
-      ansible.builtin.include_tasks:
-        file: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
-        apply:
-          tags: always
       when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
       tags: always
+      block:
+        - name: ArgoCD | Include fetch_bootstrap_vars depuis Vault
+          ansible.builtin.include_tasks:
+            file: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+            apply:
+              tags: always
+      rescue:
+        # Vault pas encore déployé (bootstrap GitOps : ArgoCD démarre avant vault).
+        # On utilise un mot de passe statique ; vault-deploy + argocd-update-password
+        # le remplaceront par le mot de passe Vault après que Longhorn soit disponible.
+        - name: ArgoCD | Vault non disponible — fallback mot de passe bootstrap statique
+          ansible.builtin.set_fact:
+            argocd_admin_password: "{{ argocd_admin_password_bootstrap }}"
+          no_log: true
 
   roles:
     - role: argocd

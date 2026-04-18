@@ -82,7 +82,7 @@ risk-engine: ## Risk Engine Flask (190)
 	$(ANS) /190-soc-risk-engine.yml
 
 # ── Cibles de wait ────────────────────────────────────────────────────────────
-.PHONY: wait-vms wait-nodes wait-argocd wait-argocd-synced
+.PHONY: wait-vms wait-nodes wait-argocd wait-argocd-synced longhorn-prereqs
 
 wait-vms: ## Attendre que le master K8s soit joignable en SSH
 	@bash $(SCRIPTS)/wait-ssh.sh $(MASTER_IP) $(SSH_TIMEOUT)
@@ -92,6 +92,10 @@ wait-nodes: ## Attendre que tous les nœuds K8s soient Ready
 
 wait-argocd: ## Attendre que argocd-server soit Available
 	@bash $(SCRIPTS)/wait-argocd-ready.sh $(KCFG) 300
+
+longhorn-prereqs: ## Pré-créer namespace + SA Longhorn (évite FailedCreate sur le hook pre-upgrade)
+	@kubectl --kubeconfig=$(KCFG) create namespace longhorn-system --dry-run=client -o yaml | kubectl --kubeconfig=$(KCFG) apply -f -
+	@kubectl --kubeconfig=$(KCFG) -n longhorn-system create serviceaccount longhorn-service-account --dry-run=client -o yaml | kubectl --kubeconfig=$(KCFG) apply -f -
 
 wait-infra-synced: ## Attendre que les apps infra (MetalLB, Longhorn, cert-manager, ingress-nginx) soient Synced
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
@@ -114,7 +118,7 @@ preflight: ## Vérifier les prérequis avant deploy
 	@bash $(SCRIPTS)/preflight-check.sh
 
 # ── Blocs de déploiement ──────────────────────────────────────────────────────
-.PHONY: k8s-bootstrap vault-deploy argocd-full soc-day1 soc-security-layer \
+.PHONY: k8s-bootstrap vault-deploy argocd-full argocd-update-password soc-day1 soc-security-layer \
         soc-automation-layer soc-validate
 
 k8s-bootstrap: prereqs bins cp cni join post post-master workers-pre ## K8s from scratch (00→70)
@@ -127,7 +131,13 @@ vault-deploy: ## Vault + ESO (75)
 cert-manager-issuer: ## Créer ClusterIssuer soc-lab-ca-issuer (après ArgoCD sync infra-cert-manager)
 	$(ANS)/61-cert-manager-issuer.yml
 
-argocd-full: vault-deploy monitoring argocd wait-argocd wait-infra-synced cert-manager-issuer wait-soc-apps-synced ## Vault+Monitoring+ArgoCD + attente infra+SOC apps GitOps synced
+argocd-update-password: ## Mettre à jour le mot de passe ArgoCD depuis Vault (post vault-deploy)
+	$(ANS)/77-argocd.yml --tags deploy -e argocd_force_password_update=true
+
+# Ordre bootstrap GitOps : ArgoCD AVANT vault — Longhorn (stockage vault) est
+# déployé par ArgoCD. vault utilise un mot de passe statique bootstrap pour
+# ArgoCD, puis argocd-update-password le remplace par le mot de passe Vault.
+argocd-full: argocd wait-argocd longhorn-prereqs wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring wait-soc-apps-synced ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 

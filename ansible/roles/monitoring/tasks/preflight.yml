@@ -11,6 +11,7 @@
       - app.kubernetes.io/name=cert-manager
   register: _cm_pods
   failed_when: (_cm_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) == 0
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: Monitoring | Preflight — vérifier que Longhorn est opérationnel
   kubernetes.core.k8s_info:
@@ -22,6 +23,7 @@
       - app=longhorn-manager
   register: _lh_pods
   failed_when: (_lh_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length) == 0
+  when: longhorn_managed_by | default('ansible') != 'gitops'
 
 - name: Monitoring | Preflight — ajouter les repos Helm
   kubernetes.core.helm_repository:

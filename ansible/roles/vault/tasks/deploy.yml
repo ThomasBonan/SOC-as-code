@@ -15,14 +15,15 @@
           app.kubernetes.io/managed-by: soc-ansible
           soc.lab/component: vault
 
-# --- Certificat TLS via cert-manager ---
+# --- Certificat TLS via cert-manager (mode ansible) ---
 - name: Vault deploy | Créer le Certificate TLS pour Vault
   kubernetes.core.k8s:
     kubeconfig: "{{ vault_kubeconfig_path }}"
     state: present
     template: vault-certificate.yml.j2
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
 
-- name: Vault deploy | Attendre que le Secret TLS soit prêt
+- name: Vault deploy | Attendre que le Secret TLS soit prêt (cert-manager)
   kubernetes.core.k8s_info:
     kubeconfig: "{{ vault_kubeconfig_path }}"
     kind: Secret
@@ -32,6 +33,57 @@
   until: _vault_tls_secret.resources | length > 0
   retries: 30
   delay: 10
+  when: cert_manager_managed_by | default('ansible') != 'gitops'
+
+# --- Certificat TLS auto-signé (mode gitops — cert-manager pas encore disponible) ---
+- name: Vault deploy | TLS auto-signé (cert-manager géré par GitOps)
+  when: cert_manager_managed_by | default('ansible') == 'gitops'
+  block:
+    - name: Vault deploy | Générer clé privée TLS Vault
+      ansible.builtin.command: >
+        openssl genrsa -out /tmp/vault-tls.key 2048
+      args:
+        creates: /tmp/vault-tls.key
+
+    - name: Vault deploy | Générer certificat TLS auto-signé
+      ansible.builtin.command: >
+        openssl req -x509 -new -nodes
+        -key /tmp/vault-tls.key
+        -sha256 -days 3650
+        -out /tmp/vault-tls.crt
+        -subj "/CN=vault.{{ vault_namespace }}.svc/O=soc-lab"
+        -addext "subjectAltName={{ (vault_dns_names | map('regex_replace', '^', 'DNS:') | list + ['DNS:localhost', 'IP:127.0.0.1']) | join(',') }}"
+      args:
+        creates: /tmp/vault-tls.crt
+
+    - name: Vault deploy | Lire la clé TLS
+      ansible.builtin.slurp:
+        src: /tmp/vault-tls.key
+      register: _vault_self_key
+
+    - name: Vault deploy | Lire le certificat TLS
+      ansible.builtin.slurp:
+        src: /tmp/vault-tls.crt
+      register: _vault_self_crt
+
+    - name: Vault deploy | Créer le Secret TLS {{ vault_tls_secret_name }}
+      kubernetes.core.k8s:
+        kubeconfig: "{{ vault_kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ vault_tls_secret_name }}"
+            namespace: "{{ vault_namespace }}"
+            labels:
+              app.kubernetes.io/managed-by: soc-ansible
+              soc.lab/component: vault
+          type: kubernetes.io/tls
+          data:
+            tls.key: "{{ _vault_self_key.content }}"
+            tls.crt: "{{ _vault_self_crt.content }}"
+            ca.crt: "{{ _vault_self_crt.content }}"
 
 # --- Helm repo ---
 - name: Vault deploy | Ajouter le repo Helm HashiCorp

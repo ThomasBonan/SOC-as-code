@@ -32,6 +32,13 @@ cluster_domain: "cluster.local"
 
 # ── GitOps managed_by — "gitops" = ArgoCD gère le Helm, Ansible skippe ──────
 # Mettre "ansible" pour revenir au déploiement Ansible classique.
+#
+# Mot de passe de bootstrap ArgoCD : utilisé lors du premier déploiement quand
+# Vault n'est pas encore disponible (ArgoCD doit démarrer avant Vault pour que
+# Longhorn soit disponible). Remplacé par le mot de passe Vault via
+# 'make argocd-update-password' une fois Vault déployé.
+argocd_admin_password_bootstrap: "Admin@ArgoCD-Bootstrap2024!"
+
 metallb_managed_by: "gitops"
 ingress_nginx_managed_by: "gitops"
 cert_manager_managed_by: "gitops"
@@ -114,6 +121,15 @@ argocd_namespace: "argocd"
 argocd_ingress_host: "argocd.{{ apps_domain }}"
 argocd_repo_url: "https://github.com/ThomasBonan/SOC-as-code.git"
 argocd_repo_target_revision: "main"
+
+# repo-server OOM avec 256Mi quand ~10 Helm charts synced simultanément
+argocd_repo_server_resources:
+  requests:
+    cpu: "100m"
+    memory: "128Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
 
 # Services
 soc_services:

@@ -16,13 +16,13 @@
           app.kubernetes.io/managed-by: soc-ansible
           soc.lab/component: argocd
 
-# --- Certificat TLS via cert-manager ---
+# --- Certificat TLS via cert-manager (ignoré si cert-manager est gitops-managed) ---
 - name: ArgoCD deploy | Créer le Certificate TLS
   kubernetes.core.k8s:
     kubeconfig: "{{ argocd_kubeconfig_path }}"
     state: present
     template: argocd-certificate.yml.j2
-  when: argocd_enable_certificate | bool
+  when: argocd_enable_certificate | bool and cert_manager_managed_by | default('ansible') != 'gitops'
 
 - name: ArgoCD deploy | Attendre que le Secret TLS soit prêt
   kubernetes.core.k8s_info:
@@ -34,7 +34,7 @@
   until: _argocd_tls_secret.resources | length > 0
   retries: 30
   delay: 10
-  when: argocd_enable_certificate | bool
+  when: argocd_enable_certificate | bool and cert_manager_managed_by | default('ansible') != 'gitops'
 
 # --- Admin secret (create-once, AVANT Helm pour éviter le CrashLoopBackOff) ---
 - name: ArgoCD deploy | Vérifier si le Secret argocd-secret existe déjà
@@ -62,7 +62,7 @@
     _argocd_password_mtime: "{{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
     _argocd_server_secretkey: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=32') }}"
   no_log: true
-  when: not _argocd_password_already_set | bool
+  when: not _argocd_password_already_set | bool or argocd_force_password_update | default(false) | bool
 
 - name: ArgoCD deploy | Appliquer le Secret admin ArgoCD
   kubernetes.core.k8s:
@@ -70,14 +70,14 @@
     state: present
     template: argocd-admin-secret.yml.j2
   no_log: true
-  when: not _argocd_password_already_set | bool
+  when: not _argocd_password_already_set | bool or argocd_force_password_update | default(false) | bool
 
 - name: ArgoCD deploy | Redémarrer les deployments ArgoCD si le secret vient d'être créé
   ansible.builtin.command: >
     kubectl rollout restart deployment -n {{ argocd_namespace }}
   environment:
     KUBECONFIG: "{{ argocd_kubeconfig_path }}"
-  when: not _argocd_password_already_set | bool
+  when: not _argocd_password_already_set | bool or argocd_force_password_update | default(false) | bool
   failed_when: false
   changed_when: true
 
