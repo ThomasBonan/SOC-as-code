@@ -18,7 +18,7 @@ spec:
   source:
     repoURL: https://charts.bitnami.com/bitnami
     chart: redis
-    targetRevision: "20.6.2"
+    targetRevision: "25.3.11"
     helm:
       releaseName: misp-redis
       values: |
@@ -27,11 +27,6 @@ spec:
           enabled: true
           existingSecret: misp-redis
           existingSecretPasswordKey: redis-password
-        image:
-          registry: docker.io
-          repository: bitnami/redis
-          tag: latest
-          digest: "sha256:b2ccacecba0945e1da5c93e8e9e6c4c7af579514941224a7d80a2fc8dfb09f6c"
         master:
           persistence:
             enabled: true
@@ -47,11 +42,7 @@ spec:
         replica:
           replicaCount: 0
         metrics:
-          enabled: true
-          serviceMonitor:
-            enabled: true
-            labels:
-              release: kube-prometheus-stack
+          enabled: false
   destination:
     server: https://kubernetes.default.svc
     namespace: soc-core

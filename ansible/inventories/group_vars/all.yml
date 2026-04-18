@@ -122,14 +122,14 @@ argocd_ingress_host: "argocd.{{ apps_domain }}"
 argocd_repo_url: "https://github.com/ThomasBonan/SOC-as-code.git"
 argocd_repo_target_revision: "main"
 
-# repo-server OOM avec 256Mi quand ~10 Helm charts synced simultanément
+# repo-server OOM avec 512Mi quand ~15 Helm charts synced simultanément
 argocd_repo_server_resources:
   requests:
     cpu: "100m"
-    memory: "128Mi"
+    memory: "256Mi"
   limits:
     cpu: "500m"
-    memory: "512Mi"
+    memory: "1Gi"
 
 # Services
 soc_services:
