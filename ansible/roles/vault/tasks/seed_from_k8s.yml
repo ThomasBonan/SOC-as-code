@@ -220,10 +220,18 @@
   changed_when: false
   when: _eso_deployment_exists.stdout | length > 0
 
+- name: Vault seed | Vérifier si la CRD ExternalSecret est installée
+  ansible.builtin.shell: >
+    kubectl --kubeconfig={{ vault_kubeconfig_path }}
+    get crd externalsecrets.external-secrets.io --ignore-not-found -o name
+  register: _eso_crd_exists
+  changed_when: false
+
 - name: Vault seed | Vérifier le statut des ExternalSecrets (attendre 30s)
   ansible.builtin.pause:
     seconds: 30
     prompt: "Attente de la resynchronisation ESO..."
+  when: _eso_crd_exists.stdout | length > 0 and _eso_deployment_exists.stdout | length > 0
 
 - name: Vault seed | Statut des ExternalSecrets
   ansible.builtin.shell: >
@@ -233,7 +241,8 @@
     --no-headers
   register: _es_status
   changed_when: false
+  when: _eso_crd_exists.stdout | length > 0
 
 - name: Vault seed | Afficher le statut des ExternalSecrets
   ansible.builtin.debug:
-    msg: "{{ _es_status.stdout_lines }}"
+    msg: "{{ _es_status.stdout_lines | default(['ESO CRD non installée — sera synchronisée plus tard']) }}"
