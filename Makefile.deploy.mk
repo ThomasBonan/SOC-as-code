@@ -43,43 +43,43 @@ post-master: ## Post-config master : cert-manager, Longhorn, ingress-nginx (60)
 	ansible-playbook $(ANS_DIR)/playbooks/60-post-config-master.yml
 
 databases: ## Bases de données SOC (80)
-	$(ANS) /80-databases.yml
+	$(ANS)/80-databases.yml
 
 wazuh: ## Déployer Wazuh (90)
-	$(ANS) /90-wazuh.yml
+	$(ANS)/90-wazuh.yml
 
 misp: ## Déployer MISP (100)
-	$(ANS) /100-misp.yml
+	$(ANS)/100-misp.yml
 
 cortex: ## Déployer Cortex (110)
-	$(ANS) /110-cortex.yml
+	$(ANS)/110-cortex.yml
 
 thehive: ## Déployer TheHive (120)
-	$(ANS) /120-thehive.yml
+	$(ANS)/120-thehive.yml
 
 soc-config: ## Configuration SOC post-déploiement (130)
-	$(ANS) /130-soc-config.yml
+	$(ANS)/130-soc-config.yml
 
 soc-smoke: ## Smoke tests SOC (140)
-	$(ANS) /140-soc-smoke.yml
+	$(ANS)/140-soc-smoke.yml
 
 mtls: ## mTLS inter-services (155)
-	$(ANS) /155-soc-mtls.yml
+	$(ANS)/155-soc-mtls.yml
 
 foundations: ## Fondations RBAC/SA (170)
-	$(ANS) /170-soc-foundations.yml
+	$(ANS)/170-soc-foundations.yml
 
 automation: ## Automation Wazuh→Shuffle (180 — 1er passage)
-	$(ANS) /180-soc-automation.yml
+	$(ANS)/180-soc-automation.yml
 
 shuffle: ## Déployer Shuffle SOAR (185)
-	$(ANS) /185-shuffle.yml
+	$(ANS)/185-shuffle.yml
 
 automation-rerun: ## Automation 2e passage post-Shuffle (180 — circular dep fix)
-	$(ANS) /180-soc-automation.yml
+	$(ANS)/180-soc-automation.yml
 
 risk-engine: ## Risk Engine Flask (190)
-	$(ANS) /190-soc-risk-engine.yml
+	$(ANS)/190-soc-risk-engine.yml
 
 # ── Cibles de wait ────────────────────────────────────────────────────────────
 .PHONY: wait-vms wait-nodes wait-argocd wait-argocd-synced longhorn-prereqs
