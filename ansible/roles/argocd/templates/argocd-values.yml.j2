@@ -105,6 +105,17 @@ configs:
     # Comptes locaux (en plus du compte admin)
     accounts.soc-operator: apiKey, login
     accounts.soc-viewer: login
+    # Le hook longhorn-pre-upgrade échoue sur fresh install (pas de SA/RBAC encore).
+    # On exclut les Jobs de longhorn-system pour éviter ce blocage.
+    resource.exclusions: |
+      - apiGroups:
+        - batch
+        kinds:
+        - Job
+        clusters:
+        - '*'
+        namespaces:
+        - longhorn-system
     # Suivi des ressources personnalisées (CRDs SOC)
     resource.customizations: |
       argoproj.io/Application:
