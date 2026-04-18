@@ -137,7 +137,7 @@ argocd-update-password: ## Mettre à jour le mot de passe ArgoCD depuis Vault (p
 # Ordre bootstrap GitOps : ArgoCD AVANT vault — Longhorn (stockage vault) est
 # déployé par ArgoCD. vault utilise un mot de passe statique bootstrap pour
 # ArgoCD, puis argocd-update-password le remplace par le mot de passe Vault.
-argocd-full: argocd wait-argocd longhorn-prereqs wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring wait-soc-apps-synced ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
+argocd-full: argocd wait-argocd longhorn-prereqs wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
@@ -156,7 +156,7 @@ else
 _iac_step :=
 endif
 
-deploy: preflight $(_iac_step) wait-nodes argocd-full soc-day1 soc-security-layer soc-automation-layer soc-validate ## Déploiement SOC complet from-scratch (IaC → K8s → ArgoCD → SOC → selftest)
+deploy: preflight $(_iac_step) wait-nodes argocd-full soc-day1 wait-soc-apps-synced soc-security-layer soc-automation-layer soc-validate ## Déploiement SOC complet from-scratch (IaC → K8s → ArgoCD → SOC → selftest)
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════╗"
 	@echo "║  ✅  SOC-as-code déployé avec succès                     ║"
