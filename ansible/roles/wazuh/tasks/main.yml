@@ -662,9 +662,23 @@
   run_once: true
   changed_when: false
 
+- name: Récupérer l'IP de l'ingress wazuh-dashboard
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    get ingress wazuh-dashboard -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+  register: _wazuh_ingress_ip
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  retries: 10
+  delay: 10
+  until: _wazuh_ingress_ip.stdout | length > 0
+
 - name: Basic HTTPS check (expect 200/302/401)
   ansible.builtin.command: >
-    curl -k -s -o /dev/null -w "%{http_code}\n" https://{{ wazuh_domain }}/
+    curl -k -s -o /dev/null -w "%{http_code}\n"
+    --resolve "{{ wazuh_domain }}:443:{{ _wazuh_ingress_ip.stdout }}"
+    https://{{ wazuh_domain }}/
   register: wazuh_http_code
   delegate_to: localhost
   run_once: true
@@ -672,7 +686,7 @@
 
 - name: Fail if dashboard not reachable via ingress
   ansible.builtin.fail:
-    msg: "Wazuh dashboard not reachable on https://{{ wazuh_domain }}/ (code={{ wazuh_http_code.stdout | default('') }})"
+    msg: "Wazuh dashboard not reachable on https://{{ wazuh_domain }}/ via {{ _wazuh_ingress_ip.stdout }} (code={{ wazuh_http_code.stdout | default('') }})"
   when: wazuh_http_code.stdout not in ["200", "302", "401"]
   delegate_to: localhost
   run_once: true
