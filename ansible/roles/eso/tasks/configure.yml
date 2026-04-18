@@ -1,18 +1,19 @@
 ---
 # eso/tasks/configure.yml — ClusterSecretStore pointant vers Vault
 
-# --- Créer un ConfigMap contenant le CA cert de soc-lab ---
-# ESO en a besoin pour valider le TLS Vault
-- name: ESO configure | Lire le CA cert depuis le Secret soc-lab-ca (cert-manager)
+# --- Créer un ConfigMap contenant le CA cert de Vault ---
+# On lit depuis le Secret TLS de Vault (ca.crt) — valide pour cert signé par
+# cert-manager OU auto-signé openssl (dans les deux cas ca.crt est présent).
+- name: ESO configure | Lire le CA cert depuis le Secret TLS Vault
   kubernetes.core.k8s_info:
     kubeconfig: "{{ eso_kubeconfig_path }}"
     api_version: v1
     kind: Secret
-    namespace: cert-manager
-    name: soc-lab-ca
-  register: _eso_ca_secret
+    namespace: "{{ eso_vault_namespace | default('soc-vault') }}"
+    name: "{{ eso_vault_tls_secret | default('vault-tls') }}"
+  register: _eso_vault_tls_secret
   no_log: true
-  failed_when: _eso_ca_secret.resources | length == 0
+  failed_when: _eso_vault_tls_secret.resources | length == 0
 
 - name: ESO configure | Créer le ConfigMap CA bundle dans le namespace ESO
   kubernetes.core.k8s:
@@ -28,7 +29,7 @@
           app.kubernetes.io/managed-by: soc-ansible
           soc.lab/component: eso-ca
       data:
-        ca.crt: "{{ _eso_ca_secret.resources[0].data['tls.crt'] | b64decode }}"
+        ca.crt: "{{ _eso_vault_tls_secret.resources[0].data['ca.crt'] | b64decode }}"
   no_log: true
 
 # --- ClusterSecretStore ---
