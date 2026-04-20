@@ -10,6 +10,13 @@
     template: argocd-rbac-cm.yml.j2
   when: argocd_enable_rbac_cm | bool
 
+# --- Helm OCI repo credentials ---
+- name: ArgoCD configure | Enregistrer le repo Helm OCI Bitnami
+  kubernetes.core.k8s:
+    kubeconfig: "{{ argocd_kubeconfig_path }}"
+    state: present
+    template: argocd-helm-oci-repos.yml.j2
+
 # --- App of Apps ---
 - name: ArgoCD configure | Vérifier si l'Application soc-app-of-apps existe déjà
   kubernetes.core.k8s_info:

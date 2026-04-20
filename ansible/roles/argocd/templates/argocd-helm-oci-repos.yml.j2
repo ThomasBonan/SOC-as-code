@@ -1,0 +1,20 @@
+# argocd-helm-oci-repos.yml.j2 — Repo credentials pour les charts Helm OCI publics
+# Nécessaire car ArgoCD distingue repo HTTP et OCI via enableOCI=true.
+# Sans ce secret, l'Application infra-misp-redis (chart Bitnami migré vers OCI)
+# échoue avec "not a valid chart repository" — ArgoCD utilise `helm pull --repo`
+# au lieu de la syntaxe OCI `helm pull oci://...`.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bitnami-oci-registry
+  namespace: "{{ argocd_namespace }}"
+  labels:
+    argocd.argoproj.io/secret-type: repository
+    app.kubernetes.io/managed-by: soc-ansible
+    soc.lab/component: argocd
+type: Opaque
+stringData:
+  name: bitnami
+  url: registry-1.docker.io/bitnamicharts
+  type: helm
+  enableOCI: "true"
