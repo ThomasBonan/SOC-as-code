@@ -3,6 +3,8 @@ kind: BGPAdvertisement
 metadata:
   name: bgp-adv
   namespace: metallb-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "10"
 spec:
   ipAddressPools:
     - default-pool
