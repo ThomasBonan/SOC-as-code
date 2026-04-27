@@ -34,4 +34,4 @@ spec:
     syncOptions:
       - ServerSideApply=true
       - RespectIgnoreDifferences=true
-      - CreateNamespace=false   # Les namespaces SOC doivent déjà exister
+      - CreateNamespace=true    # ArgoCD crée les ns si absents ; idempotent avec Ansible day-1
