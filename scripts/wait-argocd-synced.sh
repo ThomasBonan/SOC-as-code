@@ -32,11 +32,13 @@ _is_done() {
     -o jsonpath='{.status.sync.status}' 2>/dev/null)
   health=$(kubectl --kubeconfig="${KCFG}" -n argocd get application "${app}" \
     -o jsonpath='{.status.health.status}' 2>/dev/null)
-  [[ "${sync}" == "Synced" ]] || return 1
   if "${ALLOW_DEGRADED}"; then
+    # --allow-degraded : accepte Healthy ou Degraded, sync ignoré.
+    # Cas d'usage : soc-eso-externalsecrets dont certains ExternalSecrets
+    # échouent car les namespaces SOC n'existent pas encore avant day-1.
     [[ "${health}" == "Healthy" || "${health}" == "Degraded" ]]
   else
-    [[ "${health}" == "Healthy" ]]
+    [[ "${sync}" == "Synced" ]] && [[ "${health}" == "Healthy" ]]
   fi
 }
 
