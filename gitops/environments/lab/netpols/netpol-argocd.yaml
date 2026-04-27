@@ -75,6 +75,9 @@ spec:
           port: 22
 ---
 # Règle 4 : Trafic intra-namespace ArgoCD (server ↔ redis, controller ↔ redis, etc.)
+# Note: Ingress-only — l'egress est géré par les règles dédiées (egress-argocd-k8s-api,
+# egress-argocd-repo-git, egress-dns-argocd) pour éviter un bootstrap circulaire où
+# cette règle bloquerait l'API server avant que les règles d'egress soient appliquées.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -88,17 +91,8 @@ spec:
       app.kubernetes.io/part-of: argocd
   policyTypes:
     - Ingress
-    - Egress
   ingress:
     - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: argocd
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/part-of: argocd
-  egress:
-    - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: argocd
