@@ -43,7 +43,7 @@
     tls_reloader_configmap_name: "tls-reloader-script"
 
     # Sidecar avec kubectl pour trigger le rollout restart
-    tls_reloader_sidecar_image: "docker.io/bitnami/kubectl:1.30"
+    tls_reloader_sidecar_image: "docker.io/bitnami/kubectl:1.30.14"
     tls_reloader_sidecar_resources:
       requests: { cpu: "10m", memory: "32Mi" }
       limits:   { cpu: "100m", memory: "64Mi" }
@@ -90,7 +90,7 @@
     tls_reloader_workload_name: "{{ _wazuh_manager_sts.stdout | default('wazuh-manager-master') }}"
     tls_reloader_configmap_name: "tls-reloader-script"
 
-    tls_reloader_sidecar_image: "docker.io/bitnami/kubectl:1.30"
+    tls_reloader_sidecar_image: "docker.io/bitnami/kubectl:1.30.14"
     tls_reloader_sidecar_resources:
       requests: { cpu: "10m", memory: "32Mi" }
       limits:   { cpu: "100m", memory: "64Mi" }

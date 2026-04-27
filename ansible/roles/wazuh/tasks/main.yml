@@ -691,7 +691,10 @@
   delegate_to: localhost
   run_once: true
 
-# --- TLS reloader : rotation cert-manager automatique sans intervention ---
+# --- TLS reloader : rotation cert-manager automatique (maintenance annuelle) ---
+# Tag 'never' → non exécuté lors d'un make deploy standard.
+# Appel explicite : ansible-playbook 90-wazuh.yml --tags tls_reloader
+# Prérequis : bitnami/kubectl image tag valide dans tls_reloader_sidecar_image.
 - name: Wazuh | Apply tls-reloader sidecars (indexer + manager)
   ansible.builtin.include_tasks: apply_tls_reloader.yml
-  tags: [wazuh, tls_reloader]
+  tags: [never, tls_reloader]
