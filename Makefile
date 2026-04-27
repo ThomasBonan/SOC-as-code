@@ -23,9 +23,6 @@ iac: ## Init + plan OpenTofu
 iac-validate: ## Valider la syntaxe Terraform/OpenTofu
 	@cd $(IAC_DIR) && tofu validate
 
-iac-apply: ## Appliquer le plan (demande confirmation)
-	@cd $(IAC_DIR) && tofu apply
-
 iac-destroy: ## Détruire l'infrastructure (DANGER)
 	@cd $(IAC_DIR) && tofu destroy
 

@@ -84,13 +84,11 @@ if [[ -f "/etc/soc-as-code/.env" ]]; then
   elif curl -sk --max-time 5 "${_proxmox_url}/version" | grep -q version; then
     echo "  ✅ API Proxmox joignable (${_proxmox_url})"
   else
-    if [[ "${DEPLOY_IAC}" == "1" ]]; then
-      echo "  ❌ API Proxmox inaccessible (${_proxmox_url}) — requis pour DEPLOY_IAC=1"
-      (( ++ERRORS ))
-    else
-      echo "  ⚠️  API Proxmox inaccessible (${_proxmox_url}) — ignoré car DEPLOY_IAC=0"
-      (( ++WARNINGS ))
-    fi
+    # curl peut échouer même quand tofu fonctionne (firewall HTTP vs HTTPS API,
+    # routing spécifique, TLS mutual). Toujours warning — tofu échouera lui-même
+    # avec un message clair si Proxmox est réellement inaccessible.
+    echo "  ⚠️  API Proxmox inaccessible via curl (${_proxmox_url}) — tofu tentera quand même"
+    (( ++WARNINGS ))
   fi
 fi
 
