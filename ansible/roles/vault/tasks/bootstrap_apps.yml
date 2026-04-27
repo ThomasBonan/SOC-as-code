@@ -1,0 +1,112 @@
+---
+# vault/tasks/bootstrap_apps.yml — Génère les secrets d'application dans soc/apps/
+#
+# Secrets créés (idempotents — n'écrasent PAS si déjà présents) :
+#   apps/misp-app-secret   : admin_email, admin_password, salt, gpg_passphrase
+#   apps/thehive-secret    : httpSecret
+#   apps/cortex-secret     : httpSecret
+#   apps/shuffle-admin     : username, apikey
+#
+# Ces chemins sont consommés par ESO (soc-eso-externalsecrets) pour hydrater
+# les K8s Secrets dans soc-core, soc-thehive, soc-cortex, soc-shuffle.
+# Sans ce seed, MISP/TheHive/Cortex/Shuffle ne peuvent pas démarrer sur un
+# cluster from-scratch avec soc_vault_backend=vault.
+
+- name: Vault bootstrap apps | Résoudre le root token
+  ansible.builtin.include_tasks: _resolve_vault_token.yml
+
+# ── misp-app-secret ─────────────────────────────────────────────────────────
+- name: Vault bootstrap apps | Vérifier soc/apps/misp-app-secret
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv get -tls-skip-verify -format=json
+    {{ vault_kv_mount }}/apps/misp-app-secret
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_misp_app_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Vault bootstrap apps | Générer soc/apps/misp-app-secret (si absent)
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv put -tls-skip-verify
+    {{ vault_kv_mount }}/apps/misp-app-secret
+    admin_email="{{ misp_admin_email | default('admin@soc.lab') }}"
+    admin_password="{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+    salt="{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    gpg_passphrase="{{ lookup('password', '/dev/null length=24 chars=ascii_letters,digits') }}"
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  when: _vault_misp_app_check.rc != 0
+  no_log: true
+  changed_when: true
+
+# ── thehive-secret ───────────────────────────────────────────────────────────
+- name: Vault bootstrap apps | Vérifier soc/apps/thehive-secret
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv get -tls-skip-verify -format=json
+    {{ vault_kv_mount }}/apps/thehive-secret
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_thehive_secret_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Vault bootstrap apps | Générer soc/apps/thehive-secret (si absent)
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv put -tls-skip-verify
+    {{ vault_kv_mount }}/apps/thehive-secret
+    httpSecret="{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  when: _vault_thehive_secret_check.rc != 0
+  no_log: true
+  changed_when: true
+
+# ── cortex-secret ────────────────────────────────────────────────────────────
+- name: Vault bootstrap apps | Vérifier soc/apps/cortex-secret
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv get -tls-skip-verify -format=json
+    {{ vault_kv_mount }}/apps/cortex-secret
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_cortex_secret_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Vault bootstrap apps | Générer soc/apps/cortex-secret (si absent)
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv put -tls-skip-verify
+    {{ vault_kv_mount }}/apps/cortex-secret
+    httpSecret="{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  when: _vault_cortex_secret_check.rc != 0
+  no_log: true
+  changed_when: true
+
+# ── shuffle-admin ────────────────────────────────────────────────────────────
+- name: Vault bootstrap apps | Vérifier soc/apps/shuffle-admin
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv get -tls-skip-verify -format=json
+    {{ vault_kv_mount }}/apps/shuffle-admin
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  register: _vault_shuffle_admin_check
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Vault bootstrap apps | Générer soc/apps/shuffle-admin (si absent)
+  ansible.builtin.shell: >
+    {{ _vault_exec }} vault kv put -tls-skip-verify
+    {{ vault_kv_mount }}/apps/shuffle-admin
+    username="shuffleadmin"
+    apikey="{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+  environment:
+    KUBECONFIG: "{{ vault_kubeconfig_path }}"
+  when: _vault_shuffle_admin_check.rc != 0
+  no_log: true
+  changed_when: true

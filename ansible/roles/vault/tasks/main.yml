@@ -30,8 +30,12 @@
   ansible.builtin.import_tasks: configure_secrets.yml
   tags: [vault, secrets]
 
-- name: Vault | Bootstrap — seed des secrets initiaux
+- name: Vault | Bootstrap — seed des secrets initiaux (bootstrap/)
   ansible.builtin.import_tasks: bootstrap_secrets.yml
+  tags: [vault, bootstrap]
+
+- name: Vault | Bootstrap apps — seed des secrets d'application (apps/)
+  ansible.builtin.import_tasks: bootstrap_apps.yml
   tags: [vault, bootstrap]
 
 - name: Vault | Seed — migration K8s Secrets → Vault (Phase 2)
