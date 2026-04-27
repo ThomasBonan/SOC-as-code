@@ -2,8 +2,8 @@
 # Makefile.deploy.mk — Orchestration complète du déploiement SOC-as-code
 #
 # Usage :
-#   make deploy            — déploiement from-scratch complet
-#   make deploy-from=<n>   — reprendre depuis une étape spécifique
+#   make deploy            — déploiement from-scratch complet (IaC + K8s + SOC)
+#   make deploy DEPLOY_IAC=0  — reprendre sur cluster existant (skip IaC)
 #   make destroy-lab       — détruire le lab Proxmox (DANGER)
 #
 # Variables d'override :
@@ -82,7 +82,8 @@ risk-engine: ## Risk Engine Flask (190)
 	$(ANS)/190-soc-risk-engine.yml
 
 # ── Cibles de wait ────────────────────────────────────────────────────────────
-.PHONY: wait-vms wait-nodes wait-argocd wait-argocd-synced longhorn-prereqs
+.PHONY: wait-vms wait-nodes wait-argocd wait-argocd-synced longhorn-prereqs \
+        wait-app-of-apps wait-eso-synced
 
 wait-vms: ## Attendre que le master K8s soit joignable en SSH
 	@bash $(SCRIPTS)/wait-ssh.sh $(MASTER_IP) $(SSH_TIMEOUT)
@@ -101,6 +102,14 @@ wait-infra-synced: ## Attendre que les apps infra (MetalLB, Longhorn, cert-manag
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
 	  infra-metallb infra-longhorn infra-cert-manager infra-ingress-nginx \
 	  --kubeconfig $(KCFG) --timeout 900
+
+wait-app-of-apps: ## Attendre que soc-app-of-apps crée les Applications enfants clés
+	@bash $(SCRIPTS)/wait-app-of-apps.sh --kubeconfig $(KCFG) --timeout 300
+
+wait-eso-synced: ## Attendre que soc-eso-externalsecrets soit Synced+Healthy (secrets hydratés depuis Vault)
+	@bash $(SCRIPTS)/wait-argocd-synced.sh \
+	  soc-eso-externalsecrets \
+	  --kubeconfig $(KCFG) --timeout 600
 
 wait-soc-apps-synced: ## Attendre que les apps SOC Helm (Cortex, TheHive, MISP Redis, Shuffle) soient Synced
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
@@ -134,10 +143,15 @@ cert-manager-issuer: ## Créer ClusterIssuer soc-lab-ca-issuer (après ArgoCD sy
 argocd-update-password: ## Mettre à jour le mot de passe ArgoCD depuis Vault (post vault-deploy)
 	$(ANS)/77-argocd.yml --tags deploy -e argocd_force_password_update=true
 
-# Ordre bootstrap GitOps : ArgoCD AVANT vault — Longhorn (stockage vault) est
-# déployé par ArgoCD. vault utilise un mot de passe statique bootstrap pour
-# ArgoCD, puis argocd-update-password le remplace par le mot de passe Vault.
-argocd-full: argocd wait-argocd longhorn-prereqs wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
+# Ordre bootstrap GitOps :
+#   1. ArgoCD démarre en premier (avant Vault) car Longhorn (stockage Vault) est
+#      déployé par ArgoCD. Un mot de passe statique bootstrap est utilisé.
+#   2. wait-app-of-apps : soc-app-of-apps déploie les Applications enfants.
+#   3. wait-infra-synced : MetalLB/Longhorn/cert-manager/ingress-nginx Ready.
+#   4. vault-deploy seede les secrets + active l'ESO.
+#   5. argocd-update-password remplace le mot de passe statique par celui de Vault.
+#   6. wait-eso-synced : soc-eso-externalsecrets Synced → K8s Secrets hydratés.
+argocd-full: argocd wait-argocd longhorn-prereqs wait-app-of-apps wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
@@ -156,13 +170,18 @@ else
 _iac_step :=
 endif
 
-deploy: preflight $(_iac_step) wait-nodes argocd-full soc-day1 wait-soc-apps-synced soc-security-layer soc-automation-layer soc-validate ## Déploiement SOC complet from-scratch (IaC → K8s → ArgoCD → SOC → selftest)
+deploy: preflight $(_iac_step) wait-nodes argocd-full wait-eso-synced soc-day1 wait-soc-apps-synced soc-security-layer soc-automation-layer soc-validate ## Déploiement SOC complet from-scratch (IaC → K8s → ArgoCD → ESO → SOC → selftest)
 	@echo ""
-	@echo "╔══════════════════════════════════════════════════════════╗"
-	@echo "║  ✅  SOC-as-code déployé avec succès                     ║"
-	@echo "║  ArgoCD : https://argocd.apps.soc.lab                    ║"
-	@echo "║  Wazuh  : https://wazuh.apps.soc.lab                     ║"
-	@echo "╚══════════════════════════════════════════════════════════╝"
+	@echo "╔══════════════════════════════════════════════════════════════╗"
+	@echo "║  SOC-as-code deploye avec succes                             ║"
+	@echo "║                                                              ║"
+	@echo "║  ArgoCD   : https://argocd.apps.soc.lab                      ║"
+	@echo "║  Wazuh    : https://wazuh.apps.soc.lab                       ║"
+	@echo "║  TheHive  : https://thehive.apps.soc.lab                     ║"
+	@echo "║  Cortex   : https://cortex.apps.soc.lab                      ║"
+	@echo "║  MISP     : https://misp.apps.soc.lab                        ║"
+	@echo "║  Shuffle  : https://shuffle.apps.soc.lab                     ║"
+	@echo "╚══════════════════════════════════════════════════════════════╝"
 
 # ── Destroy (DANGER) ──────────────────────────────────────────────────────────
 .PHONY: destroy-lab

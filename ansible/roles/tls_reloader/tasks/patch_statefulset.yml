@@ -1,0 +1,74 @@
+---
+# tls_reloader/tasks/patch_statefulset.yml — injecte le sidecar via strategic merge patch
+#
+# Idempotent : kubectl patch --type=strategic fusionne la liste de containers
+# par `name`; rejouer ne duplique pas le sidecar. shareProcessNamespace est
+# appliqué au pod spec si requis.
+
+- name: tls_reloader | Build sidecar container spec
+  ansible.builtin.set_fact:
+    _tls_reloader_sidecar_spec:
+      name: "{{ tls_reloader_sidecar_name }}"
+      image: "{{ tls_reloader_sidecar_image }}"
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "/scripts/{{ tls_reloader_script_name }}"]
+      env: "{{ _env_list }}"
+      resources: "{{ tls_reloader_sidecar_resources }}"
+      volumeMounts: "{{ _mounts }}"
+  vars:
+    _base_env:
+      - { name: "WATCH_FILES", value: "{{ tls_reloader_watch_files | join(' ') }}" }
+      - { name: "RELOAD_CMD",  value: "{{ tls_reloader_reload_cmd }}" }
+      - { name: "INTERVAL",    value: "{{ tls_reloader_interval_seconds | string }}" }
+      - { name: "POD_NAME",    valueFrom: { fieldRef: { fieldPath: "metadata.name" } } }
+      - { name: "POD_NAMESPACE", valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } } }
+    _extra_env: >-
+      {{
+        tls_reloader_extra_env | default({})
+        | dict2items(key_name='name', value_name='value')
+      }}
+    _env_list: "{{ _base_env + _extra_env }}"
+    _mounts: >-
+      {{
+        [{'name': 'tls-reloader-script', 'mountPath': '/scripts', 'readOnly': true}]
+        + (tls_reloader_extra_volume_mounts | default([]))
+      }}
+
+- name: tls_reloader | Build base strategic merge patch (no SA)
+  ansible.builtin.set_fact:
+    _tls_reloader_patch:
+      spec:
+        template:
+          spec:
+            shareProcessNamespace: "{{ tls_reloader_share_process_namespace | bool }}"
+            containers:
+              - "{{ _tls_reloader_sidecar_spec }}"
+            volumes: >-
+              {{
+                [{'name': 'tls-reloader-script',
+                  'configMap': {'name': tls_reloader_configmap_name, 'defaultMode': 493}}]
+                + (tls_reloader_extra_volumes | default([]))
+              }}
+
+- name: tls_reloader | Attach serviceAccountName (when RBAC enabled)
+  ansible.builtin.set_fact:
+    _tls_reloader_patch: >-
+      {{
+        _tls_reloader_patch | combine({
+          'spec': {'template': {'spec': {
+            'serviceAccountName': tls_reloader_rbac_service_account
+          }}}
+        }, recursive=True)
+      }}
+  when: tls_reloader_create_rbac | bool
+
+- name: tls_reloader | Apply strategic merge patch on {{ tls_reloader_workload_kind }}/{{ tls_reloader_workload_name }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ tls_reloader_kubeconfig_path }}"
+    state: patched
+    api_version: "apps/v1"
+    kind: "{{ tls_reloader_workload_kind }}"
+    name: "{{ tls_reloader_workload_name }}"
+    namespace: "{{ tls_reloader_namespace }}"
+    definition: "{{ _tls_reloader_patch }}"
+    merge_type: strategic-merge

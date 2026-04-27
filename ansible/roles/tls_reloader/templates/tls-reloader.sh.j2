@@ -1,0 +1,65 @@
+#!/bin/sh
+# tls-reloader.sh — polling générique d'une rotation cert-manager
+#
+# Contrat d'exécution :
+#   WATCH_FILES : liste de fichiers séparés par des espaces (absolute paths)
+#   RELOAD_CMD  : commande shell exécutée à chaud quand une signature change
+#   INTERVAL    : intervalle de polling en secondes (défaut 30)
+#
+# Le script compare un hash md5 agrégé de la liste WATCH_FILES. Lorsque
+# le hash change, il exécute RELOAD_CMD une seule fois. Si RELOAD_CMD
+# échoue, la signature précédente est conservée pour que le prochain tick
+# ré-essaie automatiquement.
+
+set -u
+
+INTERVAL="${INTERVAL:-{{ tls_reloader_interval_seconds }}}"
+
+if [ -z "${WATCH_FILES:-}" ]; then
+  echo "[tls-reloader] FATAL: WATCH_FILES vide" >&2
+  exit 1
+fi
+
+if [ -z "${RELOAD_CMD:-}" ]; then
+  echo "[tls-reloader] FATAL: RELOAD_CMD vide" >&2
+  exit 1
+fi
+
+log() {
+  ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "[tls-reloader] ${ts} $*"
+}
+
+fingerprint() {
+  for f in $WATCH_FILES; do
+    if [ -r "$f" ]; then
+      md5sum "$f" 2>/dev/null || echo "unreadable:$f"
+    else
+      echo "missing:$f"
+    fi
+  done | md5sum | awk '{print $1}'
+}
+
+log "sidecar démarré — watch=[$WATCH_FILES] interval=${INTERVAL}s"
+LAST="$(fingerprint)"
+log "signature initiale=${LAST}"
+
+# Petite tempo au démarrage pour laisser le workload principal se stabiliser
+sleep 5
+
+while true; do
+  sleep "$INTERVAL"
+  CUR="$(fingerprint)"
+  if [ "$CUR" != "$LAST" ]; then
+    log "changement détecté ${LAST} -> ${CUR} — exec reload"
+    # shellcheck disable=SC2086
+    if sh -c "$RELOAD_CMD"; then
+      log "reload OK"
+      LAST="$CUR"
+    else
+      rc=$?
+      log "reload FAILED rc=${rc} — retry au prochain tick"
+      # on ne met pas à jour LAST pour réessayer
+    fi
+  fi
+done

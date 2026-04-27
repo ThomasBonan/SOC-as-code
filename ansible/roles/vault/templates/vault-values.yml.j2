@@ -18,11 +18,19 @@ server:
       memory: "512Mi"
       cpu: "500m"
 
-  # TLS
+  # Partage du PID namespace : le sidecar tls-reloader doit voir le PID
+  # du process `vault` pour lui envoyer SIGHUP lors d'une rotation cert.
+  shareProcessNamespace: true
+
+  # TLS + volume ConfigMap du script tls-reloader
   volumes:
     - name: vault-tls
       secret:
         secretName: "{{ vault_tls_secret_name }}"
+    - name: tls-reloader-script
+      configMap:
+        name: "{{ vault_tls_reloader_configmap | default('tls-reloader-script') }}"
+        defaultMode: 0755
 
   volumeMounts:
     - mountPath: /vault/tls
@@ -33,6 +41,32 @@ server:
     VAULT_CACERT: /vault/tls/ca.crt
     VAULT_TLSCERT: /vault/tls/tls.crt
     VAULT_TLSKEY: /vault/tls/tls.key
+
+  # Sidecar tls-reloader : détecte la rotation cert-manager (md5 des fichiers
+  # /vault/tls/*) et envoie SIGHUP au process vault pour recharger le listener
+  # TLS à chaud — zéro downtime, zéro seal cycle.
+  extraContainers:
+    - name: tls-reloader
+      image: "{{ vault_tls_reloader_image | default('docker.io/busybox:1.36') }}"
+      imagePullPolicy: IfNotPresent
+      command: ["/bin/sh", "/scripts/tls-reloader.sh"]
+      env:
+        - name: WATCH_FILES
+          value: "/vault/tls/tls.crt /vault/tls/tls.key /vault/tls/ca.crt"
+        - name: RELOAD_CMD
+          value: "kill -HUP $(pidof vault)"
+        - name: INTERVAL
+          value: "{{ vault_tls_reloader_interval | default('30') }}"
+      resources:
+        requests: { cpu: "10m", memory: "16Mi" }
+        limits:   { cpu: "50m", memory: "32Mi" }
+      volumeMounts:
+        - name: tls-reloader-script
+          mountPath: /scripts
+          readOnly: true
+        - name: vault-tls
+          mountPath: /vault/tls
+          readOnly: true
 
   # Configuration Vault (HCL)
   ha:

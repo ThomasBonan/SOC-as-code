@@ -1,0 +1,25 @@
+---
+# tls_reloader/tasks/ensure_configmap.yml — dépose le script poller dans un ConfigMap
+
+# Ansible 2.19 ne template pas les clés de dict inline dans le YAML d'une tâche.
+# On construit la map `data` explicitement via set_fact avant de l'injecter.
+- name: tls_reloader | Build ConfigMap data payload
+  ansible.builtin.set_fact:
+    _tls_reloader_cm_data: >-
+      {{ { tls_reloader_script_name: lookup('template', 'tls-reloader.sh.j2') } }}
+
+- name: tls_reloader | ConfigMap {{ tls_reloader_configmap_name }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ tls_reloader_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ tls_reloader_configmap_name }}"
+        namespace: "{{ tls_reloader_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          app.kubernetes.io/component: tls-reloader
+          soc.lab/component: tls-reloader
+      data: "{{ _tls_reloader_cm_data }}"

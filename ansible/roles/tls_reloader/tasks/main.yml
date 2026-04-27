@@ -1,0 +1,32 @@
+---
+# tls_reloader/tasks/main.yml — dispatcher
+#
+# Tags :
+#   configmap  : crée/maj uniquement le ConfigMap du script
+#   rbac       : crée Role + RoleBinding + SA si demandé
+#   patch      : patch du StatefulSet (mode patch_sts)
+
+- name: tls_reloader | Validate inputs
+  ansible.builtin.assert:
+    that:
+      - tls_reloader_namespace | length > 0
+      - tls_reloader_watch_files | length > 0
+      - tls_reloader_reload_cmd | length > 0
+      - tls_reloader_mode in ['configmap_only', 'patch_sts']
+    fail_msg: >-
+      tls_reloader requires: namespace, watch_files (non-empty),
+      reload_cmd (non-empty), mode in [configmap_only, patch_sts]
+
+- name: tls_reloader | Ensure script ConfigMap
+  ansible.builtin.import_tasks: ensure_configmap.yml
+  tags: [tls_reloader, configmap]
+
+- name: tls_reloader | Ensure RBAC (optional)
+  ansible.builtin.import_tasks: ensure_rbac.yml
+  when: tls_reloader_create_rbac | bool
+  tags: [tls_reloader, rbac]
+
+- name: tls_reloader | Patch target StatefulSet
+  ansible.builtin.import_tasks: patch_statefulset.yml
+  when: tls_reloader_mode == 'patch_sts'
+  tags: [tls_reloader, patch]

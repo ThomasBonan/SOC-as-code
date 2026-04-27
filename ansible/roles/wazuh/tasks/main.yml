@@ -690,3 +690,8 @@
   when: wazuh_http_code.stdout not in ["200", "302", "401"]
   delegate_to: localhost
   run_once: true
+
+# --- TLS reloader : rotation cert-manager automatique sans intervention ---
+- name: Wazuh | Apply tls-reloader sidecars (indexer + manager)
+  ansible.builtin.include_tasks: apply_tls_reloader.yml
+  tags: [wazuh, tls_reloader]

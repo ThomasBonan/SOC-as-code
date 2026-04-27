@@ -1,0 +1,121 @@
+---
+# wazuh/tasks/apply_tls_reloader.yml
+#
+# Injecte un sidecar tls-reloader dans wazuh-indexer et wazuh-manager-master
+# pour déclencher automatiquement un rolling restart quand cert-manager
+# roule les certs (node-tls, admin-tls, filebeat-tls).
+#
+# Pourquoi un restart et pas un SIGHUP/reloadcerts API ?
+#   Le chart Wazuh monte les certs avec subPath. Limitation Kubernetes :
+#   les fichiers montés en subPath NE se mettent PAS à jour quand le Secret
+#   change. Donc même si le sidecar pousse l'API reloadcerts de l'indexer,
+#   le process continuerait à lire l'ancien cert.
+#   => rolling restart est le seul chemin fiable (annuel, ~15-60s).
+#
+# Stratégie :
+#   1. Role tls_reloader en mode patch_sts → ajoute un sidecar busybox+kubectl
+#      qui surveille les certs en les montant à part (sans subPath, donc
+#      auto-update OK).
+#   2. Le sidecar patche l'annotation pod-template via kubectl rollout restart.
+#   3. Idempotent : rejouable après chaque helm upgrade (strategic merge).
+
+- name: Wazuh TLS Reloader | Déterminer le nom du StatefulSet Manager
+  ansible.builtin.shell: |
+    set -e
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }} \
+      get sts -o name 2>/dev/null \
+      | grep -E 'wazuh-manager-master$' | head -1 | cut -d/ -f2
+  register: _wazuh_manager_sts
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Wazuh TLS Reloader | Appliquer sur wazuh-indexer (node-tls + admin-tls)
+  ansible.builtin.include_role:
+    name: tls_reloader
+  vars:
+    tls_reloader_mode: patch_sts
+    tls_reloader_namespace: "{{ wazuh_namespace }}"
+    tls_reloader_kubeconfig_path: "{{ kubeconfig_path }}"
+    tls_reloader_workload_kind: StatefulSet
+    tls_reloader_workload_name: "wazuh-indexer"
+    tls_reloader_configmap_name: "tls-reloader-script"
+
+    # Sidecar avec kubectl pour trigger le rollout restart
+    tls_reloader_sidecar_image: "docker.io/bitnami/kubectl:1.30"
+    tls_reloader_sidecar_resources:
+      requests: { cpu: "10m", memory: "32Mi" }
+      limits:   { cpu: "100m", memory: "64Mi" }
+
+    # Monte les Secrets SANS subPath (auto-update OK)
+    tls_reloader_extra_volumes:
+      - name: watched-node-tls
+        secret: { secretName: "node-tls" }
+      - name: watched-admin-tls
+        secret: { secretName: "admin-tls" }
+    tls_reloader_extra_volume_mounts:
+      - { name: watched-node-tls,  mountPath: /watched/node-tls,  readOnly: true }
+      - { name: watched-admin-tls, mountPath: /watched/admin-tls, readOnly: true }
+
+    # Surveille les fichiers ..data qui changent à chaque rotation
+    tls_reloader_watch_files:
+      - /watched/node-tls/tls.crt
+      - /watched/node-tls/tls.key
+      - /watched/node-tls/ca.crt
+      - /watched/admin-tls/tls.crt
+      - /watched/admin-tls/tls.key
+
+    # Rolling restart du STS via l'API K8s (rollout restart = patch annotation)
+    tls_reloader_reload_cmd: >-
+      kubectl -n "$POD_NAMESPACE" rollout restart statefulset/wazuh-indexer
+
+    # RBAC minimal : patch sur le STS wazuh-indexer uniquement
+    tls_reloader_create_rbac: true
+    tls_reloader_rbac_service_account: "tls-reloader-wazuh-indexer"
+    tls_reloader_rbac_rules:
+      - apiGroups: ["apps"]
+        resources: ["statefulsets"]
+        resourceNames: ["wazuh-indexer"]
+        verbs: ["get", "patch"]
+
+- name: Wazuh TLS Reloader | Appliquer sur wazuh-manager-master (filebeat-tls)
+  ansible.builtin.include_role:
+    name: tls_reloader
+  vars:
+    tls_reloader_mode: patch_sts
+    tls_reloader_namespace: "{{ wazuh_namespace }}"
+    tls_reloader_kubeconfig_path: "{{ kubeconfig_path }}"
+    tls_reloader_workload_kind: StatefulSet
+    tls_reloader_workload_name: "{{ _wazuh_manager_sts.stdout | default('wazuh-manager-master') }}"
+    tls_reloader_configmap_name: "tls-reloader-script"
+
+    tls_reloader_sidecar_image: "docker.io/bitnami/kubectl:1.30"
+    tls_reloader_sidecar_resources:
+      requests: { cpu: "10m", memory: "32Mi" }
+      limits:   { cpu: "100m", memory: "64Mi" }
+
+    tls_reloader_extra_volumes:
+      - name: watched-filebeat-tls
+        secret: { secretName: "filebeat-tls" }
+    tls_reloader_extra_volume_mounts:
+      - { name: watched-filebeat-tls, mountPath: /watched/filebeat-tls, readOnly: true }
+
+    tls_reloader_watch_files:
+      - /watched/filebeat-tls/tls.crt
+      - /watched/filebeat-tls/tls.key
+      - /watched/filebeat-tls/ca.crt
+
+    tls_reloader_reload_cmd: >-
+      kubectl -n "$POD_NAMESPACE" rollout restart
+      statefulset/{{ _wazuh_manager_sts.stdout | default('wazuh-manager-master') }}
+
+    tls_reloader_create_rbac: true
+    tls_reloader_rbac_service_account: "tls-reloader-wazuh-manager"
+    tls_reloader_rbac_rules:
+      - apiGroups: ["apps"]
+        resources: ["statefulsets"]
+        resourceNames:
+          - "{{ _wazuh_manager_sts.stdout | default('wazuh-manager-master') }}"
+        verbs: ["get", "patch"]
+  when: _wazuh_manager_sts.stdout | default('') | length > 0

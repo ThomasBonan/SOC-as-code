@@ -3,6 +3,9 @@
 set -euo pipefail
 
 ERRORS=0
+WARNINGS=0
+DEPLOY_IAC="${DEPLOY_IAC:-1}"
+KCFG="ansible/playbooks/artifacts/admin.conf"
 
 check() {
   local cmd="$1"
@@ -11,7 +14,7 @@ check() {
     echo "  ✅ ${cmd}"
   else
     echo "  ❌ ${cmd} manquant${hint:+ — ${hint}}"
-    (( ERRORS++ ))
+    (( ++ERRORS ))
   fi
 }
 
@@ -22,30 +25,52 @@ check_file() {
     echo "  ✅ ${path}"
   else
     echo "  ❌ ${path} absent${hint:+ — ${hint}}"
-    (( ERRORS++ ))
+    (( ++ERRORS ))
+  fi
+}
+
+warn_file() {
+  local path="$1"
+  local hint="${2:-}"
+  if [[ -f "${path}" ]]; then
+    echo "  ✅ ${path}"
+  else
+    echo "  ⚠️  ${path} absent${hint:+ — ${hint}}"
+    (( ++WARNINGS ))
   fi
 }
 
 echo "🔍 Vérification des prérequis make deploy..."
 echo ""
+
 echo "Binaires :"
-check tofu        "brew install opentofu"
+check tofu             "apt install opentofu  ou  brew install opentofu"
 check ansible-playbook "pip install ansible"
-check kubectl     "curl -LO https://dl.k8s.io/release/.../kubectl"
-check helm        "brew install helm"
-check jq          "apt install jq"
-check yq          "brew install yq"
+check kubectl          "snap install kubectl --classic"
+check helm             "snap install helm --classic"
+check jq               "apt install jq"
+check yq               "snap install yq"
+check git              "apt install git"
 
 echo ""
 echo "Fichiers de configuration :"
-# terraform.tfvars est optionnel — les variables peuvent venir de TF_VAR_* dans /etc/soc-as-code/.env
+check_file "ansible/inventories/k8s.ini" "vérifier l'inventaire Ansible"
+check_file "/etc/soc-as-code/.env"        "créer le fichier d'environnement SOC (voir docs/env.md)"
+
+# terraform.tfvars optionnel : les vars peuvent venir de TF_VAR_* dans .env
 if [[ -f "iac/terraform.tfvars" ]]; then
   echo "  ✅ iac/terraform.tfvars"
 else
   echo "  ⚠️  iac/terraform.tfvars absent (OK si TF_VAR_* définis dans /etc/soc-as-code/.env)"
+  (( ++WARNINGS ))
 fi
-check_file "ansible/inventories/k8s.ini" "vérifier l'inventaire Ansible"
-check_file "/etc/soc-as-code/.env"        "créer le fichier d'environnement SOC"
+
+# Si DEPLOY_IAC=0 (cluster existant), vérifier que le kubeconfig est là
+if [[ "${DEPLOY_IAC}" == "0" ]]; then
+  echo ""
+  echo "Mode DEPLOY_IAC=0 (cluster existant) :"
+  check_file "${KCFG}" "le kubeconfig doit exister sur un cluster déjà provisionné"
+fi
 
 echo ""
 echo "Accès Proxmox :"
@@ -55,16 +80,35 @@ if [[ -f "/etc/soc-as-code/.env" ]]; then
   _proxmox_url="${TF_VAR_pm_api_url:-${PM_API_URL:-}}"
   if [[ -z "${_proxmox_url}" ]]; then
     echo "  ⚠️  TF_VAR_pm_api_url non défini dans .env — skip test Proxmox"
+    (( ++WARNINGS ))
   elif curl -sk --max-time 5 "${_proxmox_url}/version" | grep -q version; then
     echo "  ✅ API Proxmox joignable (${_proxmox_url})"
   else
-    echo "  ⚠️  API Proxmox inaccessible via curl (${_proxmox_url}) — tofu utilisera ses propres credentials"
+    if [[ "${DEPLOY_IAC}" == "1" ]]; then
+      echo "  ❌ API Proxmox inaccessible (${_proxmox_url}) — requis pour DEPLOY_IAC=1"
+      (( ++ERRORS ))
+    else
+      echo "  ⚠️  API Proxmox inaccessible (${_proxmox_url}) — ignoré car DEPLOY_IAC=0"
+      (( ++WARNINGS ))
+    fi
   fi
 fi
 
 echo ""
+echo "Collections Ansible :"
+if ansible-galaxy collection list community.hashi_vault 2>/dev/null | grep -q "hashi_vault"; then
+  echo "  ✅ community.hashi_vault"
+else
+  echo "  ⚠️  community.hashi_vault manquante — lancer : ansible-galaxy collection install -r ansible/requirements.yml"
+  (( ++WARNINGS ))
+fi
+
+echo ""
 if (( ERRORS > 0 )); then
-  echo "❌ ${ERRORS} prérequis manquant(s). Corriger avant de lancer make deploy."
+  echo "❌ ${ERRORS} prérequis bloquant(s)${WARNINGS:+ + ${WARNINGS} avertissement(s)}. Corriger avant de lancer make deploy."
   exit 1
 fi
-echo "✅ Tous les prérequis sont satisfaits."
+if (( WARNINGS > 0 )); then
+  echo "⚠️  ${WARNINGS} avertissement(s) — le déploiement peut continuer mais vérifier ces points."
+fi
+echo "✅ Prérequis satisfaits — make deploy peut démarrer."

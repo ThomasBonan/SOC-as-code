@@ -1,0 +1,14 @@
+---
+galaxy_info:
+  role_name: tls_reloader
+  author: SOC-as-code
+  description: >
+    Sidecar générique qui détecte les rotations cert-manager et déclenche un
+    reload à chaud du workload (SIGHUP, API, kubectl exec, etc.) sans restart.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Kubernetes
+      versions: ["1.28", "1.29", "1.30"]
+
+dependencies: []

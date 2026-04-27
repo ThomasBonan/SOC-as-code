@@ -1,0 +1,54 @@
+---
+# tls_reloader/tasks/ensure_rbac.yml — ServiceAccount + Role + RoleBinding
+# (utile quand le reload_cmd utilise kubectl exec sur le pod local)
+
+- name: tls_reloader | ServiceAccount {{ tls_reloader_rbac_service_account }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ tls_reloader_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ tls_reloader_rbac_service_account }}"
+        namespace: "{{ tls_reloader_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          app.kubernetes.io/component: tls-reloader
+
+- name: tls_reloader | Role {{ tls_reloader_rbac_service_account }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ tls_reloader_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: "{{ tls_reloader_rbac_service_account }}"
+        namespace: "{{ tls_reloader_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          app.kubernetes.io/component: tls-reloader
+      rules: "{{ tls_reloader_rbac_rules }}"
+
+- name: tls_reloader | RoleBinding {{ tls_reloader_rbac_service_account }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ tls_reloader_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: "{{ tls_reloader_rbac_service_account }}"
+        namespace: "{{ tls_reloader_namespace }}"
+        labels:
+          app.kubernetes.io/managed-by: soc-ansible
+          app.kubernetes.io/component: tls-reloader
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: "{{ tls_reloader_rbac_service_account }}"
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ tls_reloader_rbac_service_account }}"
+          namespace: "{{ tls_reloader_namespace }}"

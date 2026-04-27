@@ -85,6 +85,23 @@
             tls.crt: "{{ _vault_self_crt.content }}"
             ca.crt: "{{ _vault_self_crt.content }}"
 
+# --- Sidecar tls-reloader : ConfigMap du script (consommé par extraContainers) ---
+- name: Vault deploy | Déployer le ConfigMap tls-reloader
+  ansible.builtin.include_role:
+    name: tls_reloader
+    tasks_from: ensure_configmap.yml
+  vars:
+    tls_reloader_namespace: "{{ vault_namespace }}"
+    tls_reloader_configmap_name: "{{ vault_tls_reloader_configmap | default('tls-reloader-script') }}"
+    tls_reloader_kubeconfig_path: "{{ vault_kubeconfig_path }}"
+    # Ces variables sont utilisées uniquement pour la validation — le script
+    # lui-même lit WATCH_FILES / RELOAD_CMD depuis l'env du sidecar Vault.
+    tls_reloader_watch_files:
+      - /vault/tls/tls.crt
+      - /vault/tls/tls.key
+      - /vault/tls/ca.crt
+    tls_reloader_reload_cmd: "kill -HUP $(pidof vault)"
+
 # --- Helm repo ---
 - name: Vault deploy | Ajouter le repo Helm HashiCorp
   ansible.builtin.command: >

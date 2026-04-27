@@ -1,16 +1,35 @@
 ---
 # vault/tasks/unseal.yml — Init + unseal Vault
+#
+# Robustesse :
+#   - `-tls-skip-verify` sur les appels CLI internes au pod (127.0.0.1:8200).
+#     On termine sur localhost ; la confiance est intra-pod donc safe.
+#   - `retries` + `until stdout non-vide` sur `vault status` pour tolérer les
+#     micro-fenêtres pendant une rotation TLS (le reloader fait un SIGHUP,
+#     le listener recharge son contexte en ~100ms).
 
-# --- Vérifier le statut d'init ---
 - name: Vault unseal | Vérifier le statut d'initialisation
   ansible.builtin.command: >
     kubectl exec -n {{ vault_namespace }} vault-0 --
-    vault status -format=json
+    vault status -tls-skip-verify -format=json
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   register: _vault_status_raw
   changed_when: false
-  failed_when: _vault_status_raw.rc not in [0, 1, 2]  # rc=2 = sealed
+  failed_when: false
+  retries: 12
+  delay: 5
+  until: >-
+    _vault_status_raw.rc in [0, 2]
+    and (_vault_status_raw.stdout | default('') | trim | length) > 0
+
+- name: Vault unseal | Échec si status Vault introuvable
+  ansible.builtin.fail:
+    msg: >-
+      Vault status indisponible après 12 tentatives.
+      rc={{ _vault_status_raw.rc }}
+      stderr={{ _vault_status_raw.stderr | default('') | truncate(200) }}
+  when: (_vault_status_raw.stdout | default('') | trim | length) == 0
 
 - name: Vault unseal | Parser le statut Vault
   ansible.builtin.set_fact:
@@ -26,7 +45,7 @@
 - name: Vault unseal | Initialiser Vault (première fois uniquement)
   ansible.builtin.command: >
     kubectl exec -n {{ vault_namespace }} vault-0 --
-    vault operator init -key-shares=5 -key-threshold=3 -format=json
+    vault operator init -tls-skip-verify -key-shares=5 -key-threshold=3 -format=json
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   register: _vault_init_raw
@@ -91,12 +110,25 @@
 - name: Vault unseal | Relire le statut Vault
   ansible.builtin.command: >
     kubectl exec -n {{ vault_namespace }} vault-0 --
-    vault status -format=json
+    vault status -tls-skip-verify -format=json
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   register: _vault_status_raw2
   changed_when: false
-  failed_when: _vault_status_raw2.rc not in [0, 1, 2]
+  failed_when: false
+  retries: 12
+  delay: 5
+  until: >-
+    _vault_status_raw2.rc in [0, 2]
+    and (_vault_status_raw2.stdout | default('') | trim | length) > 0
+
+- name: Vault unseal | Échec si status Vault introuvable (post-init)
+  ansible.builtin.fail:
+    msg: >-
+      Vault status (post-init) indisponible après 12 tentatives.
+      rc={{ _vault_status_raw2.rc }}
+      stderr={{ _vault_status_raw2.stderr | default('') | truncate(200) }}
+  when: (_vault_status_raw2.stdout | default('') | trim | length) == 0
 
 - name: Vault unseal | Parser le statut Vault (post-init)
   ansible.builtin.set_fact:
@@ -106,7 +138,7 @@
 - name: Vault unseal | Appliquer les unseal keys (threshold=3)
   ansible.builtin.command: >
     kubectl exec -n {{ vault_namespace }} vault-0 --
-    vault operator unseal {{ item }}
+    vault operator unseal -tls-skip-verify {{ item }}
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   loop: "{{ _vault_unseal_keys }}"
@@ -118,15 +150,17 @@
 - name: Vault unseal | Vérifier que Vault est opérationnel
   ansible.builtin.command: >
     kubectl exec -n {{ vault_namespace }} vault-0 --
-    vault status -format=json
+    vault status -tls-skip-verify -format=json
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   register: _vault_status_final_raw
   changed_when: false
-  retries: 10
+  failed_when: false
+  retries: 20
   delay: 5
   until: >-
     _vault_status_final_raw.rc == 0
+    and (_vault_status_final_raw.stdout | default('') | trim | length) > 0
     and not (_vault_status_final_raw.stdout | from_json).sealed
 
 - name: Vault unseal | Vault opérationnel

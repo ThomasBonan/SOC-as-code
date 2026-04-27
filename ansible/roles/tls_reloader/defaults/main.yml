@@ -1,0 +1,73 @@
+---
+# tls_reloader — defaults
+#
+# Rôle réutilisable : détecte les rotations cert-manager (change d'inode du
+# symlink ..data / hash de fichiers) et déclenche un reload à chaud sans
+# redémarrer le pod.
+#
+# Modes supportés via tls_reloader_mode :
+#   - configmap_only : crée/maj le ConfigMap du script poller (à consommer
+#                      par un chart Helm via extraContainers, ex. Vault)
+#   - patch_sts      : patch un StatefulSet existant (kubectl patch) pour
+#                      y injecter le sidecar (ex. Wazuh indexer/manager)
+
+tls_reloader_mode: "configmap_only"          # configmap_only | patch_sts
+
+# --- Identité / namespace ---
+tls_reloader_namespace: ""                   # requis
+tls_reloader_configmap_name: "tls-reloader-script"
+tls_reloader_script_name: "tls-reloader.sh"
+
+# --- Polling ---
+tls_reloader_interval_seconds: 30            # délai entre deux checks
+
+# --- Cible du patch (mode patch_sts) ---
+tls_reloader_workload_kind: "StatefulSet"    # StatefulSet | Deployment
+tls_reloader_workload_name: ""               # ex. wazuh-indexer
+tls_reloader_share_process_namespace: false  # true si SIGHUP/kill requis
+
+# --- Sidecar container ---
+tls_reloader_sidecar_name: "tls-reloader"
+tls_reloader_sidecar_image: "docker.io/busybox:1.36"
+tls_reloader_sidecar_resources:
+  requests: { cpu: "10m", memory: "16Mi" }
+  limits:   { cpu: "50m", memory: "32Mi" }
+
+# --- Ce que le sidecar doit surveiller et exécuter ---
+# Liste de fichiers à hasher pour détecter les changements.
+# Exemples : ["/vault/tls/tls.crt", "/vault/tls/tls.key", "/vault/tls/ca.crt"]
+tls_reloader_watch_files: []
+
+# Commande shell exécutée quand un changement est détecté.
+# Exemples :
+#   Vault  : "kill -HUP $(pidof vault)"
+#   Indexer: "curl -sk --cert /admin-certs/admin.pem --key /admin-certs/admin-key.pem -X PUT https://localhost:9200/_plugins/_security/api/ssl/http/reloadcerts"
+#   Manager: "kubectl exec $POD_NAME -c wazuh-manager -- /var/ossec/bin/wazuh-control restart"
+tls_reloader_reload_cmd: ""
+
+# Volumes additionnels à monter dans le sidecar (liste de dicts).
+# Utilisez les volumes DÉJÀ déclarés dans la spec du workload (ex: la
+# référence Secret existante pour les certs). Exemple :
+#   [{name: "vault-tls", mountPath: "/vault/tls", readOnly: true}]
+tls_reloader_extra_volume_mounts: []
+
+# Volumes additionnels à AJOUTER à la pod spec (liste de dicts au format K8s).
+# Utile si le workload cible ne déclare pas encore le volume Secret dont on
+# a besoin (ex: monter node-tls sans subPath pour détecter les rotations).
+# Exemple :
+#   - name: node-certs-watched
+#     secret:
+#       secretName: node-tls
+tls_reloader_extra_volumes: []
+
+# Variables d'env additionnelles injectées dans le sidecar (dict).
+# Exemple : {WAZUH_ADMIN_USER: "admin"}
+tls_reloader_extra_env: {}
+
+# RBAC (utile si reload_cmd utilise kubectl exec)
+tls_reloader_create_rbac: false
+tls_reloader_rbac_service_account: ""
+tls_reloader_rbac_rules: []                  # liste de rules Role standard
+
+# --- kubeconfig ---
+tls_reloader_kubeconfig_path: "{{ kubeconfig_path }}"
