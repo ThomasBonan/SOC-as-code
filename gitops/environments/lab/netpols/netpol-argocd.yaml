@@ -3,11 +3,13 @@
 #
 # Règles :
 #   1. Ingress-nginx → argocd-server (port 8080) — accès UI/API
-#   2. ArgoCD (server + controller) → K8s API (6443/443) — apply des manifests
-#   3. argocd-repo-server → Git (443/22) — clone/fetch
-#   4. Trafic intra-namespace ArgoCD
-#   5. Prometheus → ArgoCD métriques (8082/8083/8084/8080)
-#   6. DNS egress pour ArgoCD
+#   2. ArgoCD (all pods) → K8s API + DNS + trafic intra-namespace — politique atomique
+#   3. argocd-repo-server → Git/Helm repos (443/22) — clone/fetch externe
+#   4. Prometheus → ArgoCD métriques
+#
+# Architecture : allow-argocd-internal est auto-suffisante (inclut egress K8s API + DNS
+# + intra-namespace). Aucun bootstrap circulaire : une seule politique couvre tout
+# ce dont ArgoCD a besoin pour fonctionner, même appliquée seule.
 ---
 # Règle 1 : Ingress-nginx → argocd-server (UI/API)
 apiVersion: networking.k8s.io/v1
@@ -32,11 +34,17 @@ spec:
         - protocol: TCP
           port: 8080
 ---
-# Règle 2 : ArgoCD → K8s API (réconciliation et apply des manifests)
+# Règle 2 : Trafic intra-namespace ArgoCD + K8s API + DNS (politique atomique)
+#
+# Inclut intentionnellement K8s API (443/6443) et DNS (53) dans la même politique
+# que le trafic intra-namespace. Cela garantit qu'ArgoCD peut toujours atteindre
+# l'API server et le DNS dès l'application de cette politique, évitant le bootstrap
+# circulaire où allow-argocd-internal bloquait l'API server avant l'application
+# des règles egress dédiées.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: egress-argocd-k8s-api
+  name: allow-argocd-internal
   namespace: argocd
   labels:
     app.kubernetes.io/managed-by: soc-gitops
@@ -45,15 +53,50 @@ spec:
     matchLabels:
       app.kubernetes.io/part-of: argocd
   policyTypes:
+    - Ingress
     - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: argocd
   egress:
+    # Trafic intra-namespace (redis:6379, repo-server:8081, dex:5556, server:8080, etc.)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argocd
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: argocd
+    # K8s API server (10.96.0.1:443) + repo-server gRPC (8081 via ClusterIP)
+    # Note: ClusterIP DNAT est évalué APRÈS les NetworkPolicy dans Cilium, donc
+    # podSelector ne matche pas le trafic via ClusterIP → on autorise les ports
+    # sans restriction de destination pour garantir la connectivité intra-ArgoCD.
     - ports:
+        - protocol: TCP
+          port: 443
         - protocol: TCP
           port: 6443
         - protocol: TCP
-          port: 443
+          port: 8081   # argocd-repo-server gRPC
+        - protocol: TCP
+          port: 6379   # argocd-redis
+    # DNS (kube-dns 10.96.0.10:53)
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
 ---
-# Règle 3 : argocd-repo-server → Git (clone/fetch)
+# Règle 3 : argocd-repo-server → Git/Helm repos externes (clone/fetch)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -74,33 +117,7 @@ spec:
         - protocol: TCP
           port: 22
 ---
-# Règle 4 : Trafic intra-namespace ArgoCD (server ↔ redis, controller ↔ redis, etc.)
-# Note: Ingress-only — l'egress est géré par les règles dédiées (egress-argocd-k8s-api,
-# egress-argocd-repo-git, egress-dns-argocd) pour éviter un bootstrap circulaire où
-# cette règle bloquerait l'API server avant que les règles d'egress soient appliquées.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-argocd-internal
-  namespace: argocd
-  labels:
-    app.kubernetes.io/managed-by: soc-gitops
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/part-of: argocd
-  policyTypes:
-    - Ingress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: argocd
-          podSelector:
-            matchLabels:
-              app.kubernetes.io/part-of: argocd
----
-# Règle 5 : Prometheus → ArgoCD métriques (scrape)
+# Règle 4 : Prometheus → ArgoCD métriques (scrape)
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -131,26 +148,3 @@ spec:
           port: 8084   # argocd-repo-server metrics
         - protocol: TCP
           port: 8080   # health probe blackbox
----
-# Règle 6 : DNS egress pour le namespace argocd
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: egress-dns-argocd
-  namespace: argocd
-  labels:
-    app.kubernetes.io/managed-by: soc-gitops
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
