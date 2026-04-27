@@ -106,10 +106,10 @@ wait-infra-synced: ## Attendre que les apps infra (MetalLB, Longhorn, cert-manag
 wait-app-of-apps: ## Attendre que soc-app-of-apps crée les Applications enfants clés
 	@bash $(SCRIPTS)/wait-app-of-apps.sh --kubeconfig $(KCFG) --timeout 300
 
-wait-eso-synced: ## Attendre que soc-eso-externalsecrets soit Synced+Healthy (secrets hydratés depuis Vault)
+wait-eso-synced: ## Attendre que soc-eso-externalsecrets soit Synced (Degraded OK : 2/16 ESO attendent les databases)
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
 	  soc-eso-externalsecrets \
-	  --kubeconfig $(KCFG) --timeout 600
+	  --kubeconfig $(KCFG) --timeout 300 --allow-degraded
 
 wait-soc-apps-synced: ## Attendre que les apps SOC Helm (Cortex, TheHive, MISP Redis, Shuffle) soient Synced
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
