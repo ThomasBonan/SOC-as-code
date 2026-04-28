@@ -33,7 +33,7 @@ iac-apply: ## Appliquer le plan IaC (source SOC_ENV_FILE pour les credentials Pr
 
 # ── Cibles de bas niveau manquantes dans le Makefile principal ────────────────
 .PHONY: workers-pre post-master databases wazuh misp cortex thehive \
-        soc-config soc-smoke mtls foundations automation shuffle \
+        soc-config soc-smoke foundations automation shuffle \
         automation-rerun risk-engine cert-manager-issuer
 
 workers-pre: ## Prérequis Longhorn sur workers (70)
@@ -62,9 +62,6 @@ soc-config: ## Configuration SOC post-déploiement (130)
 
 soc-smoke: ## Smoke tests SOC (140)
 	$(ANS)/140-soc-smoke.yml
-
-mtls: ## mTLS inter-services (155)
-	$(ANS)/155-soc-mtls.yml
 
 foundations: ## Fondations RBAC/SA (170)
 	$(ANS)/170-soc-foundations.yml
@@ -158,7 +155,7 @@ argocd-full: argocd wait-argocd longhorn-prereqs wait-app-of-apps wait-infra-syn
 
 soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
-soc-security-layer: netpol mtls wait-argocd-synced ## Sécurité réseau + sync ArgoCD (150→155)
+soc-security-layer: netpol wait-argocd-synced ## Sécurité réseau + sync ArgoCD (150)
 
 soc-automation-layer: foundations automation shuffle automation-rerun risk-engine ## Automation 170→190 (gère dép. circulaire 180→185→180)
 
