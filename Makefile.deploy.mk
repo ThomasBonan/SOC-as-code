@@ -118,7 +118,7 @@ wait-soc-apps-synced: ## Attendre que les apps SOC Helm (Cortex, TheHive, MISP R
 
 wait-argocd-synced: ## Attendre que les apps ArgoCD principales soient Synced+Healthy
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
-	  soc-app-of-apps soc-eso-externalsecrets soc-netpols \
+	  soc-eso-externalsecrets soc-netpols \
 	  --kubeconfig $(KCFG) --timeout 600
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
