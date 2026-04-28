@@ -113,8 +113,11 @@ wait-eso-synced: ## Attendre que soc-eso-externalsecrets soit Synced (Degraded O
 
 wait-soc-apps-synced: ## Attendre que les apps SOC Helm (Cortex, TheHive, MISP Redis, Shuffle) soient Synced
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
-	  infra-cortex infra-thehive infra-misp-redis infra-shuffle \
+	  infra-cortex infra-thehive infra-misp-redis \
 	  --kubeconfig $(KCFG) --timeout 1200
+	@bash $(SCRIPTS)/wait-argocd-synced.sh \
+	  infra-shuffle \
+	  --kubeconfig $(KCFG) --timeout 2400
 
 wait-argocd-synced: ## Attendre que les apps ArgoCD principales soient Synced+Healthy
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
