@@ -10,4 +10,3 @@ resources:
   - netpol-misp.yaml
   - netpol-vault.yaml
   - netpol-argocd.yaml
-  - netpol-monitoring.yaml
