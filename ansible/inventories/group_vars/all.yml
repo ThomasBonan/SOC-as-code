@@ -47,6 +47,7 @@ cortex_managed_by: "gitops"
 thehive_managed_by: "gitops"
 misp_redis_managed_by: "gitops"
 shuffle_managed_by: "gitops"
+monitoring_netpol_managed_by: "gitops"
 
 # MetalLB
 metallb_namespace: metallb-system

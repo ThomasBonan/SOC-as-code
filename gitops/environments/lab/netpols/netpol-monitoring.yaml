@@ -1,0 +1,79 @@
+# netpol-monitoring.yaml — NetworkPolicies pour le namespace soc-monitoring
+# Phase GitOps — remplace ansible/roles/soc_netpol/templates/netpol-monitoring.yml.j2 (absent)
+#
+# Règles :
+#   1. Ingress-nginx → Grafana (3000/TCP) : dashboard UI
+#   2. Prometheus egress vers tous les namespaces (scraping métriques)
+#   3. DNS egress
+#   4. K8s API egress pour la découverte de services Prometheus
+---
+# Règle 1 : ingress-nginx → Grafana
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-grafana
+  namespace: soc-monitoring
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# Règle 2 : Prometheus peut scraper tous les namespaces (egress non restreint)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-prometheus-scrape
+  namespace: soc-monitoring
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes:
+    - Egress
+  egress:
+    # Scraping métriques (ports typiques)
+    - ports:
+        - protocol: TCP
+          port: 9090
+        - protocol: TCP
+          port: 9091
+        - protocol: TCP
+          port: 9100
+        - protocol: TCP
+          port: 8080
+        - protocol: TCP
+          port: 8443
+        - protocol: TCP
+          port: 10250
+        - protocol: TCP
+          port: 10255
+    # K8s API pour la découverte de services
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
