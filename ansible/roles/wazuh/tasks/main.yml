@@ -662,6 +662,22 @@
   run_once: true
   changed_when: false
 
+# Quand l'Ingress est géré par GitOps (ArgoCD), il n'existe pas encore au moment
+# où Ansible arrive ici — attendre que le sync ArgoCD le crée (jusqu'à 10 min).
+- name: Wait for wazuh-dashboard Ingress (gitops sync ArgoCD)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    get ingress wazuh-dashboard
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  failed_when: false
+  register: _wazuh_ingress_exists
+  retries: 40
+  delay: 15
+  until: _wazuh_ingress_exists.rc == 0
+  when: wazuh_ingress_managed_by | default('ansible') == 'gitops'
+
 - name: Récupérer l'IP de l'ingress wazuh-dashboard
   ansible.builtin.shell: >
     kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
@@ -670,8 +686,8 @@
   delegate_to: localhost
   run_once: true
   changed_when: false
-  retries: 10
-  delay: 10
+  retries: 20
+  delay: 15
   until: _wazuh_ingress_ip.stdout | length > 0
 
 - name: Basic HTTPS check (expect 200/302/401)
