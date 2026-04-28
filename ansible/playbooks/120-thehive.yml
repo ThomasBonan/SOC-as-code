@@ -6,6 +6,12 @@
   vars:
     ansible_python_interpreter: "{{ k8s_ansible_python }}"
   gather_facts: false
+  pre_tasks:
+    # Charge thehive_bootstrap_password depuis Vault pour l'init du mot de passe admin.
+    - name: Charger les bootstrap passwords depuis Vault
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+      when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+      tags: always
   tasks:
     - name: Attendre infra-thehive (ArgoCD) Synced+Healthy
       ansible.builtin.command: >
@@ -18,6 +24,88 @@
       delay: 10
       changed_when: false
       when: thehive_managed_by | default('ansible') == 'gitops'
+
+    # ── Premier boot : synchroniser le mot de passe admin TheHive avec Vault ──────
+    # TheHive démarre avec le mot de passe par défaut "secret".
+    # Vault contient un mot de passe aléatoire fort généré par 75-vault.yml --tags bootstrap.
+    # Ces tâches changent le mot de passe "secret" → Vault password (une seule fois, idempotent).
+
+    - name: TheHive | Résoudre l'URL API via Ingress
+      ansible.builtin.set_fact:
+        _thehive_api_ingress: "https://thehive.{{ apps_domain }}/api"
+      when:
+        - thehive_managed_by | default('ansible') == 'gitops'
+        - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+        - thehive_bootstrap_password | default('') | length > 0
+
+    # Attend que l'API réponde, en testant avec le mot de passe par défaut "secret".
+    # Retries larges : inclut le délai de l'Ingress ArgoCD (soc-thehive) + startup TheHive.
+    - name: TheHive | Attendre que l'API réponde via Ingress (max 10 min)
+      ansible.builtin.uri:
+        url: "{{ _thehive_api_ingress }}/v1/user/current"
+        method: GET
+        url_username: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
+        url_password: "secret"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200, 401, 403]
+        timeout: 10
+      register: _thehive_default_auth
+      retries: 40
+      delay: 15
+      until: (_thehive_default_auth.status | default(-1)) in [200, 401, 403]
+      failed_when: false
+      when:
+        - thehive_managed_by | default('ansible') == 'gitops'
+        - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+        - thehive_bootstrap_password | default('') | length > 0
+        - _thehive_api_ingress is defined
+      no_log: true
+
+    # Vérifie si le mot de passe Vault fonctionne déjà (runs ultérieurs — idempotence).
+    - name: TheHive | Tester le mot de passe Vault (idempotence)
+      ansible.builtin.uri:
+        url: "{{ _thehive_api_ingress }}/v1/user/current"
+        method: GET
+        url_username: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
+        url_password: "{{ thehive_bootstrap_password }}"
+        force_basic_auth: true
+        validate_certs: false
+        status_code: [200, 401, 403]
+        timeout: 10
+      register: _thehive_vault_auth
+      failed_when: false
+      when:
+        - thehive_managed_by | default('ansible') == 'gitops'
+        - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+        - thehive_bootstrap_password | default('') | length > 0
+        - _thehive_default_auth is defined
+        - (_thehive_default_auth.status | default(-1)) in [200, 401, 403]
+      no_log: true
+
+    # Ne s'exécute que si "secret" fonctionne ET le mot de passe Vault ne fonctionne pas encore.
+    - name: TheHive | Initialiser le mot de passe admin → mot de passe Vault (premier boot)
+      ansible.builtin.uri:
+        url: "{{ _thehive_api_ingress }}/v1/user/{{ (thehive_bootstrap_user | default('admin@thehive.local')) | urlencode }}/password/set"
+        method: POST
+        url_username: "{{ thehive_bootstrap_user | default('admin@thehive.local') }}"
+        url_password: "secret"
+        force_basic_auth: true
+        validate_certs: false
+        body_format: json
+        body:
+          password: "{{ thehive_bootstrap_password }}"
+        status_code: [200, 201, 204]
+        timeout: 10
+      when:
+        - thehive_managed_by | default('ansible') == 'gitops'
+        - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+        - thehive_bootstrap_password | default('') | length > 0
+        - _thehive_default_auth is defined
+        - (_thehive_default_auth.status | default(0)) == 200
+        - _thehive_vault_auth is defined
+        - (_thehive_vault_auth.status | default(0)) in [401, 403]
+      no_log: true
 
     - name: Déployer TheHive via Helm (si non géré par GitOps)
       ansible.builtin.include_role:
