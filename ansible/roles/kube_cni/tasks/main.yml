@@ -11,6 +11,16 @@
   delegate_to: localhost
   become: false
 
+- name: Check Cilium already deployed at target version
+  ansible.builtin.shell: >
+    helm -n kube-system list --filter '^cilium$' --output json |
+    python3 -c "import sys,json; r=json.load(sys.stdin); print(r[0]['chart'] if r else '')" 2>/dev/null || echo ""
+  register: _cilium_deployed_chart
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  become: false
+
 - name: Install/Upgrade Cilium
   ansible.builtin.command: >
     helm upgrade --install cilium cilium/cilium
@@ -34,6 +44,7 @@
     KUBECONFIG: "{{ kubeconfig_path }}"
   delegate_to: localhost
   become: false
+  when: _cilium_deployed_chart.stdout | trim != 'cilium-' + cilium_version
 
 - name: Wait for cilium rollout
   ansible.builtin.command: kubectl -n kube-system rollout status ds/cilium --timeout=300s
