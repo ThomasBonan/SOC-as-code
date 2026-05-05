@@ -147,6 +147,9 @@
         name: "{{ soc_foundations_cortex_sa_secret_name }}"
       register: _sf_cx_anlz_sa_secret
       no_log: true
+      retries: 20
+      delay: 10
+      until: _sf_cx_anlz_sa_secret.resources | length > 0
 
     - name: "Cortex Analyzers - extraire la clé API SA"
       ansible.builtin.set_fact:
