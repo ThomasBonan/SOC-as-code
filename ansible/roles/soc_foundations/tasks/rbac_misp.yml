@@ -104,12 +104,14 @@
       - exec
       - "{{ _sf_misp_app_pod.stdout }}"
       - --
+      - bash
       - /var/www/MISP/app/Console/cake
       - User
       - resetauthkey
       - "{{ _sf_misp_admin_email }}"
   register: _sf_misp_cake_admin_reset
   changed_when: true
+  failed_when: false
   no_log: true
   when: _sf_misp_sa_secret_existing.resources | length == 0
 
@@ -132,8 +134,9 @@
   ansible.builtin.fail:
     msg: >-
       cake User resetauthkey {{ _sf_misp_admin_email }} n'a pas retourné de clé.
-      Sortie : {{ _sf_misp_cake_admin_reset.stdout | default('(vide)') }}
-      Stderr : {{ _sf_misp_cake_admin_reset.stderr | default('(vide)') }}
+      RC={{ _sf_misp_cake_admin_reset.rc | default('?') }}
+      Sortie={{ _sf_misp_cake_admin_reset.stdout | default('(vide)') }}
+      Stderr={{ _sf_misp_cake_admin_reset.stderr | default('(vide)') }}
   when:
     - _sf_misp_sa_secret_existing.resources | length == 0
     - (_sf_misp_admin_authkey | default('') | trim | length) == 0
