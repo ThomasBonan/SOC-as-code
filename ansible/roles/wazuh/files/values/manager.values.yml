@@ -2,12 +2,12 @@
 # Wazuh Manager
 wazuh:
   master:
-    storageSize: 10Gi
+    storageSize: 20Gi
     storageClassName: longhorn
 
   worker:
     replicas: 0
-    storageSize: 10Gi
+    storageSize: 20Gi
     storageClassName: longhorn
 
   # Ne pas exposer publiquement
