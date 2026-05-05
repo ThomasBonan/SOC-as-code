@@ -420,6 +420,49 @@
     - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
 
+# --- Écrire la clé SA dans Vault (backend=vault) → ESO crée le K8s Secret ---
+- name: Cortex RBAC - bloc écriture Vault (backend=vault)
+  when:
+    - _sf_cx_sa_secret_existing.resources | length == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'vault'
+  no_log: true
+  block:
+    - name: Cortex RBAC - lire le root token Vault
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+        name: "vault-unseal-keys"
+      register: _sf_cx_vault_token_secret
+      failed_when: _sf_cx_vault_token_secret.resources | length == 0
+
+    - name: Cortex RBAC - définir _vault_exec
+      ansible.builtin.set_fact:
+        _sf_cx_vault_exec: >-
+          kubectl exec -n {{ soc_vault_namespace | default('soc-vault') }} vault-0 --
+          env VAULT_TOKEN={{ _sf_cx_vault_token_secret.resources[0].data.root_token | b64decode }}
+
+    - name: Cortex RBAC - vérifier si service-accounts/cortex-sa existe dans Vault
+      ansible.builtin.shell: >
+        {{ _sf_cx_vault_exec }} vault kv get -tls-skip-verify -format=json
+        {{ soc_vault_kv_mount }}/service-accounts/cortex-sa
+      register: _sf_cx_vault_check
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: "{{ soc_foundations_kubeconfig_path }}"
+
+    - name: Cortex RBAC - écrire api_key+login dans Vault (service-accounts/cortex-sa)
+      ansible.builtin.shell: >
+        {{ _sf_cx_vault_exec }} vault kv put -tls-skip-verify
+        {{ soc_vault_kv_mount }}/service-accounts/cortex-sa
+        api_key="{{ _sf_cx_sa_api_key }}"
+        login="{{ soc_foundations_cortex_sa_login }}"
+      changed_when: true
+      when: _sf_cx_vault_check.rc != 0
+      environment:
+        KUBECONFIG: "{{ soc_foundations_kubeconfig_path }}"
+
 - name: Cortex RBAC - rapport de statut
   ansible.builtin.debug:
     msg: >-
