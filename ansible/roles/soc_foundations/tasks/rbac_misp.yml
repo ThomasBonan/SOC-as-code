@@ -104,7 +104,6 @@
       - exec
       - "{{ _sf_misp_app_pod.stdout }}"
       - --
-      - php
       - /var/www/MISP/app/Console/cake
       - User
       - resetauthkey
@@ -232,7 +231,6 @@
       - exec
       - "{{ _sf_misp_app_pod.stdout }}"
       - --
-      - php
       - /var/www/MISP/app/Console/cake
       - User
       - resetauthkey
