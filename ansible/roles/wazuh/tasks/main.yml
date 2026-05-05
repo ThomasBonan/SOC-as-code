@@ -662,6 +662,19 @@
   run_once: true
   changed_when: false
 
+# Forcer un sync ArgoCD de soc-wazuh : si l'app était en backoff (namespace
+# inexistant pendant argocd-full), le backoff peut dépasser 10 min → timeout.
+- name: Force ArgoCD sync soc-wazuh (sortir du backoff post-helm-install)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n argocd
+    patch application soc-wazuh --type=merge
+    -p '{"operation":{"sync":{"revision":"HEAD"}}}'
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  failed_when: false
+  when: wazuh_ingress_managed_by | default('ansible') == 'gitops'
+
 # Quand l'Ingress est géré par GitOps (ArgoCD), il n'existe pas encore au moment
 # où Ansible arrive ici — attendre que le sync ArgoCD le crée (jusqu'à 10 min).
 - name: Wait for wazuh-dashboard Ingress (gitops sync ArgoCD)
