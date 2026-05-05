@@ -106,8 +106,8 @@
       - --
       - bash
       - /var/www/MISP/app/Console/cake
-      - User
-      - resetauthkey
+      - user
+      - change_authkey
       - "{{ _sf_misp_admin_email }}"
   register: _sf_misp_cake_admin_reset
   changed_when: true
@@ -115,13 +115,13 @@
   no_log: true
   when: _sf_misp_sa_secret_existing.resources | length == 0
 
-- name: "MISP RBAC - extraire authkey admin (New Auth Key: <key>)"
+- name: MISP RBAC - extraire authkey admin (clé hex 40 chars dans la sortie Cake)
   ansible.builtin.set_fact:
     _sf_misp_admin_authkey: >-
       {{
         (
           _sf_misp_cake_admin_reset.stdout
-          | regex_findall('New Auth Key[:\s]+(\S+)')
+          | regex_findall('[0-9a-zA-Z]{40}')
           + ['']
         ) | first
       }}
@@ -133,7 +133,7 @@
 - name: MISP RBAC - fail si Cake CLI n'a pas retourné d'authkey admin
   ansible.builtin.fail:
     msg: >-
-      cake User resetauthkey {{ _sf_misp_admin_email }} n'a pas retourné de clé.
+      cake user change_authkey {{ _sf_misp_admin_email }} n'a pas retourné de clé.
       RC={{ _sf_misp_cake_admin_reset.rc | default('?') }}
       Sortie={{ _sf_misp_cake_admin_reset.stdout | default('(vide)') }}
       Stderr={{ _sf_misp_cake_admin_reset.stderr | default('(vide)') }}
@@ -219,7 +219,7 @@
   no_log: true
 
 # --- Obtenir l'authkey SA via Cake CLI ---
-# resetauthkey crée une entrée valide dans auth_keys (advanced_authkeys)
+# change_authkey crée une entrée valide dans auth_keys (advanced_authkeys)
 # ou met à jour users.authkey (mode classique). Dans les deux cas la clé
 # retournée est immédiatement utilisable pour l'API.
 
@@ -234,22 +234,24 @@
       - exec
       - "{{ _sf_misp_app_pod.stdout }}"
       - --
+      - bash
       - /var/www/MISP/app/Console/cake
-      - User
-      - resetauthkey
+      - user
+      - change_authkey
       - "{{ soc_foundations_misp_sa_email }}"
   register: _sf_misp_sa_cake_reset
   changed_when: true
+  failed_when: false
   no_log: true
   when: _sf_misp_sa_secret_existing.resources | length == 0
 
-- name: "MISP RBAC - extraire authkey SA (New Auth Key: <key>)"
+- name: MISP RBAC - extraire authkey SA (clé hex 40 chars dans la sortie Cake)
   ansible.builtin.set_fact:
     _sf_misp_sa_authkey: >-
       {{
         (
           _sf_misp_sa_cake_reset.stdout
-          | regex_findall('New Auth Key[:\s]+(\S+)')
+          | regex_findall('[0-9a-zA-Z]{40}')
           + ['']
         ) | first
       }}
@@ -261,9 +263,10 @@
 - name: MISP RBAC - fail si Cake CLI n'a pas retourné d'authkey SA
   ansible.builtin.fail:
     msg: >-
-      cake User resetauthkey {{ soc_foundations_misp_sa_email }} n'a pas retourné de clé.
-      Sortie : {{ _sf_misp_sa_cake_reset.stdout | default('(vide)') }}
-      Stderr : {{ _sf_misp_sa_cake_reset.stderr | default('(vide)') }}
+      cake user change_authkey {{ soc_foundations_misp_sa_email }} n'a pas retourné de clé.
+      RC={{ _sf_misp_sa_cake_reset.rc | default('?') }}
+      Sortie={{ _sf_misp_sa_cake_reset.stdout | default('(vide)') }}
+      Stderr={{ _sf_misp_sa_cake_reset.stderr | default('(vide)') }}
   when:
     - _sf_misp_sa_secret_existing.resources | length == 0
     - (_sf_misp_sa_authkey | default('') | trim | length) == 0
