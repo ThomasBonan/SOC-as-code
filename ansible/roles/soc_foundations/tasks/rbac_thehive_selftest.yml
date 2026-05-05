@@ -284,6 +284,49 @@
   no_log: true
   tags: [rbac, rbac_thehive, soc_foundations]
 
+# --- Écrire la clé SA dans Vault (backend=vault) → ESO crée le K8s Secret ---
+- name: TheHive Selftest RBAC - bloc écriture Vault (backend=vault)
+  when:
+    - _sf_th_st_secret_existing.resources | length == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'vault'
+  no_log: true
+  block:
+    - name: TheHive Selftest RBAC - lire le root token Vault
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+        name: "vault-unseal-keys"
+      register: _sf_th_st_vault_token_secret
+      failed_when: _sf_th_st_vault_token_secret.resources | length == 0
+
+    - name: TheHive Selftest RBAC - définir _sf_th_st_vault_exec
+      ansible.builtin.set_fact:
+        _sf_th_st_vault_exec: >-
+          kubectl exec -n {{ soc_vault_namespace | default('soc-vault') }} vault-0 --
+          env VAULT_TOKEN={{ _sf_th_st_vault_token_secret.resources[0].data.root_token | b64decode }}
+
+    - name: TheHive Selftest RBAC - vérifier si service-accounts/thehive-selftest-sa existe dans Vault
+      ansible.builtin.shell: >
+        {{ _sf_th_st_vault_exec }} vault kv get -tls-skip-verify -format=json
+        {{ soc_vault_kv_mount }}/service-accounts/thehive-selftest-sa
+      register: _sf_th_st_vault_check
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: "{{ soc_foundations_kubeconfig_path }}"
+
+    - name: TheHive Selftest RBAC - écrire api_key+login dans Vault (service-accounts/thehive-selftest-sa)
+      ansible.builtin.shell: >
+        {{ _sf_th_st_vault_exec }} vault kv put -tls-skip-verify
+        {{ soc_vault_kv_mount }}/service-accounts/thehive-selftest-sa
+        api_key="{{ _sf_th_st_sa_api_key }}"
+        login="{{ soc_foundations_thehive_selftest_sa_login }}"
+      changed_when: true
+      when: _sf_th_st_vault_check.rc != 0
+      environment:
+        KUBECONFIG: "{{ soc_foundations_kubeconfig_path }}"
+
 - name: TheHive Selftest RBAC - rapport de statut
   ansible.builtin.debug:
     msg: >-

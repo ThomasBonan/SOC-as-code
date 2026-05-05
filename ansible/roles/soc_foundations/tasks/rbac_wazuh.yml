@@ -440,6 +440,49 @@
     - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
 
+# --- Écrire les credentials SA dans Vault (backend=vault) → ESO crée le K8s Secret ---
+- name: Wazuh RBAC - bloc écriture Vault (backend=vault)
+  when:
+    - _sf_wz_sa_secret_existing.resources | length == 0
+    - soc_vault_backend | default('kubernetes-secrets') == 'vault'
+  no_log: true
+  block:
+    - name: Wazuh RBAC - lire le root token Vault
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ soc_vault_namespace | default('soc-vault') }}"
+        name: "vault-unseal-keys"
+      register: _sf_wz_vault_token_secret
+      failed_when: _sf_wz_vault_token_secret.resources | length == 0
+
+    - name: Wazuh RBAC - définir _sf_wz_vault_exec
+      ansible.builtin.set_fact:
+        _sf_wz_vault_exec: >-
+          kubectl exec -n {{ soc_vault_namespace | default('soc-vault') }} vault-0 --
+          env VAULT_TOKEN={{ _sf_wz_vault_token_secret.resources[0].data.root_token | b64decode }}
+
+    - name: Wazuh RBAC - vérifier si service-accounts/wazuh-sa existe dans Vault
+      ansible.builtin.shell: >
+        {{ _sf_wz_vault_exec }} vault kv get -tls-skip-verify -format=json
+        {{ soc_vault_kv_mount }}/service-accounts/wazuh-sa
+      register: _sf_wz_vault_check
+      changed_when: false
+      failed_when: false
+      environment:
+        KUBECONFIG: "{{ soc_foundations_kubeconfig_path }}"
+
+    - name: Wazuh RBAC - écrire username+password dans Vault (service-accounts/wazuh-sa)
+      ansible.builtin.shell: >
+        {{ _sf_wz_vault_exec }} vault kv put -tls-skip-verify
+        {{ soc_vault_kv_mount }}/service-accounts/wazuh-sa
+        username="{{ soc_foundations_wazuh_sa_username }}"
+        password="{{ _sf_wz_sa_password }}"
+      changed_when: true
+      when: _sf_wz_vault_check.rc != 0
+      environment:
+        KUBECONFIG: "{{ soc_foundations_kubeconfig_path }}"
+
 - name: Wazuh RBAC - rapport de statut
   ansible.builtin.debug:
     msg: >-
