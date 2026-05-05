@@ -321,7 +321,7 @@
     - _sf_misp_sa_secret_existing.resources | length == 0
     - _sf_misp_authkey_is_hash | default(false) | bool
 
-- name: MISP RBAC - extraire la clé depuis la sortie Cake (New Auth Key: <key>)
+- name: "MISP RBAC - extraire la clé depuis la sortie Cake (New Auth Key: <key>)"
   ansible.builtin.set_fact:
     _sf_misp_admin_authkey: >-
       {{
