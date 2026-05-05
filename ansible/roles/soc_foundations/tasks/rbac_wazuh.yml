@@ -437,7 +437,6 @@
         }}
   when:
     - _sf_wz_sa_secret_existing.resources | length == 0
-    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
 
 # --- Écrire les credentials SA dans Vault (backend=vault) → ESO crée le K8s Secret ---

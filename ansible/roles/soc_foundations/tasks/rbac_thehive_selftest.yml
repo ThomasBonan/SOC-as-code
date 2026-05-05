@@ -280,7 +280,6 @@
         }}
   when:
     - _sf_th_st_secret_existing.resources | length == 0
-    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
   tags: [rbac, rbac_thehive, soc_foundations]
 

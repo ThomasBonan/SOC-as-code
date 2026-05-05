@@ -417,10 +417,9 @@
         }}
   when:
     - _sf_cx_sa_secret_existing.resources | length == 0
-    - soc_vault_backend | default('kubernetes-secrets') == 'kubernetes-secrets'
   no_log: true
 
-# --- Écrire la clé SA dans Vault (backend=vault) → ESO crée le K8s Secret ---
+# --- Écrire la clé SA dans Vault (backend=vault) → ESO gère long-terme ---
 - name: Cortex RBAC - bloc écriture Vault (backend=vault)
   when:
     - _sf_cx_sa_secret_existing.resources | length == 0
