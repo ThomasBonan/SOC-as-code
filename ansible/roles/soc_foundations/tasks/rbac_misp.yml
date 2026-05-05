@@ -118,9 +118,11 @@
   ansible.builtin.set_fact:
     _sf_misp_admin_authkey: >-
       {{
-        _sf_misp_cake_admin_reset.stdout
-        | regex_search('New Auth Key[:\s]+(\S+)', '\1')
-        | first | default('')
+        (
+          _sf_misp_cake_admin_reset.stdout
+          | regex_findall('New Auth Key[:\s]+(\S+)')
+          + ['']
+        ) | first
       }}
   no_log: true
   when:
@@ -244,9 +246,11 @@
   ansible.builtin.set_fact:
     _sf_misp_sa_authkey: >-
       {{
-        _sf_misp_sa_cake_reset.stdout
-        | regex_search('New Auth Key[:\s]+(\S+)', '\1')
-        | first | default('')
+        (
+          _sf_misp_sa_cake_reset.stdout
+          | regex_findall('New Auth Key[:\s]+(\S+)')
+          + ['']
+        ) | first
       }}
   no_log: true
   when:
