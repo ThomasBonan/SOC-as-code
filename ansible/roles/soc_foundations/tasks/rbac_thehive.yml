@@ -27,7 +27,10 @@
   changed_when: false
   tags: [rbac, rbac_thehive, soc_foundations]
 
-- name: TheHive RBAC - résoudre l'API base effective
+# Validation de la clé stockée : si le Secret existe mais la clé retourne 401
+# (TheHive réinstallé → DB vidée), on supprime le Secret pour forcer la recréation.
+
+- name: TheHive RBAC - résoudre l'API base effective (pour validation clé)
   ansible.builtin.set_fact:
     _sf_thehive_api_base: >-
       {{
@@ -37,6 +40,52 @@
         )
         | ternary(soc_foundations_thehive_ingress_api_base, soc_foundations_thehive_api_base)
       }}
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - sonder la clé SA existante (validation idempotence)
+  ansible.builtin.uri:
+    url: "{{ _sf_thehive_api_base }}/v1/user/current"
+    method: GET
+    headers:
+      Authorization: >-
+        Bearer {{
+          _sf_th_sa_secret_existing.resources[0].data[soc_foundations_thehive_sa_secret_key_api]
+          | b64decode
+        }}
+    validate_certs: "{{ soc_foundations_validate_certs }}"
+    status_code: [200, 401, 403]
+    timeout: "{{ soc_foundations_http_timeout | int }}"
+  register: _sf_th_sa_key_probe
+  when: _sf_th_sa_secret_existing.resources | length > 0
+  no_log: true
+  changed_when: false
+  failed_when: false
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - supprimer le Secret stale si clé invalide (401/403)
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    state: absent
+    api_version: v1
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_foundations_thehive_sa_secret_name }}"
+  when:
+    - _sf_th_sa_secret_existing.resources | length > 0
+    - _sf_th_sa_key_probe is defined
+    - _sf_th_sa_key_probe.status | default(200) in [401, 403]
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+- name: TheHive RBAC - re-lire le Secret après suppression éventuelle
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_foundations_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "{{ soc_foundations_thehive_sa_secret_name }}"
+  register: _sf_th_sa_secret_existing
+  no_log: true
+  changed_when: false
+  when: _sf_th_sa_key_probe is defined and _sf_th_sa_key_probe.status | default(200) in [401, 403]
   tags: [rbac, rbac_thehive, soc_foundations]
 
 # ── Vérifier / créer l'organisation cible ────────────────────────
