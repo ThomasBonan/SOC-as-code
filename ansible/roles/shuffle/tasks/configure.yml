@@ -324,112 +324,38 @@
   delay: "{{ shuffle_backend_startup_delay | default(10) | int }}"
   until: _sh_env_api_health.status in [200, 401]
 
-- name: "shuffle | Configure - list Shuffle environments"
-  ansible.builtin.uri:
-    url: "{{ shuffle_api_url }}/api/v1/environments"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ _sh_env_apikey }}"
-    validate_certs: "{{ shuffle_validate_certs }}"
-    status_code: [200, 502]
-    timeout: "{{ shuffle_http_timeout | int }}"
-  register: _sh_env_list
-  changed_when: false
-  retries: 18
-  delay: 5
-  until: _sh_env_list.status == 200
+# /api/v1/environments n'existe plus dans cette version de Shuffle.
+# L'environnement est lu directement depuis OpenSearch (source de vérité).
+# Orborus utilise ENVIRONMENT_NAME = l'environnement actif dans OpenSearch.
 
-- name: "shuffle | Configure - detect whether environment Shuffle exists"
-  ansible.builtin.set_fact:
-    _sh_env_exists: >-
-      {{
-        (_sh_env_list.json | selectattr('Name', 'equalto', 'Shuffle') | list | length) > 0
-      }}
-
-- name: "shuffle | Configure - create environment Shuffle when missing"
-  when: not (_sh_env_exists | bool)
-  ansible.builtin.uri:
-    url: "{{ shuffle_api_url }}/api/v1/environments"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ _sh_env_apikey }}"
-    body_format: json
-    body:
-      name: "Shuffle"
-      type: "onprem"
-      active: true
-      archived: false
-      auth: ""
-    validate_certs: "{{ shuffle_validate_certs }}"
-    status_code: [200, 201, 502]
-    timeout: "{{ shuffle_http_timeout | int }}"
-  register: _sh_env_create
-  changed_when: true
-  retries: 12
-  delay: 5
-  until: _sh_env_create.status in [200, 201]
-
-# Cette étape capture uniquement l'ID de l'environnement — elle ne vérifie PAS
-# l'enregistrement d'Orborus. Orborus ne peut se connecter que si ENVIRONMENT_NAME
-# est correct, ce qui est corrigé dans les étapes suivantes. Le vrai wait runtime
-# (orborus_uuid, running_ip, checkin) se fait APRÈS le patch Orborus plus bas.
-- name: "shuffle | Configure - fetch environment ID (pre-Orborus alignment)"
-  ansible.builtin.uri:
-    url: "{{ shuffle_api_url }}/api/v1/environments"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ _sh_env_apikey }}"
-    validate_certs: "{{ shuffle_validate_certs }}"
-    status_code: [200, 502]
-    timeout: "{{ shuffle_http_timeout | int }}"
-  register: _sh_env_list_final
+- name: "shuffle | Configure - lire l'environnement actif depuis OpenSearch"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ shuffle_kubeconfig_path }}"
+      - -n
+      - "{{ shuffle_namespace }}"
+      - exec
+      - shuffle-opensearch-master-0
+      - --
+      - curl
+      - -sk
+      - "http://localhost:9200/environments/_search?pretty=false&size=1"
+  register: _sh_opensearch_env_raw
   changed_when: false
   retries: 6
   delay: 5
-  until: >-
-    _sh_env_list_final.status == 200
-    and (
-      _sh_env_list_final.json
-      | selectattr('Name', 'equalto', 'Shuffle')
-      | list
-      | length
-    ) > 0
-    and (
-      (
-        _sh_env_list_final.json
-        | selectattr('Name', 'equalto', 'Shuffle')
-        | list
-        | first
-      ).id | default('')
-    ) | length > 0
+  until: _sh_opensearch_env_raw.rc == 0
 
-- name: "shuffle | Configure - capture environment details"
+- name: "shuffle | Configure - extraire les détails de l'environnement"
   ansible.builtin.set_fact:
     _sh_environment_info: >-
-      {{
-        _sh_env_list_final.json
-        | selectattr('Name', 'equalto', 'Shuffle')
-        | list
-        | first
-      }}
+      {{ (_sh_opensearch_env_raw.stdout | from_json).hits.hits[0]._source }}
     _sh_environment_id: >-
-      {{
-        (
-          _sh_env_list_final.json
-          | selectattr('Name', 'equalto', 'Shuffle')
-          | list
-          | first
-        ).id
-      }}
+      {{ (_sh_opensearch_env_raw.stdout | from_json).hits.hits[0]._source.id }}
     _sh_environment_name: >-
-      {{
-        (
-          _sh_env_list_final.json
-          | selectattr('Name', 'equalto', 'Shuffle')
-          | list
-          | first
-        ).Name | default('Shuffle')
-      }}
+      {{ (_sh_opensearch_env_raw.stdout | from_json).hits.hits[0]._source.Name }}
 
 - name: "shuffle | Configure - read Orborus deployment for environment alignment"
   kubernetes.core.k8s_info:
@@ -483,74 +409,44 @@
     --timeout=180s
   changed_when: false
 
-- name: "shuffle | Configure - wait for Shuffle environment runtime readiness"
-  ansible.builtin.uri:
-    url: "{{ shuffle_api_url }}/api/v1/environments"
-    method: GET
-    headers:
-      Authorization: "Bearer {{ _sh_env_apikey }}"
-    validate_certs: "{{ shuffle_validate_certs }}"
-    status_code: [200, 502]
-    timeout: "{{ shuffle_http_timeout | int }}"
-  register: _sh_env_list_registered
+# Attendre qu'Orborus enregistre son IP et son checkin dans OpenSearch.
+# /api/v1/environments n'existe plus — on lit directement OpenSearch.
+
+- name: "shuffle | Configure - wait for Orborus runtime readiness (OpenSearch)"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ shuffle_kubeconfig_path }}"
+      - -n
+      - "{{ shuffle_namespace }}"
+      - exec
+      - shuffle-opensearch-master-0
+      - --
+      - curl
+      - -sk
+      - "http://localhost:9200/environments/_doc/{{ _sh_environment_id }}"
+  register: _sh_env_registered_raw
   changed_when: false
   retries: 24
   delay: 5
   until: >-
-    (
-      _sh_env_list_registered.json
-      | selectattr('id', 'equalto', _sh_environment_id)
-      | list
-      | length
-    ) > 0
-    and
-    (
-      (
-        _sh_env_list_registered.json
-        | selectattr('id', 'equalto', _sh_environment_id)
-        | list
-        | first
-      ).orborus_uuid | default('')
-    ) | length > 0
-    and
-    (
-      (
-        _sh_env_list_registered.json
-        | selectattr('id', 'equalto', _sh_environment_id)
-        | list
-        | first
-      ).running_ip | default('')
-    ) | length > 0
-    and
-    (
-      (
-        _sh_env_list_registered.json
-        | selectattr('id', 'equalto', _sh_environment_id)
-        | list
-        | first
-      ).checkin | default(0) | int
-    ) > 0
+    (_sh_env_registered_raw.rc == 0)
+    and ((_sh_env_registered_raw.stdout | from_json).get('_source', {}).get('running_ip', '') | length) > 0
+    and ((_sh_env_registered_raw.stdout | from_json).get('_source', {}).get('checkin', 0) | int) > 0
 
 - name: "shuffle | Configure - refresh environment details after Orborus readiness"
   ansible.builtin.set_fact:
     _sh_environment_info: >-
-      {{
-        (
-          _sh_env_list_registered.json
-          | selectattr('id', 'equalto', _sh_environment_id)
-          | list
-          | first
-          | default({})
-        )
-      }}
+      {{ (_sh_env_registered_raw.stdout | from_json).get('_source', {}) }}
 
 - name: "shuffle | Configure - assert environment UUID and runtime readiness"
   ansible.builtin.assert:
     that:
       - _sh_environment_id is match('^[0-9a-fA-F-]{36}$')
-      - (_sh_environment_name | default('')) == 'Shuffle'
-      - (_sh_environment_info.orborus_uuid | default('') | length) > 0
+      - (_sh_environment_name | default('')) | length > 0
       - (_sh_environment_info.running_ip | default('') | length) > 0
+      - (_sh_environment_info.checkin | default(0) | int) > 0
       - (_sh_environment_info.checkin | default(0) | int) > 0
     fail_msg: >-
       Environment Shuffle is not runtime-ready.
