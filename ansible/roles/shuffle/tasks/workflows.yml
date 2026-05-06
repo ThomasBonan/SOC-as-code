@@ -6,7 +6,7 @@
 - name: "shuffle | Workflows - calculate alert-triage.json hash"
   ansible.builtin.set_fact:
     _sh_alert_triage_hash: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | hash('sha256') }}"
-    _sh_workflows_marker_version: "2026-03-30-env-name-fix-v4"
+    _sh_workflows_marker_version: "2026-05-06-app-id-inject-v5"
 
 - name: "shuffle | Workflows - read existing marker"
   kubernetes.core.k8s_info:
@@ -196,6 +196,36 @@
       ansible.builtin.set_fact:
         _sh_alert_triage_json: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | from_json }}"
 
+    - name: "shuffle | Workflows - resolve http app_id from OpenSearch"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ shuffle_kubeconfig_path }}"
+          - -n
+          - "{{ shuffle_namespace }}"
+          - exec
+          - shuffle-opensearch-master-0
+          - --
+          - curl
+          - -sk
+          - "http://localhost:9200/workflowapp/_search?q=name:http&size=1&_source=id,name,app_version"
+      register: _sh_http_app_raw
+      changed_when: false
+
+    - name: "shuffle | Workflows - extract http app_id"
+      ansible.builtin.set_fact:
+        _sh_http_app_id: >-
+          {{
+            (
+              (_sh_http_app_raw.stdout | from_json).hits.hits
+              | default([])
+              | map(attribute='_id')
+              | list
+              | first
+            ) | default('')
+          }}
+
     - name: "shuffle | Workflows - inject runtime variables into alert-triage"
       ansible.builtin.set_fact:
         _sh_alert_triage_patched: >-
@@ -209,7 +239,9 @@
                 | default([])
                 | map('combine', {
                     'environment': _sh_environment_name,
-                    'authentication_id': ''
+                    'authentication_id': '',
+                    'app_id': _sh_http_app_id | default(''),
+                    'is_valid': (_sh_http_app_id | default('') | length > 0)
                   })
                 | list
               ),
@@ -299,7 +331,9 @@
                 | default([])
                 | map('combine', {
                     'environment': _sh_environment_name,
-                    'authentication_id': ''
+                    'authentication_id': '',
+                    'app_id': _sh_http_app_id | default(''),
+                    'is_valid': (_sh_http_app_id | default('') | length > 0)
                   })
                 | list
               ),
@@ -351,7 +385,9 @@
                 | default([])
                 | map('combine', {
                     'environment': _sh_environment_name,
-                    'authentication_id': ''
+                    'authentication_id': '',
+                    'app_id': _sh_http_app_id | default(''),
+                    'is_valid': (_sh_http_app_id | default('') | length > 0)
                   })
                 | list
               ),

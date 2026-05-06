@@ -7,6 +7,8 @@
 shuffle:
   # URL que Orborus utilise pour joindre le backend (service K8s interne)
   baseUrl: "http://{{ shuffle_release_name }}-backend.{{ shuffle_namespace }}.svc:{{ shuffle_backend_port }}"
+  # org doit être sans espace : Shuffle construit ENVIRONMENT_NAME depuis cette valeur
+  # et OpenSearch refuse les index avec espaces (workflowqueue-{org} doit être valide)
   org: "{{ shuffle_admin_org_name }}"
 
 # ── Backend ───────────────────────────────────────────────────────

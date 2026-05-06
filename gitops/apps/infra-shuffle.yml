@@ -24,7 +24,7 @@ spec:
       values: |
         shuffle:
           baseUrl: "http://shuffle-backend.soc-shuffle.svc:5001"
-          org: "SOC Lab"
+          org: "SOC-Lab"
         backend:
           replicaCount: 1
           image:
