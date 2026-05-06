@@ -75,6 +75,11 @@ spec:
             pullPolicy: IfNotPresent
           executionConcurrency: 5
           manageWorkerDeployments: true
+          extraEnvVars:
+            - name: SHUFFLE_OPENSEARCH_URL
+              value: "http://shuffle-opensearch-master-hl:9200"
+            - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
+              value: "true"
           resources:
             requests:
               cpu: "100m"
