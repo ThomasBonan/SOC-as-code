@@ -648,12 +648,55 @@
       data:
         trigger.py: |
           #!/usr/bin/env python3
-          import time, logging, json, urllib.request, urllib.error
+          import time, logging, json, urllib.request, urllib.error, ssl, os
           logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
           log = logging.getLogger(__name__)
-          OPENSEARCH_URL = "http://shuffle-opensearch-master-hl:9200"
-          WORKER_URL = "http://shuffle-workers:33333"
-          POLL_INTERVAL = 5
+          OPENSEARCH_URL  = "http://shuffle-opensearch-master-hl:9200"
+          WORKER_URL      = "http://shuffle-workers:33333"
+          POLL_INTERVAL   = 5
+          STALE_TIMEOUT   = 300   # abort partial executions stuck >5 min
+          FRESH_GRACE     = 15    # don't re-trigger executions started <15s ago
+
+          # Kubernetes in-cluster API for pod deletion
+          K8S_API         = "https://kubernetes.default.svc"
+          K8S_TOKEN_FILE  = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+          K8S_CA_FILE     = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          K8S_NAMESPACE   = os.environ.get("NAMESPACE", "soc-shuffle")
+
+          def _k8s_headers():
+              try:
+                  token = open(K8S_TOKEN_FILE).read().strip()
+                  return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+              except Exception:
+                  return {}
+
+          def _k8s_ssl():
+              ctx = ssl.create_default_context(cafile=K8S_CA_FILE)
+              return ctx
+
+          def delete_worker_pod(exec_id):
+              pod_name = f"worker-{exec_id}"
+              url = f"{K8S_API}/api/v1/namespaces/{K8S_NAMESPACE}/pods/{pod_name}"
+              req = urllib.request.Request(url, method="DELETE", headers=_k8s_headers())
+              try:
+                  with urllib.request.urlopen(req, context=_k8s_ssl(), timeout=10):
+                      log.info("Deleted worker pod %s", pod_name)
+              except urllib.error.HTTPError as e:
+                  if e.code != 404:
+                      log.debug("Delete pod %s: %s", pod_name, e)
+              except Exception as e:
+                  log.debug("Delete pod %s error: %s", pod_name, e)
+
+          def abort_execution(doc_id):
+              url = f"{OPENSEARCH_URL}/workflowexecution/_update/{doc_id}"
+              data = json.dumps({"script": {"source": "ctx._source.status = 'ABORTED'", "lang": "painless"}}).encode()
+              req = urllib.request.Request(url, data=data,
+                  headers={"Content-Type": "application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=10):
+                      pass
+              except Exception as e:
+                  log.debug("Abort execution %s: %s", doc_id[:8], e)
 
           def opensearch_query(path, payload=None, method="GET"):
               url = f"{OPENSEARCH_URL}{path}"
@@ -680,30 +723,46 @@
                   log.debug("Worker not reachable for %s: %s", execution_id[:8], e)
                   return False
 
-          def find_stuck_executions():
+          def process_executions():
+              now = int(time.time())
               result = opensearch_query("/workflowexecution/_search", method="POST",
-                  payload={"query":{"term":{"status.keyword":"EXECUTING"}},"size":20,
+                  payload={"query":{"term":{"status.keyword":"EXECUTING"}},"size":30,
                            "_source":["execution_id","authorization","results","started_at"]})
-              stuck = []
+              fresh, stale = [], []
               for hit in result.get("hits",{}).get("hits",[]):
                   src = hit.get("_source",{})
-                  if len(src.get("results",[])) == 0:
-                      stuck.append((src.get("execution_id",""), src.get("authorization","")))
-              return stuck
+                  eid  = src.get("execution_id","")
+                  auth = src.get("authorization","")
+                  nres = len(src.get("results",[]))
+                  age  = now - int(src.get("started_at",now))
+                  if not eid:
+                      continue
+                  if nres == 0 and age >= FRESH_GRACE:
+                      fresh.append((eid, auth))
+                  elif nres > 0 and age >= STALE_TIMEOUT:
+                      stale.append((hit["_id"], eid))
+              return fresh, stale
 
           def main():
-              log.info("shuffle-execution-trigger started")
+              log.info("shuffle-execution-trigger v2 started (stale_timeout=%ds)", STALE_TIMEOUT)
               triggered = set()
               while True:
                   try:
-                      for exec_id, auth in find_stuck_executions():
-                          if not exec_id or not auth or exec_id in triggered:
+                      fresh, stale = process_executions()
+                      for exec_id, auth in fresh:
+                          if exec_id in triggered:
                               continue
-                          log.info("Stuck execution %s, triggering...", exec_id[:8])
+                          log.info("Zero-result execution %s (age>%ds), triggering...", exec_id[:8], FRESH_GRACE)
                           if trigger_worker(exec_id, auth):
                               triggered.add(exec_id)
-                              if len(triggered) > 1000:
+                              if len(triggered) > 500:
                                   triggered.clear()
+                      for doc_id, exec_id in stale:
+                          log.warning("Partial execution %s stuck >%ds — aborting + deleting pod",
+                                      exec_id[:8], STALE_TIMEOUT)
+                          abort_execution(doc_id)
+                          delete_worker_pod(exec_id)
+                          triggered.discard(exec_id)
                   except Exception as e:
                       log.warning("Poll error: %s", e)
                   time.sleep(POLL_INTERVAL)
