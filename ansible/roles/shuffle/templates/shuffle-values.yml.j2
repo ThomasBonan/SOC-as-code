@@ -88,6 +88,8 @@ orborus:
       value: "http://{{ shuffle_release_name }}-opensearch-master-hl:9200"
     - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
       value: "true"
+    - name: CLEANUP
+      value: "true"
 
 # ── Worker (spawné dynamiquement par Orborus, pas statique) ──────
 worker:
