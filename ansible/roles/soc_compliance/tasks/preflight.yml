@@ -104,11 +104,24 @@
   register: _cpf_190_svc_check
   changed_when: false
 
+- name: "preflight | Check 190 risk-engine Deployment exists (gitops fallback)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "risk-engine"
+  register: _cpf_190_deploy_check
+  changed_when: false
+
 - name: "preflight | Assert 190 risk-engine HTTP service is deployed"
   ansible.builtin.assert:
-    that: _cpf_190_svc_check.resources | length > 0
+    that: >-
+      (_cpf_190_svc_check.resources | length > 0)
+      or ((_cpf_190_deploy_check.resources | length > 0)
+          and ((_cpf_190_deploy_check.resources[0].status.readyReplicas | default(0) | int) > 0))
     fail_msg: >-
-      ConfigMap '{{ soc_compliance_cm_190_service_marker }}' not found.
+      Risk engine not deployed: ConfigMap '{{ soc_compliance_cm_190_service_marker }}' not found
+      and Deployment 'risk-engine' has no ready replicas.
       Run 190-soc-risk-engine (--tags decision) to deploy the Flask service.
 
 # ── Read SA Secrets (no_log on all reads) ────────────────────────

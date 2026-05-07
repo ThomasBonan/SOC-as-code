@@ -64,6 +64,12 @@
       ansible.builtin.set_fact:
         soc_environment: "{{ lookup('env', 'SOC_ENV') }}"
       when: lookup('env', 'SOC_ENV') | length > 0
+      tags: always
+
+    - name: "190 | Charger les bootstrap passwords depuis Vault"
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
+      when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
+      tags: always
 
     - name: "190 | Show active environment"
       ansible.builtin.debug:

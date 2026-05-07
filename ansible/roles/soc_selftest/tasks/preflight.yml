@@ -126,11 +126,24 @@
   register: _stpf_190_svc_check
   changed_when: false
 
+- name: "preflight | Check 190 risk-engine Deployment exists (gitops fallback)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "risk-engine"
+  register: _stpf_190_deploy_check
+  changed_when: false
+
 - name: "preflight | Assert 190 risk-engine HTTP service is running"
   ansible.builtin.assert:
-    that: _stpf_190_svc_check.resources | length > 0
+    that: >-
+      (_stpf_190_svc_check.resources | length > 0)
+      or ((_stpf_190_deploy_check.resources | length > 0)
+          and ((_stpf_190_deploy_check.resources[0].status.readyReplicas | default(0) | int) > 0))
     fail_msg: >-
-      ConfigMap '{{ soc_selftest_risk_engine_marker }}' not found.
+      Risk engine not deployed: ConfigMap '{{ soc_selftest_risk_engine_marker }}' not found
+      and Deployment 'risk-engine' has no ready replicas.
       Run 190-soc-risk-engine (--tags decision) to deploy the Flask POST /score service.
       This is required for Shuffle to compute risk scores.
 

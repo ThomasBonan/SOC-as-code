@@ -233,10 +233,29 @@ soc_service_accounts:
     role_id: 1              # wazuh-readonly built-in role (id=1)
 
 # ============================================================
-# SOC Risk Engine — surcharges site-specific (rôle soc_risk_engine)
-# Les valeurs par défaut (poids, seuils, asset_weights) sont dans
-# roles/soc_risk_engine/defaults/main.yml
+# SOC Risk Engine — source de vérité site-specific
+# Dupliquées ici pour que 200-soc-compliance puisse les lire
+# sans dépendre du rôle soc_risk_engine.
 # ============================================================
+soc_risk_weights:
+  wazuh:     2
+  cortex:    3
+  misp:      4
+  asset:     2
+  frequency: 1
+
+soc_risk_thresholds:
+  auto_close:   15
+  auto_promote: 50
+  auto_contain: 75
+  escalate:     90
+
+soc_risk_asset_weights:
+  server-prod:     5
+  server-internal: 3
+  workstation:     2
+  lab:             1
+  default:         1
 
 # ============================================================
 # SOC Compliance — variables globales (rôle soc_compliance)

@@ -11,11 +11,11 @@
     name: "{{ soc_compliance_argocd_deploy_server }}"
   register: _comp_argocd_server
 
-- name: "soc_compliance | ArgoCD | Vérifier argocd-application-controller Deployment"
+- name: "soc_compliance | ArgoCD | Vérifier argocd-application-controller StatefulSet"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
     api_version: apps/v1
-    kind: Deployment
+    kind: StatefulSet
     namespace: "{{ soc_compliance_argocd_namespace }}"
     name: "{{ soc_compliance_argocd_deploy_controller }}"
   register: _comp_argocd_controller

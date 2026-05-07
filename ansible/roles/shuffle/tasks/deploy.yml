@@ -414,6 +414,58 @@
       Re-run 185-shuffle.yml to reimport workflows.
   changed_when: false
 
+# ── RBAC cluster orborus (always-run) ────────────────────────────────────────────
+# Orborus crée des namespaces K8s éphémères pour isoler les workers Shuffle.
+# Le ClusterRole ci-dessous est idempotent (state: present) et doit être réconcilié
+# à chaque run — il n'est pas derrière le marqueur car il peut être perdu suite
+# à un re-deploy partiel du cluster ou une rotation des CRB.
+
+- name: "shuffle | Deploy - create ClusterRole for Orborus namespace/worker management"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: shuffle-orborus-cluster
+        labels: "{{ shuffle_labels }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["namespaces"]
+          verbs: ["get", "list", "create", "delete"]
+        - apiGroups: [""]
+          resources: ["pods", "pods/log", "pods/exec"]
+          verbs: ["get", "list", "watch", "create", "delete"]
+        - apiGroups: [""]
+          resources: ["secrets", "configmaps", "serviceaccounts"]
+          verbs: ["get", "list", "create", "delete"]
+        - apiGroups: ["apps"]
+          resources: ["deployments"]
+          verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources: ["roles", "rolebindings"]
+          verbs: ["get", "list", "create", "delete"]
+
+- name: "shuffle | Deploy - bind ClusterRole to Orborus ServiceAccount"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: shuffle-orborus-cluster-binding
+        labels: "{{ shuffle_labels }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: shuffle-orborus-cluster
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ shuffle_release_name }}-orborus"
+          namespace: "{{ shuffle_namespace }}"
+
 # ── Réconciliation security context des app pods (always-run) ────
 # Les app deployments (http, tools, subflow, ai) sont créés par le backend Shuffle,
 # pas par Helm. Ils servent sur le port 80 → interdit à un user non-root (uid != 0).
@@ -451,3 +503,289 @@
     'no change' not in (_sh_app_sec_patch.stdout | default(''))
     and 'no change' not in (_sh_app_sec_patch.stderr | default(''))
   failed_when: false
+
+# ── Resilience patches (always-run) ──────────────────────────────────────────
+# Three fixes required for end-to-end workflow execution:
+# 1. opensearch TLS proxy  — worker pods connect via https://opensearch:9200
+# 2. execution-trigger     — fixes race condition: backend triggers worker before it starts
+# 3. http-app splitheaders — shuffle SDK passes headers as dict; app 1.4.0 expects string
+
+- name: "shuffle | Deploy - opensearch TLS proxy: issue cert-manager certificate"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: opensearch-tls-proxy-cert
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      spec:
+        secretName: opensearch-tls-proxy-secret
+        issuerRef:
+          name: soc-lab-ca-issuer
+          kind: ClusterIssuer
+        dnsNames:
+          - opensearch
+          - "opensearch.{{ shuffle_namespace }}.svc"
+          - "opensearch.{{ shuffle_namespace }}.svc.cluster.local"
+
+- name: "shuffle | Deploy - opensearch TLS proxy: nginx ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: opensearch-tls-proxy-config
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      data:
+        nginx.conf: |
+          worker_processes 1;
+          error_log /dev/stderr warn;
+          pid /tmp/nginx.pid;
+          events { worker_connections 64; }
+          stream {
+            upstream opensearch_backend {
+              server shuffle-opensearch-master-hl:9200;
+            }
+            server {
+              listen 9200 ssl;
+              ssl_certificate /etc/ssl/proxy/tls.crt;
+              ssl_certificate_key /etc/ssl/proxy/tls.key;
+              ssl_session_cache none;
+              ssl_session_timeout 5m;
+              proxy_pass opensearch_backend;
+              proxy_connect_timeout 5s;
+              proxy_timeout 300s;
+            }
+          }
+
+- name: "shuffle | Deploy - opensearch TLS proxy: Deployment"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: opensearch-tls-proxy
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app: opensearch-tls-proxy
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: opensearch-tls-proxy
+        template:
+          metadata:
+            labels:
+              app: opensearch-tls-proxy
+          spec:
+            containers:
+              - name: proxy
+                image: nginx:alpine
+                command: ["nginx", "-g", "daemon off;", "-c", "/etc/nginx/nginx.conf"]
+                ports:
+                  - containerPort: 9200
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/nginx/nginx.conf
+                    subPath: nginx.conf
+                  - name: tls
+                    mountPath: /etc/ssl/proxy
+                resources:
+                  requests:
+                    cpu: "50m"
+                    memory: "32Mi"
+                  limits:
+                    cpu: "100m"
+                    memory: "64Mi"
+            volumes:
+              - name: config
+                configMap:
+                  name: opensearch-tls-proxy-config
+              - name: tls
+                secret:
+                  secretName: opensearch-tls-proxy-secret
+
+- name: "shuffle | Deploy - opensearch TLS proxy: Service"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: opensearch
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app: opensearch-tls-proxy
+      spec:
+        selector:
+          app: opensearch-tls-proxy
+        ports:
+          - name: https
+            port: 9200
+            targetPort: 9200
+            protocol: TCP
+
+- name: "shuffle | Deploy - execution-trigger: Python script ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: shuffle-execution-trigger-script
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      data:
+        trigger.py: |
+          #!/usr/bin/env python3
+          import time, logging, json, urllib.request, urllib.error
+          logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+          log = logging.getLogger(__name__)
+          OPENSEARCH_URL = "http://shuffle-opensearch-master-hl:9200"
+          WORKER_URL = "http://shuffle-workers:33333"
+          POLL_INTERVAL = 5
+
+          def opensearch_query(path, payload=None, method="GET"):
+              url = f"{OPENSEARCH_URL}{path}"
+              data = json.dumps(payload).encode() if payload else None
+              headers = {"Content-Type": "application/json"}
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as r:
+                      return json.loads(r.read())
+              except Exception as e:
+                  log.debug("OpenSearch query failed: %s", e)
+                  return {}
+
+          def trigger_worker(execution_id, authorization):
+              payload = json.dumps({"execution_id": execution_id, "authorization": authorization}).encode()
+              req = urllib.request.Request(f"{WORKER_URL}/api/v1/streams", data=payload,
+                  headers={"Content-Type": "application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=8) as r:
+                      body = r.read().decode()
+                      log.info("Triggered %s -> %s", execution_id[:8], body[:80])
+                      return True
+              except urllib.error.URLError as e:
+                  log.debug("Worker not reachable for %s: %s", execution_id[:8], e)
+                  return False
+
+          def find_stuck_executions():
+              result = opensearch_query("/workflowexecution/_search", method="POST",
+                  payload={"query":{"term":{"status.keyword":"EXECUTING"}},"size":20,
+                           "_source":["execution_id","authorization","results","started_at"]})
+              stuck = []
+              for hit in result.get("hits",{}).get("hits",[]):
+                  src = hit.get("_source",{})
+                  if len(src.get("results",[])) == 0:
+                      stuck.append((src.get("execution_id",""), src.get("authorization","")))
+              return stuck
+
+          def main():
+              log.info("shuffle-execution-trigger started")
+              triggered = set()
+              while True:
+                  try:
+                      for exec_id, auth in find_stuck_executions():
+                          if not exec_id or not auth or exec_id in triggered:
+                              continue
+                          log.info("Stuck execution %s, triggering...", exec_id[:8])
+                          if trigger_worker(exec_id, auth):
+                              triggered.add(exec_id)
+                              if len(triggered) > 1000:
+                                  triggered.clear()
+                  except Exception as e:
+                      log.warning("Poll error: %s", e)
+                  time.sleep(POLL_INTERVAL)
+
+          if __name__ == "__main__":
+              main()
+
+- name: "shuffle | Deploy - execution-trigger: Deployment"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: shuffle-execution-trigger
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app: shuffle-execution-trigger
+          soc.lab/component: shuffle
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: shuffle-execution-trigger
+        template:
+          metadata:
+            labels:
+              app: shuffle-execution-trigger
+          spec:
+            containers:
+              - name: trigger
+                image: python:3.12-alpine
+                command: ["python3", "/scripts/trigger.py"]
+                volumeMounts:
+                  - name: script
+                    mountPath: /scripts
+                resources:
+                  requests:
+                    cpu: "10m"
+                    memory: "32Mi"
+                  limits:
+                    cpu: "50m"
+                    memory: "64Mi"
+            volumes:
+              - name: script
+                configMap:
+                  name: shuffle-execution-trigger-script
+
+- name: "shuffle | Deploy - http-app splitheaders fix: patched app.py ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: http-app-patch
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      data:
+        app.py: "{{ lookup('file', role_path + '/files/http-app-patched.py') }}"
+
+- name: "shuffle | Deploy - http-app splitheaders fix: patch http-1-4-0 Deployment volume"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ shuffle_namespace }}"
+    name: http-1-4-0
+  register: _sh_http_deploy
+  changed_when: false
+  failed_when: false
+
+- name: "shuffle | Deploy - http-app splitheaders fix: apply volume patch"
+  when:
+    - _sh_http_deploy.resources | length > 0
+    - >-
+      (_sh_http_deploy.resources[0].spec.template.spec.volumes | default([])
+       | selectattr('name', 'equalto', 'app-patch') | list | length) == 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    patch deployment http-1-4-0 -n {{ shuffle_namespace }}
+    --type=strategic
+    -p '{"spec":{"template":{"spec":{"volumes":[{"name":"app-patch","configMap":{"name":"http-app-patch"}}],"containers":[{"name":"http-1-4-0","volumeMounts":[{"name":"app-patch","mountPath":"/app/app.py","subPath":"app.py"}]}]}}}}'
+  changed_when: true
