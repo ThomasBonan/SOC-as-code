@@ -122,14 +122,10 @@ soc_foundations_cortex_ingress_api_base: >-
 # Clés API sensibles (ex: abuseipdb_api_key) → Ansible Vault ou group_vars chiffrées.
 soc_foundations_enable_rbac_cortex_analyzers: true
 soc_foundations_cortex_analyzers:
-  - name: "AbuseIPDB_1_0"
+  - name: "AbuseIPDB_2_0"
     config:
       auto_extract_artifacts: false
       key: "{{ abuseipdb_api_key | default('') }}"
-  - name: "Shodan_InfoDigger_1_0"
-    config:
-      auto_extract_artifacts: false
-      key: "{{ shodan_api_key | default('') }}"
   - name: "MaxMind_GeoIP_4_0"
     config: {}
   - name: "Abuse_Finder_3_0"

@@ -24,6 +24,7 @@
   register: _vfb_keys_secret
   no_log: true
   failed_when: _vfb_keys_secret.resources | length == 0
+  tags: always
 
 - name: Vault fetch | Construire le préfixe exec
   ansible.builtin.set_fact:
@@ -32,6 +33,7 @@
       env VAULT_TOKEN={{ _vfb_keys_secret.resources[0].data.root_token | b64decode }}
     _vfb_kv_mount: "{{ soc_vault_kv_mount | default('soc') }}"
   no_log: true
+  tags: always
 
 # --- TheHive bootstrap password ---
 - name: Vault fetch | Lire thehive_bootstrap_password depuis Vault
@@ -44,6 +46,7 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_thehive_pass.rc != 0
+  tags: always
 
 - name: Vault fetch | Lire thehive_bootstrap_user depuis Vault
   ansible.builtin.shell: >
@@ -55,12 +58,14 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_thehive_user.rc != 0
+  tags: always
 
 - name: Vault fetch | Définir thehive_bootstrap_password + user comme facts
   ansible.builtin.set_fact:
     thehive_bootstrap_password: "{{ _vfb_thehive_pass.stdout }}"
     thehive_bootstrap_user: "{{ _vfb_thehive_user.stdout }}"
   no_log: true
+  tags: always
 
 # --- Cortex bootstrap password ---
 - name: Vault fetch | Lire cortex_bootstrap_password depuis Vault
@@ -73,6 +78,7 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_cortex_pass.rc != 0
+  tags: always
 
 - name: Vault fetch | Lire cortex_bootstrap_user depuis Vault
   ansible.builtin.shell: >
@@ -84,12 +90,14 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_cortex_user.rc != 0
+  tags: always
 
 - name: Vault fetch | Définir cortex_bootstrap_password + user comme facts
   ansible.builtin.set_fact:
     cortex_bootstrap_password: "{{ _vfb_cortex_pass.stdout }}"
     cortex_bootstrap_user: "{{ _vfb_cortex_user.stdout }}"
   no_log: true
+  tags: always
 
 # --- Shuffle admin password ---
 - name: Vault fetch | Lire shuffle_admin_password depuis Vault
@@ -102,6 +110,7 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_shuffle_pass.rc != 0
+  tags: always
 
 - name: Vault fetch | Lire shuffle_admin_username depuis Vault
   ansible.builtin.shell: >
@@ -113,12 +122,14 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_shuffle_user.rc != 0
+  tags: always
 
 - name: Vault fetch | Définir shuffle_admin_password + username comme facts
   ansible.builtin.set_fact:
     shuffle_admin_password: "{{ _vfb_shuffle_pass.stdout }}"
     shuffle_admin_username: "{{ _vfb_shuffle_user.stdout }}"
   no_log: true
+  tags: always
 
 # --- Grafana admin password ---
 - name: Vault fetch | Lire grafana_admin_password depuis Vault
@@ -131,11 +142,13 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_grafana_pass.rc != 0
+  tags: always
 
 - name: Vault fetch | Définir grafana_admin_password comme fact
   ansible.builtin.set_fact:
     grafana_admin_password: "{{ _vfb_grafana_pass.stdout }}"
   no_log: true
+  tags: always
 
 # --- Wazuh OpenSearch dashboard password ---
 # Seedé depuis K8s (soc-wazuh doit exister) — peut être absent en phase early.
@@ -149,12 +162,14 @@
   changed_when: false
   no_log: true
   failed_when: false
+  tags: always
 
 - name: Vault fetch | Définir wazuh_dashboard_password comme fact
   ansible.builtin.set_fact:
     wazuh_dashboard_password: "{{ _vfb_wazuh_dashboard_pass.stdout | default('') }}"
   no_log: true
   when: _vfb_wazuh_dashboard_pass.rc == 0
+  tags: always
 
 # --- ArgoCD admin password ---
 - name: Vault fetch | Lire argocd_admin_password depuis Vault
@@ -167,14 +182,17 @@
   changed_when: false
   no_log: true
   failed_when: _vfb_argocd_pass.rc != 0
+  tags: always
 
 - name: Vault fetch | Définir argocd_admin_password comme fact
   ansible.builtin.set_fact:
     argocd_admin_password: "{{ _vfb_argocd_pass.stdout }}"
   no_log: true
+  tags: always
 
 - name: Vault fetch | Bootstrap passwords chargés depuis Vault
   ansible.builtin.debug:
     msg: >-
       Bootstrap passwords résolus depuis Vault KV pour TheHive, Cortex,
       Shuffle, Grafana, Wazuh et ArgoCD.
+  tags: always

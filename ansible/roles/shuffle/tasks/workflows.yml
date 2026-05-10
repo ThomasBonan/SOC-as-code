@@ -259,7 +259,7 @@
                 {'name': 'ENV_THEHIVE_APIKEY',  'value': _sh_thehive_write_key,            'description': 'TheHive write API key from soc-automation-worker-creds'},
                 {'name': 'ENV_CORTEX_URL',      'value': shuffle_cortex_url,               'description': 'Cortex internal URL (.svc)'},
                 {'name': 'ENV_CORTEX_APIKEY',   'value': _sh_cortex_key,                   'description': 'Cortex API key from soc-automation-worker-creds'},
-                {'name': 'ENV_CORTEX_ANALYZER', 'value': 'AbuseIPDB_1_0',                 'description': 'Cortex analyzer name for IP enrichment'},
+                {'name': 'ENV_CORTEX_ANALYZER', 'value': 'AbuseIPDB_2_0',                 'description': 'Cortex analyzer name for IP enrichment'},
                 {'name': 'ENV_MISP_URL',        'value': shuffle_misp_url,                 'description': 'MISP internal URL (.svc)'},
                 {'name': 'ENV_MISP_APIKEY',     'value': _sh_misp_key,                     'description': 'MISP API key from soc-automation-worker-creds'},
                 {'name': 'ENV_WAZUH_API_URL',   'value': shuffle_wazuh_api_url,            'description': 'Wazuh API internal URL (port 55000)'},
