@@ -157,6 +157,31 @@
         _sh_admin_apikey: "{{ _sh_admin_secret.resources[0].data.apikey | b64decode }}"
       no_log: true
 
+    - name: "shuffle | Workflows - lire l'UUID Cortex MaxMind depuis soc-cortex-analyzers-enabled"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: ConfigMap
+        namespace: "{{ soc_namespaces.cortex }}"
+        name: soc-cortex-analyzers-enabled
+      register: _sh_cortex_anlz_cm
+      changed_when: false
+      failed_when: false
+
+    - name: "shuffle | Workflows - extraire l'UUID MaxMind ou fallback sur le nom"
+      ansible.builtin.set_fact:
+        _sh_cortex_analyzer_id: >-
+          {{
+            (_sh_cortex_anlz_cm.resources | default([]) | length > 0)
+            | ternary(
+                _sh_cortex_anlz_cm.resources[0].data.maxmind_analyzer_uuid | default('MaxMind_GeoIP_4_0'),
+                'MaxMind_GeoIP_4_0'
+              )
+          }}
+
+    - name: "shuffle | Workflows - [info] analyzer ID injecté dans workflow"
+      ansible.builtin.debug:
+        msg: "ENV_CORTEX_ANALYZER = {{ _sh_cortex_analyzer_id }}"
+
     - name: "shuffle | Workflows - read soc-automation-worker-creds secret"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ shuffle_kubeconfig_path }}"
@@ -259,7 +284,7 @@
                 {'name': 'ENV_THEHIVE_APIKEY',  'value': _sh_thehive_write_key,            'description': 'TheHive write API key from soc-automation-worker-creds'},
                 {'name': 'ENV_CORTEX_URL',      'value': shuffle_cortex_url,               'description': 'Cortex internal URL (.svc)'},
                 {'name': 'ENV_CORTEX_APIKEY',   'value': _sh_cortex_key,                   'description': 'Cortex API key from soc-automation-worker-creds'},
-                {'name': 'ENV_CORTEX_ANALYZER', 'value': 'AbuseIPDB_2_0',                 'description': 'Cortex analyzer name for IP enrichment'},
+                {'name': 'ENV_CORTEX_ANALYZER', 'value': _sh_cortex_analyzer_id,             'description': 'Cortex analyzer UUID (MaxMind_GeoIP instance)'},
                 {'name': 'ENV_MISP_URL',        'value': shuffle_misp_url,                 'description': 'MISP internal URL (.svc)'},
                 {'name': 'ENV_MISP_APIKEY',     'value': _sh_misp_key,                     'description': 'MISP API key from soc-automation-worker-creds'},
                 {'name': 'ENV_WAZUH_API_URL',   'value': shuffle_wazuh_api_url,            'description': 'Wazuh API internal URL (port 55000)'},

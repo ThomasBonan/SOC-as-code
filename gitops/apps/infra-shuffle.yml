@@ -80,6 +80,12 @@ spec:
               value: "http://shuffle-opensearch-master-hl:9200"
             - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
               value: "true"
+            # CLEANUP=true : Orborus supprime les pods worker dès qu'ils terminent.
+            # Sans cela, les workers s'accumulent et le Service shuffle-workers:33333
+            # load-balance les résultats HTTP vers tous les workers actifs (mauvais
+            # destinataire), ce qui bloque les workflows à mi-exécution.
+            - name: CLEANUP
+              value: "true"
           resources:
             requests:
               cpu: "100m"

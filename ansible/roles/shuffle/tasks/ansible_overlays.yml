@@ -1,0 +1,224 @@
+---
+# ansible_overlays.yml
+# Custom Ansible-managed components for Shuffle that DO NOT come from the Helm chart.
+# Must run regardless of shuffle_managed_by (gitops or ansible) — the upstream chart
+# does not provide these features.
+#
+# Components deployed here:
+#   1. shuffle-execution-trigger : python pod that re-triggers stuck executions
+#                                  and cleans up worker pods (Orborus CLEANUP=true
+#                                  doesn't work on K8s, only Docker swarm).
+#   2. http-app splitheaders fix : custom app.py mounted into http-1-4-0 to fix
+#                                  Shuffle's HTTP app multiline header bug.
+
+- name: "shuffle | Overlays - execution-trigger: Python script ConfigMap"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: shuffle-execution-trigger-script
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      data:
+        trigger.py: |
+          #!/usr/bin/env python3
+          import time, logging, json, urllib.request, urllib.error, ssl, os
+          logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+          log = logging.getLogger(__name__)
+          OPENSEARCH_URL  = "http://shuffle-opensearch-master-hl:9200"
+          WORKER_URL      = "http://shuffle-workers:33333"
+          POLL_INTERVAL   = 5
+          STALE_TIMEOUT   = 300   # abort partial executions stuck >5 min
+          FRESH_GRACE     = 15    # don't re-trigger executions started <15s ago
+
+          K8S_API         = "https://kubernetes.default.svc"
+          K8S_TOKEN_FILE  = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+          K8S_CA_FILE     = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          K8S_NAMESPACE   = os.environ.get("NAMESPACE", "soc-shuffle")
+
+          def _k8s_headers():
+              try:
+                  token = open(K8S_TOKEN_FILE).read().strip()
+                  return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+              except Exception:
+                  return {}
+
+          def _k8s_ssl():
+              return ssl.create_default_context(cafile=K8S_CA_FILE)
+
+          def delete_worker_pod(exec_id):
+              pod_name = f"worker-{exec_id}"
+              url = f"{K8S_API}/api/v1/namespaces/{K8S_NAMESPACE}/pods/{pod_name}"
+              req = urllib.request.Request(url, method="DELETE", headers=_k8s_headers())
+              try:
+                  with urllib.request.urlopen(req, context=_k8s_ssl(), timeout=10):
+                      log.info("Deleted worker pod %s", pod_name)
+              except urllib.error.HTTPError as e:
+                  if e.code != 404:
+                      log.debug("Delete pod %s: %s", pod_name, e)
+              except Exception as e:
+                  log.debug("Delete pod %s error: %s", pod_name, e)
+
+          def abort_execution(doc_id):
+              url = f"{OPENSEARCH_URL}/workflowexecution/_update/{doc_id}"
+              data = json.dumps({"script": {"source": "ctx._source.status = 'ABORTED'", "lang": "painless"}}).encode()
+              req = urllib.request.Request(url, data=data,
+                  headers={"Content-Type": "application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=10):
+                      pass
+              except Exception as e:
+                  log.debug("Abort execution %s: %s", doc_id[:8], e)
+
+          def opensearch_query(path, payload=None, method="GET"):
+              url = f"{OPENSEARCH_URL}{path}"
+              data = json.dumps(payload).encode() if payload else None
+              headers = {"Content-Type": "application/json"}
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=10) as r:
+                      return json.loads(r.read())
+              except Exception as e:
+                  log.debug("OpenSearch query failed: %s", e)
+                  return {}
+
+          def trigger_worker(execution_id, authorization):
+              payload = json.dumps({"execution_id": execution_id, "authorization": authorization}).encode()
+              req = urllib.request.Request(f"{WORKER_URL}/api/v1/streams", data=payload,
+                  headers={"Content-Type": "application/json"}, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=8) as r:
+                      body = r.read().decode()
+                      log.info("Triggered %s -> %s", execution_id[:8], body[:80])
+                      return True
+              except urllib.error.URLError as e:
+                  log.debug("Worker not reachable for %s: %s", execution_id[:8], e)
+                  return False
+
+          def process_executions():
+              now = int(time.time())
+              # EXECUTING : pour re-trigger ou abort les bloqués
+              result = opensearch_query("/workflowexecution/_search", method="POST",
+                  payload={"query":{"term":{"status.keyword":"EXECUTING"}},"size":30,
+                           "_source":["execution_id","authorization","results","started_at"]})
+              fresh, stale = [], []
+              for hit in result.get("hits",{}).get("hits",[]):
+                  src = hit.get("_source",{})
+                  eid  = src.get("execution_id","")
+                  auth = src.get("authorization","")
+                  nres = len(src.get("results",[]))
+                  age  = now - int(src.get("started_at",now))
+                  if not eid:
+                      continue
+                  if nres == 0 and age >= FRESH_GRACE:
+                      fresh.append((eid, auth))
+                  elif nres > 0 and age >= STALE_TIMEOUT:
+                      stale.append((hit["_id"], eid))
+              # FINISHED/ABORTED : worker pods doivent être supprimés immédiatement
+              # (Orborus CLEANUP=true ne fonctionne pas en K8s, seulement Docker swarm)
+              # Critical : tant qu'un worker terminé reste actif, le Service shuffle-workers:33333
+              # load-balance les nouvelles requêtes vers lui → workflow stuck à mi-exécution.
+              done_query = opensearch_query("/workflowexecution/_search", method="POST",
+                  payload={"query":{"bool":{"should":[
+                      {"term":{"status.keyword":"FINISHED"}},
+                      {"term":{"status.keyword":"ABORTED"}}
+                  ],"minimum_should_match":1}},"size":50,
+                  "sort":[{"started_at":{"order":"desc"}}],
+                  "_source":["execution_id","started_at"]})
+              done = []
+              for hit in done_query.get("hits",{}).get("hits",[]):
+                  src = hit.get("_source",{})
+                  eid = src.get("execution_id","")
+                  age = now - int(src.get("started_at",now))
+                  # Cleanup workers between 30s and 1h after start (safety window)
+                  if eid and 30 <= age <= 3600:
+                      done.append(eid)
+              return fresh, stale, done
+
+          def main():
+              log.info("shuffle-execution-trigger v3 started (stale_timeout=%ds, FINISHED cleanup enabled)", STALE_TIMEOUT)
+              triggered = set()
+              cleaned = set()
+              while True:
+                  try:
+                      fresh, stale, done = process_executions()
+                      for exec_id, auth in fresh:
+                          if exec_id in triggered:
+                              continue
+                          log.info("Zero-result execution %s (age>%ds), triggering...", exec_id[:8], FRESH_GRACE)
+                          if trigger_worker(exec_id, auth):
+                              triggered.add(exec_id)
+                              if len(triggered) > 500:
+                                  triggered.clear()
+                      for doc_id, exec_id in stale:
+                          log.warning("Partial execution %s stuck >%ds — aborting + deleting pod",
+                                      exec_id[:8], STALE_TIMEOUT)
+                          abort_execution(doc_id)
+                          delete_worker_pod(exec_id)
+                          triggered.discard(exec_id)
+                      # Cleanup workers for FINISHED/ABORTED executions
+                      for exec_id in done:
+                          if exec_id in cleaned:
+                              continue
+                          delete_worker_pod(exec_id)
+                          cleaned.add(exec_id)
+                          if len(cleaned) > 500:
+                              cleaned.clear()
+                  except Exception as e:
+                      log.warning("Poll error: %s", e)
+                  time.sleep(POLL_INTERVAL)
+
+          if __name__ == "__main__":
+              main()
+
+- name: "shuffle | Overlays - execution-trigger: Deployment"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: shuffle-execution-trigger
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app: shuffle-execution-trigger
+          soc.lab/component: shuffle
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: shuffle-execution-trigger
+        template:
+          metadata:
+            labels:
+              app: shuffle-execution-trigger
+          spec:
+            containers:
+              - name: trigger
+                image: python:3.12-alpine
+                command: ["python3", "/scripts/trigger.py"]
+                volumeMounts:
+                  - name: script
+                    mountPath: /scripts
+                resources:
+                  requests:
+                    cpu: "10m"
+                    memory: "32Mi"
+                  limits:
+                    cpu: "50m"
+                    memory: "64Mi"
+            volumes:
+              - name: script
+                configMap:
+                  name: shuffle-execution-trigger-script
+
+- name: "shuffle | Overlays - rollout restart trigger pod when ConfigMap changes"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    -n {{ shuffle_namespace }}
+    rollout restart deployment shuffle-execution-trigger
+  changed_when: true

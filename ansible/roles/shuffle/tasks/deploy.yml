@@ -725,6 +725,7 @@
 
           def process_executions():
               now = int(time.time())
+              # EXECUTING : pour re-trigger ou abort les bloqués
               result = opensearch_query("/workflowexecution/_search", method="POST",
                   payload={"query":{"term":{"status.keyword":"EXECUTING"}},"size":30,
                            "_source":["execution_id","authorization","results","started_at"]})
@@ -741,14 +742,34 @@
                       fresh.append((eid, auth))
                   elif nres > 0 and age >= STALE_TIMEOUT:
                       stale.append((hit["_id"], eid))
-              return fresh, stale
+              # FINISHED/ABORTED : worker pods doivent être supprimés immédiatement
+              # (Orborus CLEANUP=true ne fonctionne pas en K8s, seulement Docker swarm)
+              # Critical : tant qu'un worker terminé reste actif, le Service shuffle-workers:33333
+              # load-balance les nouvelles requêtes vers lui → workflow stuck à mi-exécution.
+              done_query = opensearch_query("/workflowexecution/_search", method="POST",
+                  payload={"query":{"bool":{"should":[
+                      {"term":{"status.keyword":"FINISHED"}},
+                      {"term":{"status.keyword":"ABORTED"}}
+                  ],"minimum_should_match":1}},"size":50,
+                  "sort":[{"started_at":{"order":"desc"}}],
+                  "_source":["execution_id","started_at"]})
+              done = []
+              for hit in done_query.get("hits",{}).get("hits",[]):
+                  src = hit.get("_source",{})
+                  eid = src.get("execution_id","")
+                  age = now - int(src.get("started_at",now))
+                  # Cleanup workers between 30s and 1h after start (safety window)
+                  if eid and 30 <= age <= 3600:
+                      done.append(eid)
+              return fresh, stale, done
 
           def main():
               log.info("shuffle-execution-trigger v2 started (stale_timeout=%ds)", STALE_TIMEOUT)
               triggered = set()
+              cleaned = set()
               while True:
                   try:
-                      fresh, stale = process_executions()
+                      fresh, stale, done = process_executions()
                       for exec_id, auth in fresh:
                           if exec_id in triggered:
                               continue
@@ -763,6 +784,14 @@
                           abort_execution(doc_id)
                           delete_worker_pod(exec_id)
                           triggered.discard(exec_id)
+                      # Cleanup workers for FINISHED/ABORTED executions
+                      for exec_id in done:
+                          if exec_id in cleaned:
+                              continue
+                          delete_worker_pod(exec_id)
+                          cleaned.add(exec_id)
+                          if len(cleaned) > 500:
+                              cleaned.clear()
                   except Exception as e:
                       log.warning("Poll error: %s", e)
                   time.sleep(POLL_INTERVAL)

@@ -19,6 +19,15 @@
     - deploy
     - shuffle
 
+# Custom Ansible overlays (execution-trigger) — must run regardless of GitOps mode.
+# The upstream Helm chart doesn't provide these features, so they're managed
+# directly by Ansible even when shuffle_managed_by=gitops.
+- name: "shuffle | Ansible Overlays — execution-trigger v3 (custom, always-on)"
+  import_tasks: ansible_overlays.yml
+  tags:
+    - deploy
+    - shuffle
+
 - name: "shuffle | Configure — enregistrer apps (TheHive/Cortex/MISP/Wazuh)"
   import_tasks: configure.yml
   when: shuffle_enable_configure | bool

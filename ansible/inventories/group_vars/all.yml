@@ -223,7 +223,7 @@ soc_service_accounts:
     login: "svc-foundations"
     name: "SOC Foundations Service Account"
     organisation: "SOC"
-    role: "read"            # Lecture seule des résultats d'analyse
+    role: "analyze"         # Peut soumettre des jobs analyseurs
   misp:
     email: "svc-foundations@soc.lab"
     org_id: 1

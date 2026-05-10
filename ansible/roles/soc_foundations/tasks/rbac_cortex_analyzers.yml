@@ -160,12 +160,16 @@
           }}
       no_log: true
 
-    # ── Mettre à jour le rôle SA → orgAdmin ──────────────────────────────────────
-    # orgAdmin est requis pour activer des analyzers et les exécuter.
+    # ── Mettre à jour le rôle SA → orgAdmin + analyze + read ─────────────────────
+    # orgAdmin : requis pour activer des analyzers via POST /api/organization/analyzer
+    # analyze  : requis pour soumettre des jobs (run analyzer)
+    # read     : requis pour lire les résultats de jobs (GET /api/job/{id}/waitreport)
+    #            sans ce rôle, Shuffle obtient 403 quand il appelle action_get_cortex_result
+    # Les trois rôles doivent coexister.
     # failed_when: false — la mise à jour peut échouer si Cortex 4.x utilise
     # un endpoint différent ; l'activation d'analyzers sera tentée quand même.
 
-    - name: "Cortex Analyzers - promouvoir le SA en orgAdmin"
+    - name: "Cortex Analyzers - promouvoir le SA en orgAdmin + analyze + read"
       ansible.builtin.uri:
         url: "{{ _sf_cx_anlz_api_base }}/user/{{ soc_foundations_cortex_sa_login }}"
         method: PATCH
@@ -176,6 +180,8 @@
         body:
           roles:
             - orgAdmin
+            - analyze
+            - read
         validate_certs: "{{ soc_foundations_validate_certs }}"
         status_code: [200, 201, 204]
         timeout: "{{ soc_foundations_http_timeout | int }}"
@@ -215,6 +221,7 @@
     # ── Activer chaque analyzer configuré ────────────────────────────────────────
     # Utilise la clé SA (orgAdmin dans l'org SOC) pour activer.
     # POST /api/organization/analyzer/{id} — idempotent (201 si nouveau, 200 si déjà actif).
+    # Pas de rate/rate_unit : attributs non reconnus par l'API Cortex → AttributeCheckingError.
     # failed_when: false — un analyzer absent du catalogue est ignoré sans planter.
 
     - name: "Cortex Analyzers - activer les analyzers pour l'org SOC"
@@ -228,10 +235,9 @@
         body:
           name: "{{ item.name }}"
           configuration: "{{ item.config | default({}) }}"
-          rate: 1000
-          rate_unit: "Day"
         validate_certs: "{{ soc_foundations_validate_certs }}"
-        status_code: [200, 201]
+        # 409 = ConflictError : analyzer déjà activé dans l'org → idempotent, accepté.
+        status_code: [200, 201, 409]
         timeout: "{{ soc_foundations_http_timeout | int }}"
       loop: "{{ soc_foundations_cortex_analyzers }}"
       loop_control:
@@ -244,10 +250,59 @@
         msg: >-
           {{ item.item.name }} →
           HTTP {{ item.status | default('skipped/error') }}
-          {{ '✓' if (item.status | default(0)) in [200, 201] else '✗ (voir logs Cortex)' }}
+          {{ '✓' if (item.status | default(0)) in [200, 201, 409] else '✗ (voir logs Cortex)' }}
       loop: "{{ _sf_cx_anlz_enable_results.results | default([]) }}"
       loop_control:
         label: "{{ item.item.name }}"
+
+    # ── Récupérer l'UUID de l'instance MaxMind_GeoIP dans ES ─────────────────────
+    # POST /api/analyzer/{name}/run requiert l'UUID de l'instance, pas le nom.
+    # On interroge directement l'ES Cortex pour éviter les AuthorizationError sur
+    # GET /api/analyzer. Le résultat est stocké dans le marker pour que 185-shuffle
+    # puisse le lire et injecter l'UUID dans ENV_CORTEX_ANALYZER.
+
+    - name: "Cortex Analyzers - interroger ES pour l'UUID MaxMind_GeoIP"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ soc_foundations_kubeconfig_path }}"
+          - -n
+          - "{{ soc_namespaces.cortex }}"
+          - exec
+          - cortex-elasticsearch-master-0
+          - --
+          - curl
+          - -sk
+          - "http://localhost:9200/cortex_6/_search?routing=SOC"
+          - -H
+          - "Content-Type: application/json"
+          - -d
+          - >-
+            {"query":{"bool":{"must":[
+              {"term":{"workerDefinitionId":"MaxMind_GeoIP_4_0"}},
+              {"term":{"type":"analyzer"}}
+            ]}},"_source":["id","name","workerDefinitionId"],"size":1}
+      register: _sf_cx_anlz_maxmind_es_raw
+      changed_when: false
+      failed_when: false
+
+    - name: "Cortex Analyzers - extraire l'UUID MaxMind_GeoIP"
+      ansible.builtin.set_fact:
+        _sf_cx_anlz_maxmind_uuid: >-
+          {{
+            (
+              (_sf_cx_anlz_maxmind_es_raw.stdout | from_json).hits.hits
+              | default([])
+              | map(attribute='_id')
+              | list
+              | first
+            ) | default('')
+          }}
+
+    - name: "Cortex Analyzers - [info] UUID MaxMind instance"
+      ansible.builtin.debug:
+        msg: "MaxMind_GeoIP_4_0 instance UUID: {{ _sf_cx_anlz_maxmind_uuid | default('NOT FOUND') }}"
 
     # ── Marker ───────────────────────────────────────────────────────────────────
 
@@ -271,3 +326,4 @@
             status: active
             environment: "{{ soc_environment | default('dev') }}"
             analyzer_list_hash: "{{ _sf_cx_anlz_hash }}"
+            maxmind_analyzer_uuid: "{{ _sf_cx_anlz_maxmind_uuid | default('') }}"

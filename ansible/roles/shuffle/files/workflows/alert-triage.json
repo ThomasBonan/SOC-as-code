@@ -104,7 +104,7 @@
       "parameters": [
         {
           "name": "url",
-          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_analysis.body.id/waitreport?atMost=5minutes"
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_analysis.body._id/waitreport?atMost=5minutes"
         },
         {
           "name": "method",
@@ -1371,7 +1371,7 @@
     },
     {
       "name": "ENV_CORTEX_ANALYZER",
-      "value": "AbuseIPDB_1_0",
+      "value": "MaxMind_GeoIP_4_0",
       "description": "Cortex analyzer name for IP enrichment"
     },
     {
