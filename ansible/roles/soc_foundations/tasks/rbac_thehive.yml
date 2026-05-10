@@ -82,10 +82,20 @@
     kind: Secret
     namespace: "{{ soc_namespaces.thehive }}"
     name: "{{ soc_foundations_thehive_sa_secret_name }}"
-  register: _sf_th_sa_secret_existing
+  register: _sf_th_sa_secret_reread
   no_log: true
   changed_when: false
   when: _sf_th_sa_key_probe is defined and _sf_th_sa_key_probe.status | default(200) in [401, 403]
+  tags: [rbac, rbac_thehive, soc_foundations]
+
+# Consolider : si le re-read a tourné (clé invalide → Secret supprimé → re-lu),
+# mettre à jour _sf_th_sa_secret_existing. Si skippé, garder la valeur originale
+# (le skip dict ne contient pas .resources et casserait toutes les conditions suivantes).
+- name: TheHive RBAC - consolider l'état du Secret (post re-lecture conditionnelle)
+  ansible.builtin.set_fact:
+    _sf_th_sa_secret_existing: "{{ _sf_th_sa_secret_reread }}"
+  no_log: true
+  when: (_sf_th_sa_secret_reread | default({})).resources is defined
   tags: [rbac, rbac_thehive, soc_foundations]
 
 # ── Vérifier / créer l'organisation cible ────────────────────────

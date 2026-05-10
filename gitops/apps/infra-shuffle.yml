@@ -80,8 +80,6 @@ spec:
               value: "http://shuffle-opensearch-master-hl:9200"
             - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
               value: "true"
-            - name: CLEANUP
-              value: "true"
           resources:
             requests:
               cpu: "100m"
