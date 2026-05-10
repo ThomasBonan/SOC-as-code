@@ -111,7 +111,9 @@ spec:
       kind: Deployment
       jsonPointers:
         - /spec/template/metadata/annotations/kubectl.kubernetes.io~1restartedAt
+        - /spec/template/spec/volumes
+        - /spec/template/spec/containers/0/volumeMounts
     - kind: ConfigMap
       name: cortex-config
       jsonPointers:
-        - /data
+        - /data/application.conf
