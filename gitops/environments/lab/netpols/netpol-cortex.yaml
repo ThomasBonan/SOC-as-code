@@ -164,6 +164,7 @@ spec:
         - matchName: "auth.docker.io"
         - matchName: "registry-1.docker.io"
         - matchName: "ghcr.io"
+        - matchName: "catalogs.download.strangebee.com"
       toPorts:
         - ports:
             - port: "443"
@@ -192,6 +193,7 @@ spec:
         - matchName: "auth.docker.io"
         - matchName: "registry-1.docker.io"
         - matchName: "ghcr.io"
+        - matchName: "catalogs.download.strangebee.com"
       toPorts:
         - ports:
             - port: "443"
