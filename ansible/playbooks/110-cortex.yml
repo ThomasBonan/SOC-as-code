@@ -24,3 +24,47 @@
       ansible.builtin.include_role:
         name: cortex
       when: cortex_managed_by | default('ansible') != 'gitops'
+
+    # --- Catalog d'analyzers ---
+    # Téléchargement depuis le bastion (qui a accès Internet) + injection
+    # dans un ConfigMap monté dans le pod Cortex (/opt/cortex/catalog/analyzers.json).
+    # Le pod Cortex ne peut pas atteindre le CDN StrangeBee directement (Cilium FQDN).
+    - name: Télécharger le catalog d'analyzers Cortex
+      ansible.builtin.get_url:
+        url: "https://catalogs.download.strangebee.com/latest/json/analyzers.json"
+        dest: "/tmp/cortex-analyzers-catalog.json"
+        mode: "0644"
+        timeout: 30
+      register: _cortex_catalog_download
+      retries: 3
+      delay: 5
+      until: _cortex_catalog_download is succeeded
+
+    - name: Lire le catalog JSON téléchargé
+      ansible.builtin.slurp:
+        src: "/tmp/cortex-analyzers-catalog.json"
+      register: _cortex_catalog_content
+
+    - name: Créer/mettre à jour le ConfigMap cortex-analyzers-catalog
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: cortex-analyzers-catalog
+            namespace: "{{ soc_namespaces.cortex | default('soc-cortex') }}"
+            labels:
+              app.kubernetes.io/managed-by: soc-ansible
+          data:
+            analyzers.json: "{{ _cortex_catalog_content.content | b64decode }}"
+      register: _cortex_catalog_cm
+
+    - name: Redémarrer Cortex si le catalog a changé
+      ansible.builtin.command: >
+        kubectl --kubeconfig={{ kubeconfig_path }}
+        -n {{ soc_namespaces.cortex | default('soc-cortex') }}
+        rollout restart deployment/cortex
+      when: _cortex_catalog_cm is changed
+      changed_when: true
