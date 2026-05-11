@@ -88,10 +88,15 @@ orborus:
       value: "http://{{ shuffle_release_name }}-opensearch-master-hl:9200"
     - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
       value: "true"
-  # CLEANUP=true est forcé en post-sync via ansible_overlays.yml.
+  # CLEANUP : on conserve la valeur par défaut du chart (`false`).
   # Le chart Shuffle hardcode `CLEANUP=false` (orborus-dpl.yaml line 85) sans option Helm
-  # pour l'overrider. Ajouter `CLEANUP=true` ici dupliquerait l'entrée env (chart=false +
-  # extraEnvVars=true) et casse le structured merge diff d'ArgoCD.
+  # pour l'overrider. NE PAS ajouter `CLEANUP=true` ici :
+  #   1. Dupliquerait l'entrée env (chart=false + extraEnvVars=true) → casse le structured
+  #      merge diff d'ArgoCD ("duplicate entries for key [name=CLEANUP]").
+  #   2. CLEANUP=true (testé 2026-05-11) tue les worker pods en cours d'exécution → workflows
+  #      stuck en ABORTED après 1-4 actions (selftest échoue). Le cleanup K8s est déjà
+  #      assuré par l'overlay shuffle-execution-trigger.
+  # ansible_overlays.yml force CLEANUP=false en post-sync (anti-drift) par sécurité.
 
 # ── Worker (spawné dynamiquement par Orborus, pas statique) ──────
 worker:

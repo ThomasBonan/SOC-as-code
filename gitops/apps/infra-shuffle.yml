@@ -80,11 +80,12 @@ spec:
               value: "http://shuffle-opensearch-master-hl:9200"
             - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
               value: "true"
-          # CLEANUP=true forcé en post-sync via ansible_overlays.yml (kubectl set env).
-          # Le chart Shuffle hardcode CLEANUP=false (orborus-dpl.yaml:85) sans toggle Helm —
-          # le déclarer ici dupliquerait l'entrée env et casse le structured merge diff
-          # d'ArgoCD ("duplicate entries for key [name=CLEANUP]"). Drift masqué via
-          # ignoreDifferences ci-dessous + RespectIgnoreDifferences syncOption.
+          # CLEANUP : valeur du chart (`false`) conservée — NE PAS ajouter CLEANUP=true ici.
+          # Le chart Shuffle hardcode CLEANUP=false (orborus-dpl.yaml:85) sans toggle Helm.
+          # CLEANUP=true tue les workers en cours d'exécution → workflows ABORTED (testé
+          # 2026-05-11). Le cleanup K8s est assuré par shuffle-execution-trigger.
+          # ansible_overlays.yml force CLEANUP=false en post-sync (anti-drift).
+          # ignoreDifferences ci-dessous reste par sécurité pour absorber tout drift résiduel.
           resources:
             requests:
               cpu: "100m"
@@ -143,7 +144,8 @@ spec:
       kind: StatefulSet
       jsonPointers:
         - /spec/volumeClaimTemplates
-    # CLEANUP forcé à "true" par ansible_overlays.yml — chart hardcode "false".
+    # CLEANUP : ansible_overlays.yml aligne live=chart=false (anti-drift). On conserve
+    # cet ignoreDifferences par sécurité au cas où un futur change introduirait un drift.
     - group: apps
       kind: Deployment
       name: shuffle-orborus
