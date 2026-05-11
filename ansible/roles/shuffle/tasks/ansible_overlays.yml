@@ -240,11 +240,18 @@
   until: orborus_wait.rc == 0
 
 - name: "shuffle | Overlays - orborus: lire la valeur effective de CLEANUP"
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
-    -n {{ shuffle_namespace }}
-    get deployment shuffle-orborus
-    -o jsonpath={.spec.template.spec.containers[?(@.name=="orborus")].env[?(@.name=="CLEANUP")].value}
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ shuffle_kubeconfig_path }}"
+      - -n
+      - "{{ shuffle_namespace }}"
+      - get
+      - deployment
+      - shuffle-orborus
+      - -o
+      - 'jsonpath={.spec.template.spec.containers[?(@.name=="orborus")].env[?(@.name=="CLEANUP")].value}'
   changed_when: false
   register: orborus_cleanup_current
 
