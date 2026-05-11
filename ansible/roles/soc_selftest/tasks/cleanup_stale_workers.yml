@@ -1,0 +1,88 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# cleanup_stale_workers.yml — Pre-injection guard against race conditions
+# Playbook 210 | tag: bootstrap (runs between preflight and inject)
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Purpose:
+# When the selftest is run as the final step of `make deploy`, the Shuffle
+# infrastructure may carry transient state from earlier pipeline steps:
+#   - Worker pods stuck mid-workflow (action_create_thehive_alert OK at 201,
+#     then no progress because of pod-pressure or image-pull lag)
+#   - These workers still claim their `worker-<exec_id>` name, so the next
+#     webhook from Wazuh hits the same name → POST collisions → 400 from TheHive
+#     ("Alert already exists") → workflow ABORTED → selftest fails
+#     "Alert was not promoted to a case within 120s"
+#
+# This pre-task brings the Shuffle data plane to a clean baseline:
+#   1. List all `worker-*` pods in soc-shuffle
+#   2. Force-delete them (grace=0). Active workflows are reset by Shuffle backend
+#      (which retriggers via the orborus poll loop on next iteration).
+#   3. Wait for shuffle-backend to be Ready
+#   4. 30 s stabilization grace to let orborus + opensearch re-sync internal state
+#
+# Idempotent: 0 pods to delete = no-op. Failure is non-blocking (the selftest
+# continues; we just lose the cleanup benefit for that run).
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "cleanup_stale_workers | List all pods in soc-shuffle"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Pod
+    namespace: "{{ soc_namespaces.shuffle }}"
+  register: _stcsw_pods
+  changed_when: false
+  failed_when: false
+
+- name: "cleanup_stale_workers | Filter worker pod names (prefix worker-)"
+  ansible.builtin.set_fact:
+    _stcsw_worker_names: >-
+      {{ (_stcsw_pods.resources | default([]))
+         | map(attribute='metadata.name')
+         | select('match', '^worker-')
+         | list }}
+  changed_when: false
+
+- name: "cleanup_stale_workers | Force-delete stale worker pods"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    state: absent
+    api_version: v1
+    kind: Pod
+    namespace: "{{ soc_namespaces.shuffle }}"
+    name: "{{ item }}"
+    wait: false
+    delete_options:
+      gracePeriodSeconds: 0
+  loop: "{{ _stcsw_worker_names }}"
+  when: _stcsw_worker_names | length > 0
+  changed_when: true
+  failed_when: false
+
+- name: "cleanup_stale_workers | Summary"
+  ansible.builtin.debug:
+    msg: >-
+      Stale worker cleanup: {{ _stcsw_worker_names | length }} pod(s)
+      force-deleted before selftest injection
+      (namespace={{ soc_namespaces.shuffle }}).
+  changed_when: false
+
+- name: "cleanup_stale_workers | Wait for shuffle-backend Deployment to be Ready"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Deployment
+    namespace: "{{ soc_namespaces.shuffle }}"
+    label_selectors:
+      - "app.kubernetes.io/component=backend"
+  register: _stcsw_backend
+  retries: 12
+  delay: 5
+  until: >-
+    (_stcsw_backend.resources | default([]) | length) > 0
+    and ((_stcsw_backend.resources[0].status.readyReplicas | default(0)) | int)
+        >= ((_stcsw_backend.resources[0].spec.replicas | default(1)) | int)
+  changed_when: false
+
+- name: "cleanup_stale_workers | Stabilization grace (30s)"
+  ansible.builtin.pause:
+    seconds: "{{ soc_selftest_stabilization_grace_seconds | default(30) }}"

@@ -7,6 +7,7 @@
 
 # ── Feature toggles ───────────────────────────────────────────────
 soc_selftest_enable_preflight:              true
+soc_selftest_enable_cleanup_stale_workers:  true
 soc_selftest_enable_inject:                 true
 soc_selftest_enable_verify_thehive:         true
 soc_selftest_enable_verify_cortex:          true
@@ -16,6 +17,12 @@ soc_selftest_enable_verify_active_response: true
 soc_selftest_enable_cleanup:                true
 soc_selftest_enable_verify_argocd:          true
 soc_selftest_enable_report:                 true
+
+# ── Stabilization grace after worker cleanup (seconds) ────────────
+# After force-deleting stale Shuffle workers, give orborus + opensearch this
+# many seconds to re-converge before injecting the test alert. Raise this if
+# the cluster is under load.
+soc_selftest_stabilization_grace_seconds: 30
 
 # ── Runtime behavior ──────────────────────────────────────────────
 # safe_mode=true  : AR conditions evaluated, but never executed (default)

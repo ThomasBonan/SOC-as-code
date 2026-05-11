@@ -9,20 +9,27 @@
 # the imported file.
 #
 # Execution order:
-#   1. preflight         — verify SOC chain, probe APIs, compliance gate
-#   2. inject_wazuh_alert — create synthetic alert (TheHive API or Wazuh logger)
-#   3. verify_thehive    — poll for alert + case promotion by Shuffle
-#   4. verify_cortex     — poll for risk_engine:processed tag (Cortex + risk engine via Shuffle)
-#   5. verify_risk_decision — poll for risk_decision custom field (Shuffle → POST /score)
-#   6. verify_misp       — check IOC push to MISP (skipped if below auto_contain)
-#   7. verify_active_response — check AR decision (safe_mode logs only)
-#   8. cleanup           — delete test artifacts (best-effort, ignore_errors)
-#   9. report            — assemble JSON report + ConfigMap + console summary
+#   1. preflight              — verify SOC chain, probe APIs, compliance gate
+#   2. cleanup_stale_workers  — clear leftover Shuffle worker pods before inject
+#   3. inject_wazuh_alert     — create synthetic alert (TheHive API or Wazuh logger)
+#   4. verify_thehive         — poll for alert + case promotion by Shuffle
+#   5. verify_cortex          — poll for risk_engine:processed tag (Cortex + risk engine)
+#   6. verify_risk_decision   — poll for risk_decision custom field (Shuffle → POST /score)
+#   7. verify_misp            — check IOC push to MISP (skipped if below auto_contain)
+#   8. verify_active_response — check AR decision (safe_mode logs only)
+#   9. cleanup                — delete test artifacts (best-effort, ignore_errors)
+#  10. report                 — assemble JSON report + ConfigMap + console summary
 # ════════════════════════════════════════════════════════════════════════════════
 
 - import_tasks: preflight.yml
   tags: [bootstrap, soc_selftest]
   when: soc_selftest_enable_preflight | bool
+
+- import_tasks: cleanup_stale_workers.yml
+  tags: [bootstrap, soc_selftest]
+  when:
+    - soc_selftest_enable_inject | bool
+    - soc_selftest_enable_cleanup_stale_workers | default(true) | bool
 
 - import_tasks: inject_wazuh_alert.yml
   tags: [inject, soc_selftest]
