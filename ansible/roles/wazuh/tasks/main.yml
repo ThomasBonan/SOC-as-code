@@ -126,16 +126,31 @@
       changed_when: false
       failed_when: _wazuh_vault_creds.rc != 0
 
-    - name: Wazuh (Vault) | Définir les passwords wazuh depuis Vault
+    - name: Wazuh (Vault) | Définir les passwords + hashes depuis Vault
       ansible.builtin.set_fact:
-        wazuh_indexer_password: "{{ (_wazuh_vault_creds.stdout | from_json).data.data.indexer_password }}"
-        wazuh_dashboard_password: "{{ (_wazuh_vault_creds.stdout | from_json).data.data.dashboard_password }}"
+        _wazuh_vault_data: "{{ (_wazuh_vault_creds.stdout | from_json).data.data }}"
       no_log: true
 
-    - name: Wazuh (Vault) | Calculer les bcrypt hashes (cost 12)
+    - name: Wazuh (Vault) | Extraire passwords wazuh
       ansible.builtin.set_fact:
-        wazuh_indexer_password_hash: "{{ wazuh_indexer_password | password_hash('bcrypt', rounds=12) }}"
-        wazuh_dashboard_password_hash: "{{ wazuh_dashboard_password | password_hash('bcrypt', rounds=12) }}"
+        wazuh_indexer_password: "{{ _wazuh_vault_data.indexer_password }}"
+        wazuh_dashboard_password: "{{ _wazuh_vault_data.dashboard_password }}"
+      no_log: true
+
+    # Lire le hash depuis Vault (source unique) au lieu de recalculer localement —
+    # bcrypt est non-déterministe (salt random), recalculer divergerait du K8s Secret
+    # créé par ESO et casserait l'auth Wazuh (Helm passwordHash != Secret hash).
+    # Fallback : recalcule si le hash manque (migration depuis Vault legacy sans hashes).
+    - name: Wazuh (Vault) | Extraire/recalculer hashes bcrypt (cost 12)
+      ansible.builtin.set_fact:
+        wazuh_indexer_password_hash: >-
+          {{ _wazuh_vault_data.indexer_password_hash
+             if 'indexer_password_hash' in _wazuh_vault_data
+             else (wazuh_indexer_password | password_hash('bcrypt', rounds=12)) }}
+        wazuh_dashboard_password_hash: >-
+          {{ _wazuh_vault_data.dashboard_password_hash
+             if 'dashboard_password_hash' in _wazuh_vault_data
+             else (wazuh_dashboard_password | password_hash('bcrypt', rounds=12)) }}
       no_log: true
 
     - name: Wazuh (Vault) | Créer K8s Secret wazuh-credentials depuis Vault (create-once)
