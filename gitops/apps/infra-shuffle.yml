@@ -80,12 +80,11 @@ spec:
               value: "http://shuffle-opensearch-master-hl:9200"
             - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
               value: "true"
-            # CLEANUP=true : Orborus supprime les pods worker dès qu'ils terminent.
-            # Sans cela, les workers s'accumulent et le Service shuffle-workers:33333
-            # load-balance les résultats HTTP vers tous les workers actifs (mauvais
-            # destinataire), ce qui bloque les workflows à mi-exécution.
-            - name: CLEANUP
-              value: "true"
+          # CLEANUP=true forcé en post-sync via ansible_overlays.yml (kubectl set env).
+          # Le chart Shuffle hardcode CLEANUP=false (orborus-dpl.yaml:85) sans toggle Helm —
+          # le déclarer ici dupliquerait l'entrée env et casse le structured merge diff
+          # d'ArgoCD ("duplicate entries for key [name=CLEANUP]"). Drift masqué via
+          # ignoreDifferences ci-dessous + RespectIgnoreDifferences syncOption.
           resources:
             requests:
               cpu: "100m"
@@ -144,3 +143,10 @@ spec:
       kind: StatefulSet
       jsonPointers:
         - /spec/volumeClaimTemplates
+    # CLEANUP forcé à "true" par ansible_overlays.yml — chart hardcode "false".
+    - group: apps
+      kind: Deployment
+      name: shuffle-orborus
+      namespace: soc-shuffle
+      jqPathExpressions:
+        - '.spec.template.spec.containers[] | select(.name=="orborus") | .env[] | select(.name=="CLEANUP") | .value'

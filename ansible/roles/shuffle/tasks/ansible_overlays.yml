@@ -222,3 +222,36 @@
     -n {{ shuffle_namespace }}
     rollout restart deployment shuffle-execution-trigger
   changed_when: true
+
+# Force orborus CLEANUP=true sur le live Deployment.
+# Le chart Shuffle hardcode CLEANUP=false (orborus-dpl.yaml:85) sans option Helm pour
+# l'overrider. Sans ce patch, les worker pods s'accumulent et le Service shuffle-workers:33333
+# load-balance les résultats HTTP vers tous les workers actifs → workflows stuck à mi-exécution.
+# Drift ArgoCD masqué par ignoreDifferences sur infra-shuffle.yml + RespectIgnoreDifferences.
+- name: "shuffle | Overlays - orborus: attendre le Deployment (créé par ArgoCD)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    -n {{ shuffle_namespace }}
+    wait --for=condition=Available --timeout=300s deployment/shuffle-orborus
+  changed_when: false
+  retries: 3
+  delay: 10
+  register: orborus_wait
+  until: orborus_wait.rc == 0
+
+- name: "shuffle | Overlays - orborus: lire la valeur effective de CLEANUP"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    -n {{ shuffle_namespace }}
+    get deployment shuffle-orborus
+    -o jsonpath={.spec.template.spec.containers[?(@.name=="orborus")].env[?(@.name=="CLEANUP")].value}
+  changed_when: false
+  register: orborus_cleanup_current
+
+- name: "shuffle | Overlays - orborus: forcer CLEANUP=true (override chart hardcode)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    -n {{ shuffle_namespace }}
+    set env --overwrite deployment/shuffle-orborus CLEANUP=true
+  changed_when: orborus_cleanup_current.stdout != "true"
+  when: orborus_cleanup_current.stdout != "true"

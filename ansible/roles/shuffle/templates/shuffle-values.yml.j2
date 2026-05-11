@@ -88,8 +88,10 @@ orborus:
       value: "http://{{ shuffle_release_name }}-opensearch-master-hl:9200"
     - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
       value: "true"
-    - name: CLEANUP
-      value: "true"
+  # CLEANUP=true est forcé en post-sync via ansible_overlays.yml.
+  # Le chart Shuffle hardcode `CLEANUP=false` (orborus-dpl.yaml line 85) sans option Helm
+  # pour l'overrider. Ajouter `CLEANUP=true` ici dupliquerait l'entrée env (chart=false +
+  # extraEnvVars=true) et casse le structured merge diff d'ArgoCD.
 
 # ── Worker (spawné dynamiquement par Orborus, pas statique) ──────
 worker:
