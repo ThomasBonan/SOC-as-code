@@ -238,9 +238,11 @@ soc_foundations_netpol_thehive_allow_from_namespaces:
   - "{{ soc_namespaces.wazuh }}"    # Script d'intégration Wazuh → TheHive
   - "{{ soc_namespaces.thehive }}"  # Automation worker CronJob (ns thehive) → TheHive API
   - "{{ shuffle_namespace | default('soc-shuffle') }}"  # Shuffle workflow engine → TheHive API
+  - "{{ soc_smoke_namespace | default('tools') }}"  # Smoke tests (Job soc-smoke) → TheHive API
 soc_foundations_netpol_cortex_allow_from_namespaces:
   - "{{ soc_namespaces.thehive }}"  # TheHive → API connecteur Cortex (/v1/connector/cortex/analyzer)
   - "{{ shuffle_namespace | default('soc-shuffle') }}"  # Shuffle workflow engine → Cortex API
+  - "{{ soc_smoke_namespace | default('tools') }}"  # Smoke tests (Job soc-smoke) → Cortex API
 soc_foundations_netpol_misp_allow_from_namespaces:
   - "{{ soc_namespaces.cortex }}"   # Analyzers Cortex → push IOC MISP
   - "{{ soc_namespaces.thehive }}"  # Worker CronJob (ns thehive) → push IOC MISP
