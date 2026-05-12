@@ -46,7 +46,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -79,7 +79,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_CORTEX_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -112,7 +112,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_CORTEX_APIKEY\"}"
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY"
         },
         {
           "name": "ssl_verify",
@@ -141,7 +141,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"$ENV_MISP_APIKEY\",\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: $ENV_MISP_APIKEY\nAccept: application/json\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -174,7 +174,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Content-Type\":\"application/json\"}"
+          "value": "Content-Type: application/json"
         },
         {
           "name": "body",
@@ -207,7 +207,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -240,7 +240,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -273,7 +273,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -306,7 +306,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -339,7 +339,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -372,7 +372,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Basic $ENV_WAZUH_B64AUTH\"}"
+          "value": "Authorization: Basic $ENV_WAZUH_B64AUTH"
         },
         {
           "name": "body",
@@ -405,7 +405,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $action_get_wazuh_jwt.body.data.token\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $action_get_wazuh_jwt.body.data.token\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -438,7 +438,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -471,7 +471,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"$ENV_MISP_APIKEY\",\"Accept\":\"application/json\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: $ENV_MISP_APIKEY\nAccept: application/json\nContent-Type: application/json"
         },
         {
           "name": "body",
@@ -504,7 +504,7 @@
         },
         {
           "name": "headers",
-          "value": "{\"Authorization\":\"Bearer $ENV_THEHIVE_APIKEY\",\"Content-Type\":\"application/json\"}"
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
         },
         {
           "name": "body",

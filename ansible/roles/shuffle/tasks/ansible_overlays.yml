@@ -5,11 +5,72 @@
 # does not provide these features.
 #
 # Components deployed here:
-#   1. shuffle-execution-trigger : python pod that re-triggers stuck executions
+#   1. shuffle-workers-default-binding RoleBinding : Orborus 1.4.0 spawns worker
+#      pods WITHOUT serviceAccountName, so they default to SA `default`. Binding
+#      the `shuffle-workers` Role (created by chart) to the default SA unblocks
+#      app deployment listing/creation. Without this, workers fail to deploy the
+#      app pods (http, tools, subflow, ai) → workflows stall → selftest fails
+#      with "No alert or promoted case found in TheHive".
+#   2. shuffle-workers Service : the upstream Helm chart does NOT create a
+#      Service that targets orborus-spawned worker pods (selector app=shuffle-worker,
+#      port 33333). Without it, the backend cannot deliver the trigger packet
+#      to the worker → workflow execution stalls forever.
+#   3. shuffle-execution-trigger : python pod that re-triggers stuck executions
 #                                  and cleans up worker pods (Orborus CLEANUP=true
 #                                  doesn't work on K8s, only Docker swarm).
-#   2. http-app splitheaders fix : custom app.py mounted into http-1-4-0 to fix
-#                                  Shuffle's HTTP app multiline header bug.
+
+# ── Worker pod SA binding (fixes orborus 1.4.0 limitation) ───────
+- name: "shuffle | Overlays - bind shuffle-workers Role to default SA (orborus 1.4.0 fix)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: shuffle-workers-default-binding
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app.kubernetes.io/name: shuffle
+          app.kubernetes.io/component: workers
+          app.kubernetes.io/managed-by: ansible
+        annotations:
+          soc.lab/reason: "Orborus 1.4.0 spawns worker pods without serviceAccountName; bind shuffle-workers Role to default SA"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: shuffle-workers
+      subjects:
+        - kind: ServiceAccount
+          name: default
+          namespace: "{{ shuffle_namespace }}"
+
+# ── shuffle-workers Service (missing from upstream Helm chart in K8s mode) ──
+- name: "shuffle | Overlays - create shuffle-workers Service for orborus-spawned worker pods"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: shuffle-workers
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app.kubernetes.io/name: shuffle
+          app.kubernetes.io/component: workers
+          app.kubernetes.io/managed-by: ansible
+        annotations:
+          soc.lab/reason: "Service for orborus-spawned worker pods (app=shuffle-worker, port 33333); missing from upstream Helm chart"
+      spec:
+        type: ClusterIP
+        selector:
+          app: shuffle-worker
+        ports:
+          - name: stream
+            port: 33333
+            targetPort: 33333
+            protocol: TCP
 
 - name: "shuffle | Overlays - execution-trigger: Python script ConfigMap"
   kubernetes.core.k8s:
