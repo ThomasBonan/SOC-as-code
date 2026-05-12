@@ -305,6 +305,9 @@
               app: misp
           spec:
             replicas: 1
+            # Premier boot ≈ 7-12 min (seed DB + cp ~500MB files.dist).
+            # Default = 600s → trop court, kicke en Failed → kubectl rollout sort en RC=1.
+            progressDeadlineSeconds: 1800
             strategy:
               type: Recreate
             selector:
@@ -422,41 +425,36 @@
                       - name: CAKEPHP_TRUSTED_PROXIES
                         value: "{{ pod_cidr }}"
 
-                    lifecycle:
-                      postStart:
-                        exec:
-                          command:
-                            - sh
-                            - -lc
-                            - |
-                              # PostStart ne doit JAMAIS tuer le conteneur
-                              (
-                                sleep 60
-                                cd /var/www/MISP || exit 0
-                                BASE="https://{{ misp_fqdn }}"
-                                run() { su -s /bin/sh www-data -c "$*"; }
-                                run "./app/Console/cake Admin setSetting \"MISP.baseurl\" \"$BASE\"" || true
-                                run "./app/Console/cake Admin setSetting \"MISP.external_baseurl\" \"$BASE\"" || true
-                                rm -rf /var/www/MISP/app/tmp/cache/* || true
-                              ) || true
+                    # postStart supprimé : redondant avec le Job misp-set-baseurl
+                    # et déclenché en pleine init il provoquait des cake hangs.
+
+                    # Tant que la startupProbe n'a pas succédé, ni liveness ni
+                    # readiness ne sont évaluées → pas de kill prématuré durant
+                    # l'init MISP (seed DB + copie files.dist = 7-12 min).
+                    startupProbe:
+                      httpGet:
+                        path: /users/login
+                        port: 80
+                      initialDelaySeconds: 30
+                      periodSeconds: 10
+                      timeoutSeconds: 3
+                      failureThreshold: 120   # 30s + 120*10s = ~20 min max init
 
                     readinessProbe:
                       httpGet:
                         path: /users/login
                         port: 80
-                      initialDelaySeconds: 30
-                      periodSeconds: 5
-                      timeoutSeconds: 2
-                      failureThreshold: 180
+                      periodSeconds: 10
+                      timeoutSeconds: 3
+                      failureThreshold: 6
 
                     livenessProbe:
                       httpGet:
                         path: /users/login
                         port: 80
-                      initialDelaySeconds: 120
-                      periodSeconds: 20
-                      timeoutSeconds: 2
-                      failureThreshold: 10
+                      periodSeconds: 30
+                      timeoutSeconds: 5
+                      failureThreshold: 6
 
 - name: Delete baseurl job if exists (so it reruns)
   kubernetes.core.k8s:
@@ -520,14 +518,14 @@
   ansible.builtin.command: >
     kubectl --kubeconfig {{ kubeconfig_path }}
     -n {{ soc_core_namespace }}
-    rollout status deploy/misp --timeout=10m
+    rollout status deploy/misp --timeout=25m
   changed_when: false
 
 - name: Check MISP pod is Ready
   ansible.builtin.command: >
     kubectl --kubeconfig {{ kubeconfig_path }}
     -n {{ soc_core_namespace }}
-    wait --for=condition=ready pod -l app=misp --timeout=5m
+    wait --for=condition=ready pod -l app=misp --timeout=10m
   changed_when: false
 
 - name: Bootstrap MISP core (init user, DB updates, base settings)
