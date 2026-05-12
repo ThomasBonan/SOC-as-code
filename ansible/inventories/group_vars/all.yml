@@ -71,6 +71,7 @@ metallb_communities: []        # ex: ["65000:100"]
 # Ingress NGINX
 ingress_nginx_namespace: ingress-nginx
 ingress_nginx_chart_version: "4.11.3"       # exemple stable
+ingress_nginx_loadbalancer_ip: "10.0.30.50" # IP fixe (matche OPNsense DNS *.apps.soc.lab)
 
 # --- Bastion (pour copier le kubeconfig si tu veux) ---
 bastion_copy_kubeconfig: true

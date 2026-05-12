@@ -27,6 +27,8 @@
       controller:
         service:
           type: LoadBalancer
+          annotations:
+            metallb.universe.tf/loadBalancerIPs: "{{ ingress_nginx_loadbalancer_ip }}"
   delegate_to: localhost
   run_once: true
   become: false
