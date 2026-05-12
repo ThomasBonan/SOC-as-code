@@ -121,8 +121,14 @@ wait-soc-apps-synced: ## Attendre que les apps SOC Helm (Cortex, TheHive, MISP R
 	  --kubeconfig $(KCFG) --timeout 2400
 
 wait-argocd-synced: ## Attendre que les apps ArgoCD principales soient Synced+Healthy
+	@# soc-eso-externalsecrets reste Degraded jusqu'à 170-foundations (les
+	@# ES `*-sa-foundations` lisent service-accounts/<sa> dans Vault, qui ne sont
+	@# seedés qu'à ce moment-là). On l'accepte → --allow-degraded.
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
-	  soc-eso-externalsecrets soc-netpols \
+	  soc-eso-externalsecrets \
+	  --kubeconfig $(KCFG) --timeout 600 --allow-degraded
+	@bash $(SCRIPTS)/wait-argocd-synced.sh \
+	  soc-netpols \
 	  --kubeconfig $(KCFG) --timeout 600
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
