@@ -67,3 +67,59 @@
     name: chrony
     state: started
     enabled: true
+
+# 6) systemd-resolved : exposer le DNS cluster aux pods en DNSPolicy:Default
+#
+# CONTEXTE :
+# Orborus 1.4.0 spawne les worker pods Shuffle avec `DNSPolicy: "Default"`
+# (hardcodé dans /orborus.go ligne 755). En mode Default, kubelet copie
+# `/run/systemd/resolve/resolv.conf` du node dans `/etc/resolv.conf` du pod.
+# Par défaut ce fichier ne contient QUE les DNS upstream poussés par DHCP
+# (ici Tailscale 100.100.100.100 sur le LAN soc-lab), pas CoreDNS.
+# Résultat : le worker ne peut pas résoudre `shuffle-backend.soc-shuffle.svc.cluster.local`
+# ni les apps internes (`http-1-4-0`, `shuffle-tools-1-2-0`...) → workflow
+# alert-triage stuck "EXECUTING" indéfiniment → selftest échoue
+# "No alert or promoted case found in TheHive after 90s polling".
+#
+# FIX :
+# Ajouter CoreDNS (Service ClusterIP 10.96.0.10) comme nameserver global
+# via /etc/systemd/resolved.conf.d/. Les short-names (`http-1-4-0`) sont
+# résolus grâce aux `Domains=` qui injectent le search path cluster.
+# Les DNS DHCP existants restent en fallback pour les domaines externes.
+#
+# Idempotent : `copy` réécrit le fichier seulement s'il a changé,
+# `notify` ne déclenche systemd-resolved restart qu'en cas de modif.
+
+- name: "DNS cluster: directory for systemd-resolved drop-ins"
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: "0755"
+
+- name: "DNS cluster: drop-in exposing CoreDNS + cluster search domains"
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/k8s-cluster-dns.conf
+    mode: "0644"
+    content: |
+      # Managed by SOC-as-code Ansible (os_prereqs role) — DO NOT EDIT MANUALLY.
+      #
+      # Exposes CoreDNS (kube-dns Service ClusterIP) to systemd-resolved so that
+      # K8s pods spawned with `DNSPolicy: Default` (notably Shuffle worker pods
+      # via orborus 1.4.0, which hard-codes Default) can resolve *.svc.cluster.local.
+      # Without this, the Wazuh→Shuffle→TheHive pipeline stalls because the worker
+      # can't reach shuffle-backend or app deployments (http-1-4-0, etc.).
+      #
+      # The `Domains=` directive adds cluster search domains so short names like
+      # `http-1-4-0` resolve as `http-1-4-0.soc-shuffle.svc.cluster.local`.
+      # Per-link DHCP nameservers (Tailscale, OPNsense) remain as fallback for
+      # external domains.
+      [Resolve]
+      DNS=10.96.0.10
+      Domains=soc-shuffle.svc.cluster.local soc-thehive.svc.cluster.local soc-core.svc.cluster.local soc-cortex.svc.cluster.local soc-wazuh.svc.cluster.local svc.cluster.local cluster.local
+  notify: Restart systemd-resolved
+
+- name: "DNS cluster: ensure systemd-resolved enabled"
+  ansible.builtin.service:
+    name: systemd-resolved
+    state: started
+    enabled: true

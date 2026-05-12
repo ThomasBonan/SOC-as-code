@@ -59,6 +59,45 @@
   changed_when: true
   failed_when: false
 
+# Abort tout workflowexecution coincé en EXECUTING > 60s dans OpenSearch :
+# Sans ce nettoyage, le pod shuffle-execution-trigger boucle indéfiniment sur
+# d'anciennes exécutions à 0 résultat (cf. process_executions() dans le
+# trigger.py) et finit par interférer avec le nouveau workflow déclenché par
+# le selftest. La fenêtre 60s suffit : les nouveaux workflows démarrent
+# en quelques secondes, les zombies datent du précédent run.
+
+- name: "cleanup_stale_workers | Abort stale EXECUTING workflows in OpenSearch (> 60s old)"
+  vars:
+    _now_threshold: "{{ (now(utc=True).strftime('%s') | int) - 60 }}"
+    _os_query: >-
+      {"script":{"source":"ctx._source.status='ABORTED'","lang":"painless"},
+      "query":{"bool":{"must":[
+      {"term":{"status.keyword":"EXECUTING"}},
+      {"range":{"started_at":{"lte":{{ _now_threshold }}}}}
+      ]}}}
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_selftest_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_namespaces.shuffle }}"
+      - shuffle-opensearch-master-0
+      - --
+      - curl
+      - -s
+      - -X
+      - POST
+      - "http://localhost:9200/workflowexecution/_update_by_query?refresh=true"
+      - -H
+      - "Content-Type: application/json"
+      - -d
+      - "{{ _os_query | trim }}"
+  register: _stcsw_os_abort
+  changed_when: false
+  failed_when: false
+
 - name: "cleanup_stale_workers | Summary"
   ansible.builtin.debug:
     msg: >-

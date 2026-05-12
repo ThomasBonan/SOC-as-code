@@ -175,6 +175,74 @@
           name: shuffle-backend
           namespace: "{{ shuffle_namespace }}"
 
+# ── Worker pod SA binding (fixes orborus 1.4.0 limitation) ───────
+# Orborus 1.4.0 ne définit PAS `serviceAccountName` sur le PodSpec
+# des workers qu'il spawne — ils tournent donc sous le SA `default`
+# du namespace. Sans cette RoleBinding, les workers échouent avec:
+#   "deployments.apps is forbidden: User
+#    system:serviceaccount:soc-shuffle:default cannot list deployments"
+# → impossible de déployer les app pods internes (http, shuffle-tools)
+# → workflow alert-triage incapable d'appeler TheHive
+# → selftest échoue avec "No alert or promoted case found in TheHive".
+#
+# Cette RoleBinding lie le Role `shuffle-workers` (fourni par le
+# chart Helm Shuffle, permissions pods+services+deployments) au SA
+# `default` du namespace soc-shuffle, ce qui débloque la chaîne.
+
+- name: "shuffle | Deploy - bind shuffle-workers Role to default SA (orborus 1.4.0 fix)"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: shuffle-workers-default-binding
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+        annotations:
+          soc.lab/reason: "Orborus 1.4.0 spawns worker pods without serviceAccountName; bind shuffle-workers Role to default SA"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: shuffle-workers
+      subjects:
+        - kind: ServiceAccount
+          name: default
+          namespace: "{{ shuffle_namespace }}"
+
+# ── shuffle-workers Service (missing from upstream Helm chart in K8s mode) ──
+# Orborus-spawned worker pods are labeled `app: shuffle-worker` and listen
+# on port 33333 (worker SDK / stream API). The Helm chart does NOT create
+# a Service that targets these ephemeral pods, so trigger.py and backend
+# get DNS-NXDOMAIN when POSTing to http://shuffle-workers:33333/api/v1/streams.
+# Without this Service, the workflow execution stalls: backend creates the
+# execution, orborus spawns the worker, but neither can deliver the trigger
+# packet, so the worker never fetches and runs the workflow.
+
+- name: "shuffle | Deploy - create shuffle-workers Service for orborus-spawned worker pods"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: shuffle-workers
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels | combine({'app.kubernetes.io/component': 'workers'}) }}"
+        annotations:
+          soc.lab/reason: "Service for orborus-spawned worker pods (app=shuffle-worker, port 33333); missing from upstream Helm chart in K8s mode"
+      spec:
+        type: ClusterIP
+        selector:
+          app: shuffle-worker
+        ports:
+          - name: stream
+            port: 33333
+            targetPort: 33333
+            protocol: TCP
+
 - name: "shuffle | Deploy - read backend and Orborus deployments"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ shuffle_kubeconfig_path }}"
@@ -738,7 +806,12 @@
                   age  = now - int(src.get("started_at",now))
                   if not eid:
                       continue
-                  if nres == 0 and age >= FRESH_GRACE:
+                  # nres==0 AND old → abort to break the infinite re-trigger loop
+                  # observed when workers can't deploy app pods (race) → no results
+                  # produced → fresh-retrigger fires forever every POLL_INTERVAL.
+                  if nres == 0 and age >= STALE_TIMEOUT:
+                      stale.append((hit["_id"], eid))
+                  elif nres == 0 and age >= FRESH_GRACE:
                       fresh.append((eid, auth))
                   elif nres > 0 and age >= STALE_TIMEOUT:
                       stale.append((hit["_id"], eid))
@@ -855,25 +928,108 @@
       data:
         app.py: "{{ lookup('file', role_path + '/files/http-app-patched.py') }}"
 
-- name: "shuffle | Deploy - http-app splitheaders fix: patch http-1-4-0 Deployment volume"
+# ── Pre-create http-1-4-0 Deployment with the patch (eager) ──────
+# Le worker Shuffle est censé créer cette Deployment à la première exécution
+# de workflow. Mais le patch splitheaders qui MOUNT le ConfigMap http-app-patch
+# n'est appliqué qu'à la condition que le Deployment existe déjà — ce qui n'est
+# le cas que SI un workflow a déjà tourné. Catch-22 : sans patch, le workflow
+# échoue avec `AttributeError - 'dict' object has no attribute 'split'`.
+#
+# Solution : créer la Deployment NOUS-MÊMES avec le ConfigMap déjà monté, avant
+# tout run de workflow. Orborus détecte qu'elle existe et la réutilise.
+
+- name: "shuffle | Deploy - http-app splitheaders fix: pre-create http-1-4-0 Deployment with patch"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    apply: true
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: http-1-4-0
+        namespace: "{{ shuffle_namespace }}"
+        labels:
+          app: http-1-4-0
+          app.kubernetes.io/instance: http-1-4-0
+          app.kubernetes.io/managed-by: soc-as-code
+          app.kubernetes.io/name: shuffle-app
+          app.kubernetes.io/part-of: shuffle
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/instance: http-1-4-0
+            app.kubernetes.io/name: shuffle-app
+        template:
+          metadata:
+            labels:
+              app: http-1-4-0
+              app.kubernetes.io/instance: http-1-4-0
+              app.kubernetes.io/managed-by: soc-as-code
+              app.kubernetes.io/name: shuffle-app
+              app.kubernetes.io/part-of: shuffle
+          spec:
+            automountServiceAccountToken: false
+            dnsPolicy: ClusterFirst
+            containers:
+              - name: http-1-4-0
+                image: docker.io/frikky/shuffle:http_1.4.0
+                imagePullPolicy: IfNotPresent
+                ports:
+                  - containerPort: 80
+                    protocol: TCP
+                env:
+                  - { name: SHUFFLE_LOGS_DISABLED,  value: "true" }
+                  - { name: SHUFFLE_APP_SDK_TIMEOUT, value: "300" }
+                  - { name: SHUFFLE_APP_EXPOSED_PORT, value: "80" }
+                  - { name: SHUFFLE_SWARM_CONFIG, value: "run" }
+                  - { name: BASE_URL,    value: "http://shuffle-workers:33333" }
+                  - { name: CALLBACK_URL, value: "http://shuffle-backend.{{ shuffle_namespace }}.svc.cluster.local:5001" }
+                  - { name: TZ, value: "Europe/Berlin" }
+                  - { name: EXECUTIONID, value: "TBD" }
+                  - { name: AUTHORIZATION, value: "" }
+                volumeMounts:
+                  - name: app-patch
+                    mountPath: /app/app.py
+                    subPath: app.py
+            volumes:
+              - name: app-patch
+                configMap:
+                  name: http-app-patch
+
+- name: "shuffle | Deploy - http-app splitheaders fix: ensure Service http-1-4-0 exists"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ shuffle_kubeconfig_path }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: http-1-4-0
+        namespace: "{{ shuffle_namespace }}"
+        labels: "{{ shuffle_labels }}"
+      spec:
+        type: ClusterIP
+        selector:
+          app.kubernetes.io/instance: http-1-4-0
+          app.kubernetes.io/name: shuffle-app
+        ports:
+          - name: http
+            port: 80
+            targetPort: 80
+            protocol: TCP
+
+- name: "shuffle | Deploy - http-app splitheaders fix: wait for http-1-4-0 Ready"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ shuffle_kubeconfig_path }}"
     kind: Deployment
     namespace: "{{ shuffle_namespace }}"
     name: http-1-4-0
-  register: _sh_http_deploy
+  register: _sh_http_ready
+  retries: 30
+  delay: 5
+  until: >-
+    (_sh_http_ready.resources | length) > 0
+    and ((_sh_http_ready.resources[0].status.readyReplicas | default(0)) | int) >= 1
   changed_when: false
-  failed_when: false
-
-- name: "shuffle | Deploy - http-app splitheaders fix: apply volume patch"
-  when:
-    - _sh_http_deploy.resources | length > 0
-    - >-
-      (_sh_http_deploy.resources[0].spec.template.spec.volumes | default([])
-       | selectattr('name', 'equalto', 'app-patch') | list | length) == 0
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
-    patch deployment http-1-4-0 -n {{ shuffle_namespace }}
-    --type=strategic
-    -p '{"spec":{"template":{"spec":{"volumes":[{"name":"app-patch","configMap":{"name":"http-app-patch"}}],"containers":[{"name":"http-1-4-0","volumeMounts":[{"name":"app-patch","mountPath":"/app/app.py","subPath":"app.py"}]}]}}}}'
-  changed_when: true
