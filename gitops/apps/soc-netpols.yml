@@ -28,3 +28,13 @@ spec:
     syncOptions:
       - ServerSideApply=true
       - CreateNamespace=false   # Les namespaces SOC doivent déjà exister
+    # Retries généreux : les ns cibles (soc-wazuh, soc-vault, soc-monitoring) sont
+    # créés par les playbooks Day-1 (76, 90) qui s'exécutent APRÈS soc-app-of-apps.
+    # Sans ces retries, ArgoCD abandonne après 5 tentatives et l'App reste OutOfSync
+    # jusqu'à un sync manuel. Avec ces retries, ArgoCD attend que les ns arrivent.
+    retry:
+      limit: 30
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

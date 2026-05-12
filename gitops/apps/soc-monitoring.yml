@@ -28,3 +28,13 @@ spec:
       - CreateNamespace=true
       - ServerSideApply=true
       - RespectIgnoreDifferences=true
+    # Retries généreux : les CRDs Prometheus Operator + ServiceMonitors sont installés
+    # par le playbook Day-1 76-monitoring.yml. Si soc-app-of-apps crée cette App avant
+    # 76, le sync échoue (CRDs manquants) et ArgoCD abandonne après 5 retries.
+    # Avec ces retries, ArgoCD attend que les CRDs arrivent.
+    retry:
+      limit: 30
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

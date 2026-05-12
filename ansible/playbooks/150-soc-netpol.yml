@@ -59,7 +59,23 @@
       tags:
         - gitops-wait
 
-    - name: "GitOps | Forcer un refresh hard de soc-netpols"
+    - name: "GitOps | État courant de l'opération soc-netpols"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        name: "{{ _netpols_app_name }}"
+        namespace: "{{ _argocd_namespace }}"
+      register: _netpols_pre
+      when: _netpols_check.resources | length > 0
+      tags:
+        - gitops-wait
+
+    # Note : un simple `argocd.argoproj.io/refresh: hard` NE débloque PAS une App
+    # dont les retries auto sont épuisés (ex : sync tenté avant que les ns cibles
+    # n'existent au 1er déploiement). On déclenche donc une opération de sync
+    # explicite via .spec.operation → cela réinitialise le compteur de retries.
+    - name: "GitOps | Déclencher un sync explicite de soc-netpols"
       kubernetes.core.k8s:
         kubeconfig: "{{ kubeconfig_path }}"
         state: patched
@@ -68,10 +84,17 @@
         name: "{{ _netpols_app_name }}"
         namespace: "{{ _argocd_namespace }}"
         definition:
-          metadata:
-            annotations:
-              argocd.argoproj.io/refresh: hard
-      when: _netpols_check.resources | length > 0
+          operation:
+            initiatedBy:
+              username: ansible-150-soc-netpol
+            sync:
+              revision: HEAD
+              prune: true
+              syncOptions:
+                - ServerSideApply=true
+      when:
+        - _netpols_check.resources | length > 0
+        - (_netpols_pre.resources[0].status.operationState.phase | default('')) != 'Running'
       tags:
         - gitops-wait
 
