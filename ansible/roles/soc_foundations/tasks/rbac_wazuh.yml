@@ -94,33 +94,58 @@
       or soc_foundations_wazuh_api_user_secret_key_username not in (_sf_wz_admin_secret.resources[0].data | default({}))
 
 # --- Authentification : obtenir le JWT via kubectl exec + curl ---
+# wazuh-apid (port 55000) peut mettre 30-90s à démarrer après un restart du pod manager
+# (premier boot OU remédiation rbac.db). Le retry-until tolère ces transients ; le rescue
+# fournit un diagnostic non-sensible (rc, stderr, http_code) sans exposer le JWT (stdout).
 
-- name: Wazuh RBAC - obtenir le JWT via kubectl exec (in-pod curl, ?raw=true)
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - "{{ soc_foundations_kubeconfig_path }}"
-      - -n
-      - "{{ soc_namespaces.wazuh }}"
-      - exec
-      - "{{ soc_foundations_wazuh_manager_pod_name }}"
-      - --
-      - curl
-      - -s
-      - -k
-      - -X
-      - GET
-      - -u
-      - "{{ _sf_wz_api_user }}:{{ _sf_wz_api_password }}"
-      - --write-out
-      - "\n%{http_code}"
-      - "{{ soc_foundations_wazuh_api_pod_base }}/security/user/authenticate?raw=true"
-  register: _sf_wz_auth_raw
+- name: Wazuh RBAC - obtenir le JWT (avec retry tolérant à l'API not-ready)
   when: _sf_wz_sa_secret_existing.resources | length == 0
-  changed_when: false
-  failed_when: _sf_wz_auth_raw.rc != 0
-  no_log: true
+  block:
+    - name: Wazuh RBAC - obtenir le JWT via kubectl exec (in-pod curl, ?raw=true)
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ soc_foundations_kubeconfig_path }}"
+          - -n
+          - "{{ soc_namespaces.wazuh }}"
+          - exec
+          - "{{ soc_foundations_wazuh_manager_pod_name }}"
+          - --
+          - curl
+          - -s
+          - -k
+          - -X
+          - GET
+          - -u
+          - "{{ _sf_wz_api_user }}:{{ _sf_wz_api_password }}"
+          - --write-out
+          - "\n%{http_code}"
+          - "{{ soc_foundations_wazuh_api_pod_base }}/security/user/authenticate?raw=true"
+      register: _sf_wz_auth_raw
+      changed_when: false
+      failed_when: _sf_wz_auth_raw.rc != 0
+      no_log: true
+      retries: 12
+      delay: 10
+      until: >-
+        _sf_wz_auth_raw.rc == 0
+        and ((_sf_wz_auth_raw.stdout_lines | default(['', '000']))[-1] | trim) == '200'
+  rescue:
+    # _sf_wz_auth_raw existe (registered avant que until échoue) — on extrait
+    # rc/stderr/http_code uniquement. stdout n'est PAS exposé (contient le JWT).
+    - name: Wazuh RBAC - diagnostic d'échec d'auth (sans exposer le JWT)
+      ansible.builtin.fail:
+        msg: >-
+          Wazuh API auth a échoué après 12 retries (≈2 min).
+          rc={{ _sf_wz_auth_raw.rc | default('?') }},
+          http_code={{ (_sf_wz_auth_raw.stdout_lines | default(['', 'unknown']))[-1] | trim }},
+          stderr={{ _sf_wz_auth_raw.stderr | default('(vide)') | truncate(400) }}.
+          User: {{ _sf_wz_api_user | default('non résolu') }}.
+          URL: {{ soc_foundations_wazuh_api_pod_base }}/security/user/authenticate?raw=true.
+          Vérifier : (1) pod {{ soc_foundations_wazuh_manager_pod_name }} Ready,
+          (2) wazuh-apid écoute sur 55000 (kubectl exec -- ss -ltn | grep 55000),
+          (3) credentials wazuh-api-cred non corrompus.
 
 - name: Wazuh RBAC - extraire le JWT et le code HTTP (raw=true → dernière ligne = code HTTP)
   ansible.builtin.set_fact:
@@ -319,12 +344,18 @@
 # --- Créer le compte SA si absent ---
 
 - name: Wazuh RBAC - générer un password pour le SA (création ou reset)
+  # Politique Wazuh : au moins 1 majuscule, 1 minuscule, 1 chiffre, 1 symbole.
+  # Garantir 1 char de chaque classe via 4 lookups séparés, puis remplir le reste
+  # avec ascii_letters+digits. Wazuh valide la présence (pas l'ordre), pas besoin de shuffle.
   ansible.builtin.set_fact:
     _sf_wz_sa_password: >-
       {{
-        lookup('password',
-          '/dev/null length=' ~ (soc_foundations_wazuh_sa_password_length | int - 1) ~ ' chars=ascii_letters,digits')
+        lookup('password', '/dev/null length=1 chars=ascii_uppercase')
+        ~ lookup('password', '/dev/null length=1 chars=ascii_lowercase')
+        ~ lookup('password', '/dev/null length=1 chars=digits')
         ~ '!'
+        ~ lookup('password',
+            '/dev/null length=' ~ (soc_foundations_wazuh_sa_password_length | int - 4) ~ ' chars=ascii_letters,digits')
       }}
   when:
     - _sf_wz_sa_secret_existing.resources | length == 0
@@ -362,6 +393,13 @@
   changed_when: false
   failed_when: _sf_wz_sa_create_raw.rc != 0
   no_log: true
+  # Retry sur timeout API Wazuh (HTTP 500 / error 3021 "Timeout executing API request").
+  # On retente uniquement sur 500 ; les autres codes (200, 4xx) sont délégués à la task fail dédiée.
+  retries: 6
+  delay: 10
+  until: >-
+    _sf_wz_sa_create_raw.rc == 0
+    and ((_sf_wz_sa_create_raw.stdout_lines | default(['', '000']))[-1] | trim) != '500'
 
 - name: Wazuh RBAC - extraire code HTTP et corps de la réponse création SA
   ansible.builtin.set_fact:
@@ -444,6 +482,12 @@
   changed_when: false
   failed_when: _sf_wz_sa_pwd_reset_raw.rc != 0
   no_log: true
+  # Retry sur timeout API Wazuh (HTTP 500 / error 3021).
+  retries: 6
+  delay: 10
+  until: >-
+    _sf_wz_sa_pwd_reset_raw.rc == 0
+    and ((_sf_wz_sa_pwd_reset_raw.stdout_lines | default(['', '000']))[-1] | trim) != '500'
 
 - name: Wazuh RBAC - fail si reset password échoué (HTTP != 200)
   ansible.builtin.fail:
@@ -488,6 +532,14 @@
   changed_when: false
   failed_when: _sf_wz_sa_role_raw.rc != 0
   no_log: true
+  # Retry sur timeout API Wazuh (HTTP 500 / error 3021 "Timeout executing API request").
+  # Observé en pratique : Wazuh peut renvoyer 500 alors que l'assignation a déjà été commitée
+  # côté backend RBAC → le retry verra HTTP 409 (déjà assigné), accepté par la task fail dédiée.
+  retries: 6
+  delay: 10
+  until: >-
+    _sf_wz_sa_role_raw.rc == 0
+    and ((_sf_wz_sa_role_raw.stdout_lines | default(['', '000']))[-1] | trim) != '500'
 
 - name: Wazuh RBAC - extraire code HTTP et corps de la réponse role-assign
   ansible.builtin.set_fact:

@@ -1,7 +1,13 @@
 ---
 # shuffle/tasks/configure.yml
-# Initialize the Shuffle admin account and store its API key in a K8s Secret.
-# Idempotent via marker ConfigMap soc-shuffle-marker-configure.
+# Initialize the Shuffle admin account, extract its real apikey from Shuffle's DB,
+# and write it back to Vault (apps/shuffle-admin) so ESO can sync it to the K8s
+# Secret soc-shuffle-admin-creds. The K8s Secret is OWNED by ESO ; on n'écrit JAMAIS
+# directement dedans (sinon ESO l'écrase au prochain refresh).
+#
+# Idempotence : marker ConfigMap soc-shuffle-marker-configure. SI le marker existe
+# MAIS l'apikey du K8s Secret est invalide (Vault désync, rotation), on relance
+# l'extraction et le write-back vers Vault (self-healing).
 
 - name: "shuffle | Configure - verify idempotence marker"
   kubernetes.core.k8s_info:
@@ -12,8 +18,51 @@
   register: _sh_configure_marker
   changed_when: false
 
+# ── Self-healing : si marker présent, vérifier que l'apikey du K8s Secret marche ─
+- name: "shuffle | Configure - probe apikey validity if marker exists"
+  when: _sh_configure_marker.resources | length > 0
+  block:
+    - name: "shuffle | Configure - read current apikey from K8s Secret"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ shuffle_admin_secret_ns }}"
+        name: "{{ shuffle_admin_secret_name }}"
+      register: _sh_existing_secret
+      no_log: true
+
+    - name: "shuffle | Configure - extract current apikey for probe"
+      ansible.builtin.set_fact:
+        _sh_existing_apikey: >-
+          {{
+            (_sh_existing_secret.resources | default([]) | length > 0)
+            | ternary(_sh_existing_secret.resources[0].data.apikey | default('') | b64decode, '')
+          }}
+      no_log: true
+
+    - name: "shuffle | Configure - probe apikey against Shuffle API"
+      ansible.builtin.uri:
+        url: "{{ shuffle_api_url }}/api/v1/apps"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _sh_existing_apikey }}"
+        validate_certs: "{{ shuffle_validate_certs }}"
+        status_code: [200, 401, 403]
+        timeout: "{{ shuffle_http_timeout | int }}"
+      register: _sh_apikey_probe
+      no_log: true
+      when: _sh_existing_apikey | length > 0
+
+    - name: "shuffle | Configure - mark apikey validity"
+      ansible.builtin.set_fact:
+        _sh_apikey_valid: >-
+          {{ (_sh_apikey_probe.status | default(401)) == 200 }}
+
 - name: "shuffle | Configure - admin initialization block"
-  when: _sh_configure_marker.resources | length == 0
+  # Run when : (a) marker absent (first deploy) OR (b) apikey stale (self-healing).
+  when: >-
+    _sh_configure_marker.resources | length == 0
+    or not (_sh_apikey_valid | default(true))
   block:
     - name: "shuffle | Configure - wait for Shuffle API"
       ansible.builtin.uri:
@@ -105,26 +154,81 @@
       when: _sh_admin_apikey | length == 0
       no_log: true
 
-    - name: "shuffle | Configure - store admin API key in K8s Secret"
-      kubernetes.core.k8s:
+    # Le K8s Secret est OWNED par ESO (creationPolicy=Owner). On écrit dans
+    # Vault → ESO synchronise vers le K8s Secret. Sinon ESO écrase notre patch.
+    - name: "shuffle | Configure - lire root token Vault pour write-back apikey"
+      kubernetes.core.k8s_info:
         kubeconfig: "{{ shuffle_kubeconfig_path }}"
-        state: present
-        definition:
-          apiVersion: v1
-          kind: Secret
-          type: Opaque
-          metadata:
-            name: "{{ shuffle_admin_secret_name }}"
-            namespace: "{{ shuffle_admin_secret_ns }}"
-            labels: "{{ shuffle_labels }}"
-          stringData:
-            apikey: "{{ _sh_admin_apikey }}"
-            username: "{{ shuffle_admin_username }}"
+        kind: Secret
+        namespace: "{{ vault_unseal_keys_secret_namespace | default('soc-vault') }}"
+        name: "{{ vault_unseal_keys_secret_name | default('vault-unseal-keys') }}"
+      register: _sh_vault_keys
+      no_log: true
+      failed_when: _sh_vault_keys.resources | length == 0
+
+    - name: "shuffle | Configure - extraire root token Vault"
+      ansible.builtin.set_fact:
+        _sh_vault_token: "{{ _sh_vault_keys.resources[0].data.root_token | b64decode }}"
+      no_log: true
+
+    - name: "shuffle | Configure - écrire la vraie apikey dans Vault apps/shuffle-admin"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ shuffle_kubeconfig_path }}"
+          - -n
+          - "{{ vault_namespace | default('soc-vault') }}"
+          - exec
+          - vault-0
+          - -c
+          - vault
+          - --
+          - env
+          - "VAULT_TOKEN={{ _sh_vault_token }}"
+          - vault
+          - kv
+          - put
+          - -tls-skip-verify
+          - "{{ vault_kv_mount | default('soc') }}/apps/shuffle-admin"
+          - "username={{ shuffle_admin_username }}"
+          - "apikey={{ _sh_admin_apikey }}"
+      no_log: true
+      changed_when: true
+
+    - name: "shuffle | Configure - forcer la synchro ESO du K8s Secret"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ shuffle_kubeconfig_path }}"
+          - -n
+          - "{{ shuffle_admin_secret_ns }}"
+          - annotate
+          - externalsecret
+          - "{{ shuffle_admin_secret_name }}"
+          - "force-sync={{ ansible_date_time.epoch | default(lookup('pipe', 'date +%s')) }}"
+          - --overwrite
+      changed_when: true
+      failed_when: false  # ExternalSecret peut ne pas exister sur tout-1er deploy (fallback bootstrap_apps)
+
+    - name: "shuffle | Configure - attendre que le K8s Secret reflète la nouvelle apikey"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ shuffle_kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ shuffle_admin_secret_ns }}"
+        name: "{{ shuffle_admin_secret_name }}"
+      register: _sh_secret_post_sync
+      retries: 24
+      delay: 5
+      until: >-
+        _sh_secret_post_sync.resources | length > 0
+        and (_sh_secret_post_sync.resources[0].data.apikey | default('') | b64decode) == _sh_admin_apikey
       no_log: true
 
     - name: "shuffle | Configure - summary"
       ansible.builtin.debug:
-        msg: "Shuffle admin API key stored in Secret {{ shuffle_admin_secret_name }} (ns: {{ shuffle_admin_secret_ns }})"
+        msg: "Shuffle admin apikey écrite dans Vault apps/shuffle-admin et propagée au K8s Secret {{ shuffle_admin_secret_name }} via ESO."
 
     - name: "shuffle | Configure - create idempotence marker"
       kubernetes.core.k8s:

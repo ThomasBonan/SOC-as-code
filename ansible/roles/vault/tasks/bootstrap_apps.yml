@@ -88,6 +88,11 @@
   changed_when: true
 
 # ── shuffle-admin ────────────────────────────────────────────────────────────
+# IMPORTANT : ne PAS pré-générer une apikey aléatoire. Shuffle créera son user
+# par défaut "admin" au boot (via SHUFFLE_DEFAULT_USERNAME/PASSWORD) avec sa
+# propre apikey. Le rôle shuffle/configure.yml extrait la vraie apikey depuis
+# Shuffle après démarrage et la réécrit ici dans Vault (puis force ESO sync).
+# Placeholder = chaîne non-vide pour qu'ESO accepte de synchroniser le K8s Secret.
 - name: Vault bootstrap apps | Vérifier soc/apps/shuffle-admin
   ansible.builtin.shell: >
     {{ _vault_exec }} vault kv get -tls-skip-verify -format=json
@@ -99,12 +104,12 @@
   failed_when: false
   no_log: true
 
-- name: Vault bootstrap apps | Générer soc/apps/shuffle-admin (si absent)
+- name: Vault bootstrap apps | Générer soc/apps/shuffle-admin (placeholder, si absent)
   ansible.builtin.shell: >
     {{ _vault_exec }} vault kv put -tls-skip-verify
     {{ vault_kv_mount }}/apps/shuffle-admin
-    username="shuffleadmin"
-    apikey="{{ lookup('password', '/dev/null length=32 chars=ascii_letters,digits') }}"
+    username="{{ shuffle_admin_username | default('admin') }}"
+    apikey="__pending_extraction__"
   environment:
     KUBECONFIG: "{{ vault_kubeconfig_path }}"
   when: _vault_shuffle_admin_check.rc != 0
