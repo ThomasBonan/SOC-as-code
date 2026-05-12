@@ -35,3 +35,13 @@ spec:
       - ServerSideApply=true
       - RespectIgnoreDifferences=true
       - CreateNamespace=true    # ArgoCD crée les ns si absents ; idempotent avec Ansible day-1
+    # Race bootstrap : soc-app-of-apps crée cette App avant que les CRDs ESO
+    # ne soient installés par 75-vault.yml (--tags eso,deploy). Sans retry étendu,
+    # ArgoCD abandonne après 5 tentatives (~3 min) et l'App reste OutOfSync à vie.
+    # limit=30 + backoff factor 2 (max 5m) couvre ~2h, large pour vault-deploy + ESO.
+    retry:
+      limit: 30
+      backoff:
+        duration: 30s
+        factor: 2
+        maxDuration: 5m

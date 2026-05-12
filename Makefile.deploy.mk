@@ -104,6 +104,10 @@ wait-app-of-apps: ## Attendre que soc-app-of-apps crée les Applications enfants
 	@bash $(SCRIPTS)/wait-app-of-apps.sh --kubeconfig $(KCFG) --timeout 300
 
 wait-eso-synced: ## Attendre que soc-eso-externalsecrets soit Synced (Degraded OK : 2/16 ESO attendent les databases)
+	@# Race bootstrap : soc-app-of-apps a pu créer cette App avant que les CRDs
+	@# ESO ne soient installés par vault-deploy. Si l'App est en SyncError (retry
+	@# budget épuisé), on force une resync maintenant que les CRDs existent.
+	@bash $(SCRIPTS)/force-resync-if-failed.sh soc-eso-externalsecrets --kubeconfig $(KCFG)
 	@bash $(SCRIPTS)/wait-argocd-synced.sh \
 	  soc-eso-externalsecrets \
 	  --kubeconfig $(KCFG) --timeout 300 --allow-degraded
