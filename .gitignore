@@ -32,6 +32,9 @@ ansible/.vault_pass
 .DS_Store
 *.swp
 
+# Timings (historique make deploy-timed)
+.timings/
+
 # Claude
 .claude/CLAUDE.local.md
 .claude/settings.local.json
