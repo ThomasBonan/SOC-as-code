@@ -17,12 +17,20 @@ resource "proxmox_virtual_environment_vm" "k8s_master" {
     interface    = "scsi0"
     datastore_id = var.storage_id        # ex: "local"
     size         = var.master_sizing.disk_gb   # entier (GiB)
-    file_format  = "raw"
+    file_format  = "qcow2"               # COW : écritures atomiques, pas de corruption sur interruption
+    cache        = "none"                # bypass buffer hôte → intégrité maximale
+    iothread     = true                  # thread I/O dédié → réduit les queues sous charge Longhorn
+    discard      = "on"                  # propage TRIM guest → host
   }
 
   network_device {
     bridge = var.bridge_core             # ex: "vmbr5"
     model  = "virtio"
+  }
+
+  agent {
+    enabled = var.enable_qemu_agent
+    trim    = var.enable_guest_agent_fstrim
   }
 
   operating_system { type = "l26" }
@@ -72,12 +80,20 @@ resource "proxmox_virtual_environment_vm" "k8s_worker" {
     interface    = "scsi0"
     datastore_id = var.storage_id
     size         = var.worker_sizing.disk_gb
-    file_format  = "raw"
+    file_format  = "qcow2"               # COW : écritures atomiques, pas de corruption sur interruption
+    cache        = "none"                # bypass buffer hôte → intégrité maximale
+    iothread     = true                  # thread I/O dédié → réduit les queues sous charge Longhorn
+    discard      = "on"                  # propage TRIM guest → host
   }
 
   network_device {
     bridge = var.bridge_core
     model  = "virtio"
+  }
+
+  agent {
+    enabled = var.enable_qemu_agent
+    trim    = var.enable_guest_agent_fstrim
   }
 
   operating_system { type = "l26" }
