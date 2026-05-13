@@ -103,6 +103,18 @@ spec:
       ports:
         - protocol: TCP
           port: 9200
+    # Internet HTTPS pour téléchargement de plugins (grafana.com, GitHub releases)
+    # Indispensable au premier démarrage pour installer grafana-opensearch-datasource
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
 ---
 # Règle 3 : Ingress → Grafana
 apiVersion: networking.k8s.io/v1
@@ -204,3 +216,18 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+---
+# Règle 6 : Egress vers kube-apiserver pour tous les pods soc-monitoring
+# Nécessaire pour kube-state-metrics, prometheus-operator, prometheus
+# (service discovery), grafana sidecars (watch ConfigMaps/Secrets).
+# CNP + NP standards s'union-isent : ceci s'ajoute à egress-dns sans le bloquer.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-kube-apiserver
+  namespace: "{{ monitoring_namespace }}"
+spec:
+  endpointSelector: {}
+  egress:
+    - toEntities:
+        - kube-apiserver
