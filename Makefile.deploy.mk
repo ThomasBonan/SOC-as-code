@@ -163,7 +163,18 @@ argocd-update-password: ## Mettre à jour le mot de passe ArgoCD depuis Vault (p
 #   6. wait-eso-synced : soc-eso-externalsecrets Synced → K8s Secrets hydratés.
 argocd-full: argocd wait-argocd longhorn-prereqs wait-app-of-apps wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
 
-soc-day1: databases wazuh misp cortex thehive soc-config soc-smoke ## Stack SOC day-1 (80→140)
+soc-day1: databases _soc-services soc-config soc-smoke ## Stack SOC day-1 (80→140)
+
+# Parallélisation sûre : wazuh / misp / cortex / thehive sont 4 playbooks
+# indépendants une fois `databases` (80) prêt :
+#   - hosts: localhost, gather_facts: false → aucun conflit SSH ni fact-cache
+#   - namespaces K8s distincts (soc-wazuh, soc-core, soc-cortex, soc-thehive)
+#   - chaque playbook attend son propre infra-<service> ArgoCD en interne
+# Gain attendu ≈ (somme − max) des 4 durées individuelles.
+# --output-sync=target groupe la sortie par cible (sinon 4 logs entrelacés).
+.PHONY: _soc-services
+_soc-services: ## (interne) Déploie wazuh+misp+cortex+thehive en parallèle (-j4)
+	$(MAKE) --output-sync=target -j4 wazuh misp cortex thehive
 
 soc-security-layer: netpol wait-argocd-synced ## Sécurité réseau + sync ArgoCD (150)
 
