@@ -27,6 +27,9 @@ spec:
             default: true
           service:
             type: LoadBalancer
+            # IP fixe : matche le DNS OPNsense *.apps.soc.lab → 10.0.30.50
+            annotations:
+              metallb.universe.tf/loadBalancerIPs: "10.0.30.50"
           resources:
             requests:
               cpu: 100m
