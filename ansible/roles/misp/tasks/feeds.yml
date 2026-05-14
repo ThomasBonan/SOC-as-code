@@ -54,21 +54,122 @@
   when: (_mf_marker.resources | default([])) | length == 0
   block:
 
-    - name: "misp feeds | lire la clé API svc-foundations"
+    # ── Admin authkey (cake-generated, persisted in K8s Secret) ──────────────
+    # Le compte admin a perm_site_admin → /feeds/add, /feeds/enable, /feeds/cacheFeeds
+    # fonctionnent. svc-foundations (Sync User) n'a PAS ces permissions.
+
+    - name: "misp feeds | check Secret misp-admin-authkey"
       kubernetes.core.k8s_info:
         kubeconfig: "{{ kubeconfig_path }}"
         kind: Secret
-        namespace: "{{ misp_feeds_api_secret_ns }}"
-        name: "{{ misp_feeds_api_secret_name }}"
-      register: _mf_api_secret
-      no_log: true
-      retries: 12
-      delay: 10
-      until: _mf_api_secret.resources | length > 0
+        namespace: "{{ misp_feeds_admin_authkey_secret_ns }}"
+        name: "{{ misp_feeds_admin_authkey_secret_name }}"
+      register: _mf_admin_secret_existing
+      changed_when: false
 
-    - name: "misp feeds | extraire la clé API"
+    - name: "misp feeds | générer + persister l'admin authkey (1er run)"
+      when: (_mf_admin_secret_existing.resources | default([])) | length == 0
+      block:
+
+        - name: "misp feeds | lire admin_email"
+          kubernetes.core.k8s_info:
+            kubeconfig: "{{ kubeconfig_path }}"
+            kind: Secret
+            namespace: "{{ misp_feeds_admin_authkey_secret_ns }}"
+            name: "{{ misp_feeds_admin_email_secret_name }}"
+          register: _mf_app_secret
+          no_log: true
+
+        - name: "misp feeds | extraire admin_email"
+          ansible.builtin.set_fact:
+            _mf_admin_email: "{{ _mf_app_secret.resources[0].data[misp_feeds_admin_email_secret_key] | b64decode }}"
+          no_log: true
+
+        - name: "misp feeds | trouver le pod MISP"
+          ansible.builtin.command: >-
+            kubectl --kubeconfig {{ kubeconfig_path }}
+            -n {{ soc_core_namespace }}
+            get pod -l {{ misp_feeds_misp_pod_label }}
+            -o jsonpath={.items[0].metadata.name}
+          register: _mf_pod_name
+          changed_when: false
+
+        # cake user change_authkey {email} regénère l'authkey ET la retourne.
+        # Note : invalide tout authkey précédent du compte admin. On ne
+        # l'appelle qu'une fois (gated par le Secret check ci-dessus).
+        - name: "misp feeds | regénérer admin authkey via cake"
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - "{{ kubeconfig_path }}"
+              - -n
+              - "{{ soc_core_namespace }}"
+              - exec
+              - "{{ _mf_pod_name.stdout }}"
+              - --
+              - bash
+              - /var/www/MISP/app/Console/cake
+              - user
+              - change_authkey
+              - "{{ _mf_admin_email }}"
+          register: _mf_cake_out
+          no_log: true
+          changed_when: true
+
+        - name: "misp feeds | extraire l'authkey 40-char depuis la sortie cake"
+          ansible.builtin.set_fact:
+            _mf_admin_authkey: >-
+              {{
+                (_mf_cake_out.stdout | regex_findall('[0-9a-zA-Z]{40}') + [''])
+                | first
+              }}
+          no_log: true
+
+        - name: "misp feeds | fail si cake n'a pas retourné de clé valide"
+          ansible.builtin.fail:
+            msg: >-
+              cake user change_authkey {{ _mf_admin_email }} n'a pas retourné de clé 40-char.
+              rc={{ _mf_cake_out.rc | default('?') }}
+              stdout_len={{ _mf_cake_out.stdout | default('') | length }}
+          when: (_mf_admin_authkey | trim | length) == 0
+
+        - name: "misp feeds | persister l'admin authkey dans Secret"
+          kubernetes.core.k8s:
+            kubeconfig: "{{ kubeconfig_path }}"
+            state: present
+            definition:
+              apiVersion: v1
+              kind: Secret
+              metadata:
+                name: "{{ misp_feeds_admin_authkey_secret_name }}"
+                namespace: "{{ misp_feeds_admin_authkey_secret_ns }}"
+                labels:
+                  app.kubernetes.io/managed-by: misp-role
+                annotations:
+                  soc.lab/feature:     "misp-admin-authkey"
+                  soc.lab/created-by:  "misp/tasks/feeds.yml"
+              type: Opaque
+              stringData:
+                "{{ misp_feeds_admin_authkey_secret_key }}": "{{ _mf_admin_authkey }}"
+          no_log: true
+
+    # Re-lecture (que l'authkey vienne d'être créée ou existait déjà).
+    - name: "misp feeds | lire l'admin authkey depuis Secret"
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ kubeconfig_path }}"
+        kind: Secret
+        namespace: "{{ misp_feeds_admin_authkey_secret_ns }}"
+        name: "{{ misp_feeds_admin_authkey_secret_name }}"
+      register: _mf_admin_secret_final
+      no_log: true
+      retries: 6
+      delay: 5
+      until: (_mf_admin_secret_final.resources | default([])) | length > 0
+
+    - name: "misp feeds | charger l'admin authkey en variable"
       ansible.builtin.set_fact:
-        _mf_api_key: "{{ _mf_api_secret.resources[0].data[misp_feeds_api_secret_key] | b64decode }}"
+        _mf_api_key: "{{ _mf_admin_secret_final.resources[0].data[misp_feeds_admin_authkey_secret_key] | b64decode }}"
       no_log: true
 
     # Lister les feeds existants pour ne POSTer que ceux qui manquent.

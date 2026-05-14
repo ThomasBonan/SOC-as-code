@@ -74,10 +74,16 @@ misp_feeds_enabled: true
 misp_feeds_marker_ns:   "{{ soc_core_namespace }}"
 misp_feeds_marker_name: "soc-misp-feeds-marker"
 
-# Source de l'API key admin/sync : Secret créé par soc_foundations (svc-foundations)
-misp_feeds_api_secret_ns:   "{{ soc_core_namespace }}"
-misp_feeds_api_secret_name: "misp-sa-foundations"
-misp_feeds_api_secret_key:  "authkey"
+# Admin authkey storage. La gestion des feeds nécessite perm_site_admin que la
+# SA svc-foundations (Sync User, role_id=3) n'a pas → 403 sur /feeds/add.
+# On génère un authkey admin via cake CLI au 1er run, on le persiste dans
+# un Secret K8s pour ne pas re-générer (et invalider l'ancien) à chaque run.
+misp_feeds_admin_authkey_secret_ns:    "{{ soc_core_namespace }}"
+misp_feeds_admin_authkey_secret_name:  "misp-admin-authkey"
+misp_feeds_admin_authkey_secret_key:   "authkey"
+misp_feeds_admin_email_secret_name:    "misp-app-secret"
+misp_feeds_admin_email_secret_key:     "admin_email"
+misp_feeds_misp_pod_label:             "app=misp"
 
 # URL d'API (ingress fallback, comme les autres rôles)
 misp_feeds_api_url: "https://{{ misp_fqdn }}"
