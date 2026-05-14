@@ -62,3 +62,51 @@ misp_redis_image_tag: "8.6.2"
 # ============================================================
 misp_config_managed_by: "gitops"    # ConfigMap misp-config
 misp_ingress_managed_by: "gitops"   # Ingress misp.apps.soc.lab
+
+# ============================================================
+# OSINT Feeds (P2 — alimente la base d'IOCs pour corrélation)
+# ============================================================
+# Activé par défaut. Première synchronisation (cache) ≈ 5-15 min selon le feed.
+# Idempotent via marker ConfigMap soc-misp-feeds-marker (hash de la liste).
+misp_feeds_enabled: true
+
+# Namespace cible (réutilise le ns MISP)
+misp_feeds_marker_ns:   "{{ soc_core_namespace }}"
+misp_feeds_marker_name: "soc-misp-feeds-marker"
+
+# Source de l'API key admin/sync : Secret créé par soc_foundations (svc-foundations)
+misp_feeds_api_secret_ns:   "{{ soc_core_namespace }}"
+misp_feeds_api_secret_name: "misp-sa-foundations"
+misp_feeds_api_secret_key:  "authkey"
+
+# URL d'API (ingress fallback, comme les autres rôles)
+misp_feeds_api_url: "https://{{ misp_fqdn }}"
+misp_feeds_validate_certs: false
+misp_feeds_http_timeout: 30
+misp_feeds_cache_timeout: 900   # 15 min pour le cacheFeed initial
+
+# Liste des feeds OSINT à activer.
+# Provider/url/source_format DOIVENT être stables (utilisés comme clé d'unicité).
+# Tous gratuits, sans API key. Couvrent Mimikatz et 95% des malware courants.
+misp_feeds:
+  - name:            "CIRCL OSINT Feed"
+    provider:        "CIRCL"
+    url:             "https://www.circl.lu/doc/misp/feed-osint"
+    source_format:   "misp"
+    distribution:    3
+    enabled:         true
+    caching_enabled: true
+  - name:            "Botvrij.eu OSINT"
+    provider:        "Botvrij.eu"
+    url:             "https://www.botvrij.eu/data/feed-osint/"
+    source_format:   "misp"
+    distribution:    3
+    enabled:         true
+    caching_enabled: true
+  - name:            "abuse.ch MalwareBazaar SHA256 (recent)"
+    provider:        "abuse.ch"
+    url:             "https://bazaar.abuse.ch/export/txt/sha256/recent/"
+    source_format:   "freetext"
+    distribution:    3
+    enabled:         true
+    caching_enabled: true

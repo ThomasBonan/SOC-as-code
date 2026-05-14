@@ -603,6 +603,18 @@
 # -------------------------
 # (Option) NetworkPolicy basique (tu peux la remettre plus tard)
 # -------------------------
+# -------------------------
+# OSINT Feeds (P2 — alimente la base d'IOCs pour la corrélation alert-triage)
+# Idempotent via marker ; nécessite que MISP soit Ready (assuré par les tasks
+# 'rollout status' et 'wait pod ready' ci-dessus) et que le Secret
+# misp-sa-foundations existe (créé par soc_foundations/tasks/rbac_misp.yml).
+# -------------------------
+- name: Configure MISP OSINT feeds
+  ansible.builtin.import_tasks: feeds.yml
+  when: misp_feeds_enabled | default(true) | bool
+  tags:
+    - feeds
+
 - name: Apply minimal NetworkPolicies for MISP
   kubernetes.core.k8s:
     kubeconfig: "{{ kubeconfig_path }}"

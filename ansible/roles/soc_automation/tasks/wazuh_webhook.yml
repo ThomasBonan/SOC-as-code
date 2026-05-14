@@ -253,6 +253,74 @@
     msg: "{{ _ww_decoder_deploy.stdout | default('Décodeur soc-syslog.xml déjà présent — aucune modification') }}"
   changed_when: false
 
+# ── Décodeur Sysmon Hashes (ephemeral — repair on every run) ────────────────────
+# Sysmon ProcessCreate (event 1) emits a single field "Hashes" containing all
+# digests in one string: "SHA1=...,SHA256=...,MD5=...,IMPHASH=...".
+# Cortex hash analyzers (MalwareBazaar, CIRCLHashlookup) require a single hash.
+# This decoder splits the field into data.hash_sha256/sha1/md5 so the Shuffle
+# alert-triage workflow can pass the SHA256 alone to the hash analyzers.
+
+- name: "wazuh_webhook | Vérifier si le décodeur soc-sysmon-hashes.xml existe"
+  when: _ww_hook_url is defined
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    test -f /var/ossec/etc/decoders/soc-sysmon-hashes.xml
+  register: _ww_sysmon_decoder_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | Déployer le décodeur Sysmon hashes (split Hashes field)"
+  when: _ww_hook_url is defined
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        import os
+        os.makedirs('/var/ossec/etc/decoders', exist_ok=True)
+        decoder_xml = (
+            '<!-- soc-sysmon-hashes.xml — managed by 180-soc-automation -->\n'
+            '<decoder name="soc-sysmon-hash-sha256">\n'
+            '  <parent>windows_eventchannel</parent>\n'
+            '  <prematch type="pcre2">SHA256=[A-Fa-f0-9]{64}</prematch>\n'
+            '  <regex type="pcre2">SHA256=([A-Fa-f0-9]{64})</regex>\n'
+            '  <order>hash_sha256</order>\n'
+            '</decoder>\n'
+            '<decoder name="soc-sysmon-hash-sha1">\n'
+            '  <parent>windows_eventchannel</parent>\n'
+            '  <prematch type="pcre2">SHA1=[A-Fa-f0-9]{40}</prematch>\n'
+            '  <regex type="pcre2">SHA1=([A-Fa-f0-9]{40})</regex>\n'
+            '  <order>hash_sha1</order>\n'
+            '</decoder>\n'
+            '<decoder name="soc-sysmon-hash-md5">\n'
+            '  <parent>windows_eventchannel</parent>\n'
+            '  <prematch type="pcre2">MD5=[A-Fa-f0-9]{32}</prematch>\n'
+            '  <regex type="pcre2">MD5=([A-Fa-f0-9]{32})</regex>\n'
+            '  <order>hash_md5</order>\n'
+            '</decoder>\n'
+        )
+        decoder_file = '/var/ossec/etc/decoders/soc-sysmon-hashes.xml'
+        with open(decoder_file, 'w') as f:
+            f.write(decoder_xml)
+        print('Decodeur soc-sysmon-hashes.xml ecrit dans ' + decoder_file)
+  register: _ww_sysmon_decoder_deploy
+  changed_when: _ww_sysmon_decoder_deploy.rc | default(1) == 0
+
+- name: "wazuh_webhook | Confirmer le déploiement du décodeur Sysmon hashes"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: "{{ _ww_sysmon_decoder_deploy.stdout | default('Décodeur soc-sysmon-hashes.xml déjà présent — aucune modification') }}"
+  changed_when: false
+
 # ── Ruleset: s'assurer que etc/rules ET etc/decoders sont inclus (ephemeral) ──
 # Le fichier soc_selftest_rules.xml est dans /var/ossec/etc/rules/.
 # Le <ruleset> de ossec.conf doit contenir <rule_dir>etc/rules</rule_dir>

@@ -29,6 +29,10 @@ spec:
   template:
     metadata:
       labels: {{ soc_risk_engine_labels | combine({'app': 'risk-engine'}) | to_json }}
+      annotations:
+        # Force pod rollout when the Flask script ConfigMap changes
+        # (subPath mounts are not auto-refreshed by Kubernetes).
+        checksum/script: "{{ _res_app_script_hash | default('initial') }}"
     spec:
       securityContext:
         runAsNonRoot: true

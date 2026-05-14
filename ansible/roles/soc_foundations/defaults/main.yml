@@ -126,6 +126,12 @@ soc_foundations_cortex_analyzers:
     config: {}
   - name: "Abuse_Finder_3_0"
     config: {}
+  # Hash analyzers (free, no API key) — used by alert-triage workflow when
+  # the Wazuh alert carries a SHA1/SHA256/MD5 (Sysmon, FIM, sigma rules…).
+  - name: "MalwareBazaar_GetReport_1_0"
+    config: {}
+  - name: "CIRCLHashlookup_1_0"
+    config: {}
 
 # ============================================================
 # RBAC - MISP

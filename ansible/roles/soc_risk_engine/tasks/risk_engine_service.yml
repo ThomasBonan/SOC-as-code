@@ -19,7 +19,19 @@
 #   - soc-asset-criticality ConfigMap must exist (deployed by asset_criticality.yml)
 #   - soc-risk-policy ConfigMap must exist (deployed by scoring_model.yml)
 #
-# Idempotence: marker ConfigMap soc_risk_engine_marker_service
+# Idempotence: marker ConfigMap soc_risk_engine_marker_service.
+# Le marker stocke le SHA-256 du script Flask rendu : si le template change
+# (poids, formule, parsing), le marker est invalidé et le ConfigMap + Deployment
+# sont redéployés. La Deployment porte aussi une annotation checksum/script
+# pour que K8s déclenche un rolling restart quand le ConfigMap est mis à jour.
+
+# ── Render app script first (needed for hash + ConfigMap) ─────────
+
+- name: "risk_engine_service | Render app script template"
+  ansible.builtin.set_fact:
+    _res_app_script: "{{ lookup('template', 'risk-engine-app.py.j2') }}"
+    _res_app_script_hash: "{{ lookup('template', 'risk-engine-app.py.j2') | hash('sha256') }}"
+  no_log: false
 
 # ── Check idempotence marker ──────────────────────────────────────
 
@@ -32,9 +44,37 @@
   register: _res_marker
   changed_when: false
 
+# Si le marker existe mais que le hash diffère (script changé entre 2 déploiements),
+# on le supprime pour forcer le re-deploy du ConfigMap + rollout du Deployment.
+- name: "risk_engine_service | Invalidate marker on script change"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    state: absent
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ soc_risk_engine_marker_service }}"
+        namespace: "{{ soc_risk_engine_service_namespace }}"
+  when:
+    - _res_marker.resources | length > 0
+    - (_res_marker.resources[0].data.app_script_hash | default('')) != _res_app_script_hash
+  register: _res_marker_invalidated
+  changed_when: true
+
+- name: "risk_engine_service | Re-check marker after potential invalidation"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_risk_engine_service_namespace }}"
+    name: "{{ soc_risk_engine_marker_service }}"
+  register: _res_marker
+  changed_when: false
+  when: _res_marker_invalidated is changed
+
 - name: "risk_engine_service | Already deployed — skip"
   ansible.builtin.debug:
-    msg: "Risk engine service already deployed (marker exists) — skipping."
+    msg: "Risk engine service already deployed (marker exists, script hash unchanged) — skipping."
   when: _res_marker.resources | length > 0
   changed_when: false
 
@@ -43,11 +83,6 @@
 - name: "risk_engine_service | Deploy Risk Engine HTTP service"
   when: _res_marker.resources | length == 0
   block:
-
-    - name: "risk_engine_service | Load app script from template"
-      ansible.builtin.set_fact:
-        _res_app_script: "{{ lookup('template', 'risk-engine-app.py.j2') }}"
-      no_log: false
 
     - name: "risk_engine_service | Deploy app script ConfigMap"
       kubernetes.core.k8s:
@@ -107,14 +142,15 @@
               soc.lab/feature:     "risk_engine_service"
               soc.lab/deployed-at: "{{ now(utc=True).isoformat() }}"
           data:
-            feature:         "risk_engine_service"
-            status:          "active"
-            service_name:    "{{ soc_risk_engine_service_name }}"
-            service_port:    "{{ soc_risk_engine_service_port | string }}"
-            service_url:     "http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}"
-            policy_version:  "2.0"
-            image:           "{{ soc_risk_engine_service_image }}"
-            environment:     "{{ soc_environment | default('dev') }}"
+            feature:          "risk_engine_service"
+            status:           "active"
+            service_name:     "{{ soc_risk_engine_service_name }}"
+            service_port:     "{{ soc_risk_engine_service_port | string }}"
+            service_url:      "http://{{ soc_risk_engine_service_name }}.{{ soc_risk_engine_service_namespace }}.svc:{{ soc_risk_engine_service_port }}"
+            policy_version:   "2.1"
+            image:            "{{ soc_risk_engine_service_image }}"
+            environment:      "{{ soc_environment | default('dev') }}"
+            app_script_hash:  "{{ _res_app_script_hash }}"
 
     - name: "risk_engine_service | Deployment report"
       ansible.builtin.debug:

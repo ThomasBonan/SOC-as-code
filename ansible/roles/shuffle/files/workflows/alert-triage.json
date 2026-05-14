@@ -125,6 +125,130 @@
       }
     },
     {
+      "id": "action_run_cortex_hash_mb",
+      "label": "action_run_cortex_hash_mb",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_MB/run"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\":\"$exec.all_fields.data.hash_sha256\",\"dataType\":\"hash\",\"message\":\"SOC Triage hash - Alert $action_create_thehive_alert.body._id\",\"tlp\":2,\"parameters\":{}}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": -200,
+        "y": 200
+      }
+    },
+    {
+      "id": "action_get_cortex_hash_mb_result",
+      "label": "action_get_cortex_hash_mb_result",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "GET",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=5minutes"
+        },
+        {
+          "name": "method",
+          "value": "GET"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": 200
+      }
+    },
+    {
+      "id": "action_run_cortex_hash_circl",
+      "label": "action_run_cortex_hash_circl",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_CIRCL/run"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\":\"$exec.all_fields.data.hash_sha256\",\"dataType\":\"hash\",\"message\":\"SOC Triage hash - Alert $action_create_thehive_alert.body._id\",\"tlp\":2,\"parameters\":{}}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": -200,
+        "y": -200
+      }
+    },
+    {
+      "id": "action_get_cortex_hash_circl_result",
+      "label": "action_get_cortex_hash_circl_result",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "GET",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=5minutes"
+        },
+        {
+          "name": "method",
+          "value": "GET"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": -200
+      }
+    },
+    {
       "id": "action_search_misp",
       "label": "action_search_misp",
       "app_name": "http",
@@ -158,6 +282,39 @@
       }
     },
     {
+      "id": "action_search_misp_hash",
+      "label": "action_search_misp_hash",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_MISP_URL/attributes/restSearch"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: $ENV_MISP_APIKEY\nAccept: application/json\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"value\":\"$exec.all_fields.data.hash_sha256\",\"type\":\"sha256\",\"limit\":10,\"returnFormat\":\"json\"}"
+        },
+        {
+          "name": "ssl_verify",
+          "value": "false"
+        }
+      ],
+      "position": {
+        "x": 200,
+        "y": 400
+      }
+    },
+    {
       "id": "action_call_risk_engine",
       "label": "action_call_risk_engine",
       "app_name": "http",
@@ -178,7 +335,7 @@
         },
         {
           "name": "body",
-          "value": "{\"wazuh_severity\":\"$exec.all_fields.rule.level\",\"cortex_max_level\":0,\"misp_hit\":false,\"asset_type\":\"default\",\"frequency\":1,\"case_id\":\"$action_create_thehive_alert.body._id\",\"environment\":\"$ENV_SOC_ENVIRONMENT\"}"
+          "value": "{\"case_id\":\"$action_create_thehive_alert.body._id\",\"wazuh_severity\":\"$exec.all_fields.rule.level\",\"agent_name\":\"$exec.all_fields.agent.name\",\"asset_type\":\"$exec.all_fields.agent.labels.type\",\"cortex_taxonomy_level\":\"$action_get_cortex_result.body.report.summary.taxonomies.0.level\",\"cortex_taxonomies\":\"$action_get_cortex_result.body.report.summary.taxonomies\",\"cortex_hash_mb_taxonomy_level\":\"$action_get_cortex_hash_mb_result.body.report.summary.taxonomies.0.level\",\"cortex_hash_mb_taxonomies\":\"$action_get_cortex_hash_mb_result.body.report.summary.taxonomies\",\"cortex_hash_circl_taxonomy_level\":\"$action_get_cortex_hash_circl_result.body.report.summary.taxonomies.0.level\",\"cortex_hash_circl_taxonomies\":\"$action_get_cortex_hash_circl_result.body.report.summary.taxonomies\",\"misp_attributes\":\"$action_search_misp.body.response.Attribute\",\"misp_hash_attributes\":\"$action_search_misp_hash.body.response.Attribute\",\"frequency\":1,\"environment\":\"$ENV_SOC_ENVIRONMENT\"}"
         },
         {
           "name": "ssl_verify",
@@ -544,6 +701,46 @@
     },
     {
       "source_id": "action_search_misp",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_create_thehive_alert",
+      "destination_id": "action_search_misp_hash",
+      "conditions": []
+    },
+    {
+      "source_id": "action_search_misp_hash",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_create_thehive_alert",
+      "destination_id": "action_run_cortex_hash_mb",
+      "conditions": []
+    },
+    {
+      "source_id": "action_run_cortex_hash_mb",
+      "destination_id": "action_get_cortex_hash_mb_result",
+      "conditions": []
+    },
+    {
+      "source_id": "action_get_cortex_hash_mb_result",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_create_thehive_alert",
+      "destination_id": "action_run_cortex_hash_circl",
+      "conditions": []
+    },
+    {
+      "source_id": "action_run_cortex_hash_circl",
+      "destination_id": "action_get_cortex_hash_circl_result",
+      "conditions": []
+    },
+    {
+      "source_id": "action_get_cortex_hash_circl_result",
       "destination_id": "action_call_risk_engine",
       "conditions": []
     },

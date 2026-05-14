@@ -255,13 +255,14 @@
       loop_control:
         label: "{{ item.item.name }}"
 
-    # ── Récupérer l'UUID de l'instance MaxMind_GeoIP dans ES ─────────────────────
-    # POST /api/analyzer/{name}/run requiert l'UUID de l'instance, pas le nom.
+    # ── Récupérer l'UUID de chaque analyzer activé ───────────────────────────────
+    # POST /api/analyzer/{id}/run requiert l'UUID de l'instance, pas le nom.
     # On interroge directement l'ES Cortex pour éviter les AuthorizationError sur
-    # GET /api/analyzer. Le résultat est stocké dans le marker pour que 185-shuffle
-    # puisse le lire et injecter l'UUID dans ENV_CORTEX_ANALYZER.
+    # GET /api/analyzer. Les UUIDs sont stockés dans le marker — clé = nom lower
+    # + suffix _analyzer_uuid (ex: malwarebazaar_getreport_1_0_analyzer_uuid).
+    # Une clé legacy maxmind_analyzer_uuid est conservée pour backward compat.
 
-    - name: "Cortex Analyzers - interroger ES pour l'UUID MaxMind_GeoIP"
+    - name: "Cortex Analyzers - interroger ES pour chaque UUID d'analyzer"
       ansible.builtin.command:
         argv:
           - kubectl
@@ -280,29 +281,51 @@
           - -d
           - >-
             {"query":{"bool":{"must":[
-              {"term":{"workerDefinitionId":"MaxMind_GeoIP_4_0"}},
+              {"term":{"workerDefinitionId":"{{ item.name }}"}},
               {"term":{"type":"analyzer"}}
             ]}},"_source":["id","name","workerDefinitionId"],"size":1}
-      register: _sf_cx_anlz_maxmind_es_raw
+      register: _sf_cx_anlz_uuid_results
       changed_when: false
       failed_when: false
+      loop: "{{ soc_foundations_cortex_analyzers }}"
+      loop_control:
+        label: "{{ item.name }}"
 
-    - name: "Cortex Analyzers - extraire l'UUID MaxMind_GeoIP"
+    # Build name → UUID mapping incrementally (avoids fragile chained map filters).
+    # ConfigMap data keys must be lowercase alphanumeric + '_'/'-'/'.'.
+    # Convention: "MalwareBazaar_GetReport_1_0" → "malwarebazaar_getreport_1_0_analyzer_uuid".
+    - name: "Cortex Analyzers - initialiser le mapping nom → UUID"
       ansible.builtin.set_fact:
-        _sf_cx_anlz_maxmind_uuid: >-
-          {{
-            (
-              (_sf_cx_anlz_maxmind_es_raw.stdout | from_json).hits.hits
-              | default([])
-              | map(attribute='_id')
-              | list
-              | first
-            ) | default('')
-          }}
+        _sf_cx_anlz_uuid_map: {}
+        _sf_cx_anlz_marker_data: {}
 
-    - name: "Cortex Analyzers - [info] UUID MaxMind instance"
+    - name: "Cortex Analyzers - extraire chaque UUID du résultat ES"
+      ansible.builtin.set_fact:
+        _sf_cx_anlz_uuid_map: >-
+          {{
+            _sf_cx_anlz_uuid_map | combine({
+              item.item.name: (
+                ((item.stdout | default('{}') | from_json).hits | default({})).hits | default([])
+                | map(attribute='_id') | list | first | default('')
+              )
+            })
+          }}
+        _sf_cx_anlz_marker_data: >-
+          {{
+            _sf_cx_anlz_marker_data | combine({
+              ((item.item.name | lower | regex_replace('[^a-z0-9_]', '_')) ~ '_analyzer_uuid'): (
+                ((item.stdout | default('{}') | from_json).hits | default({})).hits | default([])
+                | map(attribute='_id') | list | first | default('')
+              )
+            })
+          }}
+      loop: "{{ _sf_cx_anlz_uuid_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: "Cortex Analyzers - [info] UUIDs résolus"
       ansible.builtin.debug:
-        msg: "MaxMind_GeoIP_4_0 instance UUID: {{ _sf_cx_anlz_maxmind_uuid | default('NOT FOUND') }}"
+        msg: "{{ _sf_cx_anlz_uuid_map }}"
 
     # ── Marker ───────────────────────────────────────────────────────────────────
 
@@ -321,9 +344,13 @@
             annotations:
               soc.lab/feature: cortex-analyzers
               soc.lab/deployed-at: "{{ ansible_date_time.iso8601 | default('unknown') }}"
-          data:
-            feature: cortex-analyzers
-            status: active
-            environment: "{{ soc_environment | default('dev') }}"
-            analyzer_list_hash: "{{ _sf_cx_anlz_hash }}"
-            maxmind_analyzer_uuid: "{{ _sf_cx_anlz_maxmind_uuid | default('') }}"
+          data: >-
+            {{
+              {
+                'feature':            'cortex-analyzers',
+                'status':             'active',
+                'environment':        (soc_environment | default('dev')),
+                'analyzer_list_hash': _sf_cx_anlz_hash,
+                'maxmind_analyzer_uuid': (_sf_cx_anlz_uuid_map['MaxMind_GeoIP_4_0'] | default(''))
+              } | combine(_sf_cx_anlz_marker_data)
+            }}

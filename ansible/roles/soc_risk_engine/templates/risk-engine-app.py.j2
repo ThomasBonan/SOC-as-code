@@ -21,13 +21,14 @@ THRESHOLDS = {
     "auto_contain": {{ soc_risk_thresholds.auto_contain }},
     "escalate":     {{ soc_risk_thresholds.escalate }},
 }
-POLICY_VERSION       = "2.0"
+POLICY_VERSION       = "2.3"
 ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
 LISTEN_PORT          = 8080
 
 {% raw %}
 import json
 import logging
+import re
 import sys
 from flask import Flask, request, jsonify
 
@@ -50,6 +51,167 @@ try:
 except Exception as exc:
     logger.warning("Cannot load %s: %s — using built-in defaults", ASSET_WEIGHTS_PATH, exc)
     ASSET_WEIGHTS = {"server-prod": 5, "server-internal": 3, "workstation": 2, "lab": 1, "default": 1}
+
+
+# ── Defensive coercion helpers ────────────────────────────────────────────────
+# Shuffle injects variables into JSON bodies as plain string substitutions.
+# When a variable resolves to a JSON array/object, it arrives here as a string;
+# when it fails to substitute, it arrives as the literal "$action.path" or "".
+# Every helper below accepts None/str/list/dict and never raises.
+
+def _safe_int(val, default=0):
+    if val is None:
+        return default
+    if isinstance(val, bool):
+        return int(val)
+    if isinstance(val, (int, float)):
+        return int(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s.startswith("$"):
+            return default
+        try:
+            return int(float(s))
+        except (ValueError, TypeError):
+            return default
+    return default
+
+
+def _coerce_list(val):
+    """Accept None, list, dict, or JSON-encoded string. Always return a list."""
+    if val is None or val == "":
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, dict):
+        # MISP restSearch may return {"Attribute": [...]} when caller passes body.response
+        for key in ("Attribute", "attributes", "items", "results"):
+            inner = val.get(key)
+            if isinstance(inner, list):
+                return inner
+        return []
+    if isinstance(val, str):
+        s = val.strip()
+        if not s or s.startswith("$"):
+            return []
+        try:
+            parsed = json.loads(s)
+        except (ValueError, TypeError):
+            return []
+        return _coerce_list(parsed)
+    return []
+
+
+# Cortex taxonomy "level" enum → numeric 0-3 used by the scoring formula.
+# Cortex returns one of: "info", "safe", "suspicious", "malicious".
+_TAXONOMY_LEVEL_MAP = {
+    "info":       0,
+    "safe":       0,
+    "suspicious": 2,
+    "malicious":  3,
+}
+
+
+def _taxonomy_level(name):
+    if not isinstance(name, str):
+        return 0
+    return _TAXONOMY_LEVEL_MAP.get(name.strip().lower(), 0)
+
+
+def _resolve_cortex_max_level(body):
+    """
+    Compute the max Cortex taxonomy level across ALL analyzers in the body.
+    Cortex result fields are discovered dynamically — every key that starts
+    with "cortex_" and ends with "_taxonomy_level" or "_taxonomies" contributes
+    (so e.g. cortex_hash_mb_taxonomy_level + cortex_hash_circl_taxonomy_level
+    + cortex_taxonomy_level (the IP one) all participate).
+
+    Accepted shapes (any combination, max wins):
+      cortex_max_level                            (int 0-3)        ← legacy explicit
+      cortex[_*]_taxonomy_level                   (string)         ← single-analyzer shortcut
+      cortex[_*]_taxonomies                       (list/JSON-str)  ← per-analyzer taxonomies
+    Returns int 0-3 (clamped).
+    """
+    candidates = []
+
+    if "cortex_max_level" in body:
+        candidates.append(max(0, min(3, _safe_int(body.get("cortex_max_level"), 0))))
+
+    for key, val in body.items():
+        if not isinstance(key, str) or not key.startswith("cortex"):
+            continue
+        if key.endswith("_taxonomy_level"):
+            if val is None or val == "":
+                continue
+            candidates.append(_taxonomy_level(val))
+        elif key.endswith("_taxonomies"):
+            taxos = _coerce_list(val)
+            for t in taxos:
+                if isinstance(t, dict):
+                    candidates.append(_taxonomy_level(t.get("level")))
+
+    return max(candidates, default=0)
+
+
+def _resolve_misp_hit(body):
+    """
+    A hit if ANY misp* search returned at least one attribute. Scans all
+    body keys matching: misp[_*]_attributes (lists) + misp_response (dict)
+    + the legacy misp_hit boolean shortcut.
+
+    Examples consumed by the alert-triage workflow:
+      misp_attributes        — search by IP   (action_search_misp)
+      misp_hash_attributes   — search by hash (action_search_misp_hash)
+
+    Adding a new misp_*_attributes field in the workflow does NOT require
+    an engine change — the resolver discovers it dynamically.
+    """
+    if "misp_hit" in body:
+        v = body.get("misp_hit")
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes")
+        return bool(v)
+
+    for key, val in body.items():
+        if not isinstance(key, str) or not key.startswith("misp"):
+            continue
+        if key.endswith("_attributes") or key == "misp_response":
+            if len(_coerce_list(val)) > 0:
+                return True
+
+    return False
+
+
+# Heuristic asset_type fallback — used when Shuffle could not substitute
+# agent.labels.type (default behaviour: most agents have no labels).
+# Naming conventions are best-effort; ground truth is still agent.labels.type.
+_AGENT_NAME_RULES = (
+    (re.compile(r"\b(dc|domain[-_]?controller|ad[-_]?server)\b", re.I),  "server-prod"),
+    (re.compile(r"\b(prod|production)[-_]", re.I),                       "server-prod"),
+    (re.compile(r"\b(srv|server|wazuh[-_]manager|wazuh[-_]worker)", re.I), "server-internal"),
+    (re.compile(r"\b(ws|win|pc|laptop|lap|desktop|wks)[-_]?", re.I),     "workstation"),
+)
+
+
+def _resolve_asset_type(body):
+    raw = body.get("asset_type")
+    if isinstance(raw, str):
+        candidate = raw.strip()
+        if candidate and not candidate.startswith("$") and candidate in ASSET_WEIGHTS:
+            return candidate
+
+    agent_name = body.get("agent_name")
+    if isinstance(agent_name, str) and agent_name and not agent_name.startswith("$"):
+        for pattern, asset in _AGENT_NAME_RULES:
+            if pattern.search(agent_name):
+                if asset in ASSET_WEIGHTS:
+                    return asset
+
+    # Wazuh agents are overwhelmingly endpoints; "workstation" is a safer floor
+    # than "default" (weight 1) which historically zeroed-out the asset dimension.
+    return "workstation" if "workstation" in ASSET_WEIGHTS else "default"
 
 
 # ── Scoring formula ───────────────────────────────────────────────────────────
@@ -112,33 +274,37 @@ def health():
 @app.route("/score", methods=["POST"])
 def score():
     """
-    Request body (JSON):
-      case_id         : str   — TheHive case ID (e.g. "~123456")
-      wazuh_severity  : int   — TheHive severity 1-4 (mapped from Wazuh level)
-      cortex_max_level: int   — Max Cortex analyzer taxonomy level 0-3
-      misp_hit        : bool  — True if any MISP IOC matched
-      asset_type      : str   — Asset type tag (e.g. "server-prod")
-      frequency       : int   — Similar alert count in window (>=1)
-
-    Response body (JSON):
-      case_id       : str
-      risk_score    : float  [0-100]
-      risk_decision : str    auto_closed | reviewed | auto_promoted | contained | escalated
-      dimensions    : dict   per-dimension normalized scores
-      policy_version: str
+    Request body (JSON) — all fields tolerate Shuffle non-substitution ($var as string):
+      case_id              : str   — TheHive case ID
+      wazuh_severity       : int   — Wazuh rule.level (clamped to 1-4 internally)
+      cortex_max_level     : int   — legacy, 0-3
+      cortex_taxonomy_level: str   — single Cortex analyzer level string
+      cortex_taxonomies    : list  — full taxonomies array (multi-analyzer)
+      misp_hit             : bool  — legacy explicit hit flag
+      misp_attributes      : list  — MISP restSearch response.Attribute array
+      misp_response        : dict  — raw body.response passthrough
+      asset_type           : str   — explicit asset class (e.g. "server-prod")
+      agent_name           : str   — used for asset_type heuristic fallback
+      frequency            : int   — similar alert count in window (>=1)
     """
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "JSON body required"}), 400
 
-    try:
-        wazuh_severity    = int(body.get("wazuh_severity",    1))
-        cortex_max_level  = int(body.get("cortex_max_level",  0))
-        misp_hit          = bool(body.get("misp_hit",         False))
-        asset_type        = str(body.get("asset_type",        "default"))
-        frequency         = int(body.get("frequency",         1))
-    except (TypeError, ValueError) as exc:
-        return jsonify({"error": f"Invalid input: {exc}"}), 400
+    # wazuh_severity is the only mandatory field — fail loudly if Shuffle did
+    # not substitute it (literal "$exec.all_fields.rule.level" string). All
+    # other dimensions silently default to 0 / safe fallbacks.
+    ws_raw = body.get("wazuh_severity")
+    if ws_raw is None or (isinstance(ws_raw, str) and (not ws_raw.strip() or ws_raw.strip().startswith("$"))):
+        return jsonify({
+            "error": "wazuh_severity missing or unsubstituted",
+            "received": ws_raw,
+        }), 400
+    wazuh_severity   = _safe_int(ws_raw, default=1)
+    cortex_max_level = _resolve_cortex_max_level(body)
+    misp_hit         = _resolve_misp_hit(body)
+    asset_type       = _resolve_asset_type(body)
+    frequency        = max(1, _safe_int(body.get("frequency"), default=1))
 
     result   = _compute(wazuh_severity, cortex_max_level, misp_hit, asset_type, frequency)
     decision = _decide(result["score"])
@@ -149,9 +315,19 @@ def score():
         "risk_decision":  decision,
         "dimensions":     result["dimensions"],
         "policy_version": POLICY_VERSION,
+        "inputs": {
+            "wazuh_severity":   max(1, min(4, wazuh_severity)),
+            "cortex_max_level": cortex_max_level,
+            "misp_hit":         misp_hit,
+            "asset_type":       asset_type,
+            "frequency":        frequency,
+        },
     }
-    logger.info("case=%s score=%.1f decision=%s asset=%s freq=%d",
-                resp["case_id"], resp["risk_score"], decision, asset_type, frequency)
+    logger.info(
+        "case=%s score=%.1f decision=%s wazuh_sev=%d cortex=%d misp_hit=%s asset=%s freq=%d",
+        resp["case_id"], resp["risk_score"], decision,
+        max(1, min(4, wazuh_severity)), cortex_max_level, misp_hit, asset_type, frequency,
+    )
     return jsonify(resp), 200
 
 

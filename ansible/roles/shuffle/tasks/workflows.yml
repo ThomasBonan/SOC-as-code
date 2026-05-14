@@ -6,7 +6,7 @@
 - name: "shuffle | Workflows - calculate alert-triage.json hash"
   ansible.builtin.set_fact:
     _sh_alert_triage_hash: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | hash('sha256') }}"
-    _sh_workflows_marker_version: "2026-05-06-app-id-inject-v5"
+    _sh_workflows_marker_version: "2026-05-14-risk-payload-v6"
 
 - name: "shuffle | Workflows - read existing marker"
   kubernetes.core.k8s_info:
@@ -167,20 +167,29 @@
       changed_when: false
       failed_when: false
 
-    - name: "shuffle | Workflows - extraire l'UUID MaxMind ou fallback sur le nom"
+    - name: "shuffle | Workflows - extraire les UUIDs des analyzers Cortex"
       ansible.builtin.set_fact:
-        _sh_cortex_analyzer_id: >-
+        _sh_cortex_anlz_cm_data: >-
           {{
             (_sh_cortex_anlz_cm.resources | default([]) | length > 0)
-            | ternary(
-                _sh_cortex_anlz_cm.resources[0].data.maxmind_analyzer_uuid | default('MaxMind_GeoIP_4_0'),
-                'MaxMind_GeoIP_4_0'
-              )
+            | ternary(_sh_cortex_anlz_cm.resources[0].data | default({}), {})
           }}
 
-    - name: "shuffle | Workflows - [info] analyzer ID injecté dans workflow"
+    - name: "shuffle | Workflows - résoudre les analyzer IDs (IP + hash)"
+      ansible.builtin.set_fact:
+        _sh_cortex_analyzer_id:           >-
+          {{ _sh_cortex_anlz_cm_data.maxmind_analyzer_uuid | default('MaxMind_GeoIP_4_0') }}
+        _sh_cortex_hash_analyzer_mb_id:   >-
+          {{ _sh_cortex_anlz_cm_data.malwarebazaar_getreport_1_0_analyzer_uuid | default('MalwareBazaar_GetReport_1_0') }}
+        _sh_cortex_hash_analyzer_circl_id: >-
+          {{ _sh_cortex_anlz_cm_data.circlhashlookup_1_0_analyzer_uuid | default('CIRCLHashlookup_1_0') }}
+
+    - name: "shuffle | Workflows - [info] analyzer IDs injectés dans workflow"
       ansible.builtin.debug:
-        msg: "ENV_CORTEX_ANALYZER = {{ _sh_cortex_analyzer_id }}"
+        msg:
+          - "ENV_CORTEX_ANALYZER          = {{ _sh_cortex_analyzer_id }}"
+          - "ENV_CORTEX_HASH_ANALYZER_MB  = {{ _sh_cortex_hash_analyzer_mb_id }}"
+          - "ENV_CORTEX_HASH_ANALYZER_CIRCL = {{ _sh_cortex_hash_analyzer_circl_id }}"
 
     - name: "shuffle | Workflows - read soc-automation-worker-creds secret"
       kubernetes.core.k8s_info:
@@ -284,7 +293,9 @@
                 {'name': 'ENV_THEHIVE_APIKEY',  'value': _sh_thehive_write_key,            'description': 'TheHive write API key from soc-automation-worker-creds'},
                 {'name': 'ENV_CORTEX_URL',      'value': shuffle_cortex_url,               'description': 'Cortex internal URL (.svc)'},
                 {'name': 'ENV_CORTEX_APIKEY',   'value': _sh_cortex_key,                   'description': 'Cortex API key from soc-automation-worker-creds'},
-                {'name': 'ENV_CORTEX_ANALYZER', 'value': _sh_cortex_analyzer_id,             'description': 'Cortex analyzer UUID (MaxMind_GeoIP instance)'},
+                {'name': 'ENV_CORTEX_ANALYZER',           'value': _sh_cortex_analyzer_id,             'description': 'Cortex IP analyzer UUID (MaxMind_GeoIP instance)'},
+                {'name': 'ENV_CORTEX_HASH_ANALYZER_MB',   'value': _sh_cortex_hash_analyzer_mb_id,     'description': 'Cortex hash analyzer UUID (MalwareBazaar instance)'},
+                {'name': 'ENV_CORTEX_HASH_ANALYZER_CIRCL','value': _sh_cortex_hash_analyzer_circl_id,  'description': 'Cortex hash analyzer UUID (CIRCLHashlookup instance)'},
                 {'name': 'ENV_MISP_URL',        'value': shuffle_misp_url,                 'description': 'MISP internal URL (.svc)'},
                 {'name': 'ENV_MISP_APIKEY',     'value': _sh_misp_key,                     'description': 'MISP API key from soc-automation-worker-creds'},
                 {'name': 'ENV_WAZUH_API_URL',   'value': shuffle_wazuh_api_url,            'description': 'Wazuh API internal URL (port 55000)'},
