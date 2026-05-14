@@ -735,6 +735,17 @@
   delegate_to: localhost
   run_once: true
 
+# --- Agent exposure : Service LoadBalancer 1514/1515 + NetworkPolicy ---
+# Exécuté automatiquement avec make wazuh / make deploy.
+# Tag dédié pour ré-appliquer uniquement cette portion :
+#   ansible-playbook 90-wazuh.yml --tags agent_exposure
+- name: Wazuh | Expose agents (Service LoadBalancer + NetPol)
+  ansible.builtin.include_tasks:
+    file: apply_agent_exposure.yml
+    apply:
+      tags: [agent_exposure]
+  tags: [agent_exposure]
+
 # --- TLS reloader : rotation cert-manager automatique (maintenance annuelle) ---
 # Tag 'never' → non exécuté lors d'un make deploy standard.
 # Appel explicite : ansible-playbook 90-wazuh.yml --tags tls_reloader

@@ -32,7 +32,7 @@ iac-apply: ## Appliquer le plan IaC (source SOC_ENV_FILE pour les credentials Pr
 	@$(_tofu_env) && cd $(IAC_DIR) && tofu apply -auto-approve -parallelism=2
 
 # ── Cibles de bas niveau manquantes dans le Makefile principal ────────────────
-.PHONY: workers-pre post-master databases wazuh misp cortex thehive \
+.PHONY: workers-pre post-master databases wazuh wazuh-agent-expose misp cortex thehive \
         soc-config soc-smoke foundations automation shuffle \
         automation-rerun risk-engine cert-manager-issuer
 
@@ -45,8 +45,11 @@ post-master: ## Post-config master : cert-manager, Longhorn, ingress-nginx (60)
 databases: ## Bases de données SOC (80)
 	$(ANS)/80-databases.yml
 
-wazuh: ## Déployer Wazuh (90)
+wazuh: ## Déployer Wazuh (90) — inclut l'exposition agents (Service LB 10.0.30.55)
 	$(ANS)/90-wazuh.yml
+
+wazuh-agent-expose: ## Ré-appliquer uniquement l'exposition agents Wazuh (Service LB + NetPol)
+	$(ANS)/90-wazuh.yml --tags agent_exposure
 
 misp: ## Déployer MISP (100)
 	$(ANS)/100-misp.yml
@@ -202,6 +205,9 @@ deploy: preflight $(_iac_step) wait-nodes argocd-full wait-eso-synced soc-day1 w
 	@echo "║  Cortex   : https://cortex.apps.soc.lab                      ║"
 	@echo "║  MISP     : https://misp.apps.soc.lab                        ║"
 	@echo "║  Shuffle  : https://shuffle.apps.soc.lab                     ║"
+	@echo "║                                                              ║"
+	@echo "║  Wazuh agents : wazuh-agent.apps.soc.lab (10.0.30.55)        ║"
+	@echo "║                 enrollment 1515/TCP, events 1514/TCP         ║"
 	@echo "╚══════════════════════════════════════════════════════════════╝"
 
 # ── Chronométrage ─────────────────────────────────────────────────────────────

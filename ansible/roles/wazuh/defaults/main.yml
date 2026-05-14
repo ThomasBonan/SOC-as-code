@@ -12,6 +12,19 @@ ingress_class_name: "nginx"
 cluster_issuer_name: "wazuh-ca-issuer"
 tls_secret_name: "wazuh-dashboard-tls"
 
+# Agent enrollment / events — exposition externe via MetalLB (option A)
+# Le wildcard *.apps.soc.lab pointe sur l'ingress (10.0.30.50). Pour
+# wazuh-agent.apps.soc.lab il faut un A record dédié vers cette IP côté OPNsense.
+# NB : le nom "wazuh-agent" est DÉJÀ pris par le chart Helm (ClusterIP/5000 pour
+# le DaemonSet d'agents internes). On utilise donc un nom distinct.
+wazuh_agent_service_name: "wazuh-agents-external"
+wazuh_agent_loadbalancer_ip: "10.0.30.55"
+wazuh_agent_external_fqdn: "wazuh-agent.{{ apps_domain | default('apps.soc.lab') }}"
+# CIDRs sources autorisés à enregistrer / pousser des events (cohérent avec ingress-api-wazuh)
+wazuh_agent_allowed_cidrs:
+  - "10.0.0.0/8"
+  - "172.16.0.0/12"
+
 # Helm repo / chart
 wazuh_helm_repo_name: "wazuh-helm"
 wazuh_helm_repo_url: "https://morgoved.github.io/wazuh-helm/"

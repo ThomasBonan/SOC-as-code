@@ -1,0 +1,130 @@
+---
+# Wazuh agent exposure (option A — Service LoadBalancer MetalLB)
+#
+# Pourquoi un Service dédié ?
+#   - Le chart Wazuh expose en ClusterIP only (manager.values.yml).
+#   - Le svc `wazuh-manager-worker` (port 1514) pointe sur `node-type=worker`
+#     qui n'existe pas en mode mono-master → endpoints vides.
+#   - On crée donc un Service séparé qui cible le master pod et publie
+#     1514+1515 sur une IP MetalLB fixe, sans toucher au chart.
+#
+# Idempotence : `kubectl apply` est idempotent. Le Service / NetworkPolicy
+# portent un label `app.kubernetes.io/managed-by: ansible-soc-as-code` pour
+# pouvoir être identifiés/triés.
+
+- name: Wazuh agent | Apply LoadBalancer Service (1514/1515 → master pod)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: {{ wazuh_agent_service_name }}
+      namespace: {{ wazuh_namespace }}
+      labels:
+        app.kubernetes.io/name: wazuh-agent-external
+        app.kubernetes.io/managed-by: ansible-soc-as-code
+      annotations:
+        metallb.universe.tf/loadBalancerIPs: "{{ wazuh_agent_loadbalancer_ip }}"
+        soc-as-code/fqdn: "{{ wazuh_agent_external_fqdn }}"
+    spec:
+      type: LoadBalancer
+      externalTrafficPolicy: Local
+      selector:
+        app: wazuh-manager
+        node-type: master
+      ports:
+        - name: enrollment
+          port: 1515
+          targetPort: 1515
+          protocol: TCP
+        - name: events
+          port: 1514
+          targetPort: 1514
+          protocol: TCP
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+# NetworkPolicy dédiée — on ne touche PAS à `wazuh-manager-master` qui est
+# (re)générée par le chart Helm à chaque upgrade. Une NetPol Kubernetes étant
+# additive (OR entre policies sur le même pod), ajouter une seconde policy
+# autorise simplement nos CIDRs sans casser les règles internes du chart.
+- name: Wazuh agent | Apply NetworkPolicy ingress-agents-wazuh (1514/1515)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: ingress-agents-wazuh
+      namespace: {{ wazuh_namespace }}
+      labels:
+        app.kubernetes.io/managed-by: ansible-soc-as-code
+    spec:
+      podSelector:
+        matchLabels:
+          app: wazuh-manager
+          node-type: master
+      policyTypes:
+        - Ingress
+      ingress:
+        - from:
+    {% for cidr in wazuh_agent_allowed_cidrs %}
+            - ipBlock:
+                cidr: {{ cidr }}
+    {% endfor %}
+          ports:
+            - { port: 1514, protocol: TCP }
+            - { port: 1515, protocol: TCP }
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Wazuh agent | Wait for MetalLB to allocate {{ wazuh_agent_loadbalancer_ip }}
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ kubeconfig_path }} -n {{ wazuh_namespace }}
+    get svc {{ wazuh_agent_service_name }}
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+  register: _wazuh_agent_lb_ip
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+  retries: 20
+  delay: 6
+  until: _wazuh_agent_lb_ip.stdout | length > 0
+
+- name: Wazuh agent | Fail if MetalLB allocated a different IP than expected
+  ansible.builtin.fail:
+    msg: >
+      MetalLB a alloué {{ _wazuh_agent_lb_ip.stdout }} alors qu'on attendait
+      {{ wazuh_agent_loadbalancer_ip }}. Vérifier que l'IP n'est pas déjà
+      prise par un autre service ou qu'elle est bien dans le pool
+      {{ metallb_ip_range | default('default-pool') }}.
+  when: _wazuh_agent_lb_ip.stdout != wazuh_agent_loadbalancer_ip
+  delegate_to: localhost
+  run_once: true
+
+- name: Wazuh agent | TCP smoke test on enrollment port (1515)
+  ansible.builtin.wait_for:
+    host: "{{ wazuh_agent_loadbalancer_ip }}"
+    port: 1515
+    timeout: 30
+    state: started
+  delegate_to: localhost
+  run_once: true
+
+- name: Wazuh agent | Récap exposition
+  ansible.builtin.debug:
+    msg:
+      - "Wazuh agents endpoint : {{ wazuh_agent_loadbalancer_ip }} (enrollment 1515/TCP, events 1514/TCP)"
+      - "FQDN attendu (A record à créer côté DNS si pas déjà fait) : {{ wazuh_agent_external_fqdn }} → {{ wazuh_agent_loadbalancer_ip }}"
+      - "Côté agent : WAZUH_MANAGER={{ wazuh_agent_external_fqdn }} (ou {{ wazuh_agent_loadbalancer_ip }})"
+  delegate_to: localhost
+  run_once: true
