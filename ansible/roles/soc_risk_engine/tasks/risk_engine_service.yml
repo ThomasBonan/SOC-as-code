@@ -62,6 +62,8 @@
   register: _res_marker_invalidated
   changed_when: true
 
+# Always re-fetch (avoids overwriting _res_marker with a "skipped" placeholder
+# that has no .resources attribute when the previous task didn't run).
 - name: "risk_engine_service | Re-check marker after potential invalidation"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ soc_risk_engine_kubeconfig_path }}"
@@ -70,18 +72,17 @@
     name: "{{ soc_risk_engine_marker_service }}"
   register: _res_marker
   changed_when: false
-  when: _res_marker_invalidated is changed
 
 - name: "risk_engine_service | Already deployed — skip"
   ansible.builtin.debug:
     msg: "Risk engine service already deployed (marker exists, script hash unchanged) — skipping."
-  when: _res_marker.resources | length > 0
+  when: (_res_marker.resources | default([])) | length > 0
   changed_when: false
 
 # ── Deploy block ──────────────────────────────────────────────────
 
 - name: "risk_engine_service | Deploy Risk Engine HTTP service"
-  when: _res_marker.resources | length == 0
+  when: (_res_marker.resources | default([])) | length == 0
   block:
 
     - name: "risk_engine_service | Deploy app script ConfigMap"

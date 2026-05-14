@@ -34,11 +34,13 @@
         name: "{{ misp_feeds_marker_name }}"
         namespace: "{{ misp_feeds_marker_ns }}"
   when:
-    - _mf_marker.resources | length > 0
-    - (_mf_marker.resources[0].data.feeds_list_hash | default('')) != _mf_list_hash
+    - (_mf_marker.resources | default([])) | length > 0
+    - ((_mf_marker.resources | default([{}]))[0].data.feeds_list_hash | default('')) != _mf_list_hash
   register: _mf_marker_invalidated
   changed_when: true
 
+# Always re-fetch (avoids overwriting _mf_marker with a "skipped" placeholder
+# that has no .resources attribute when the previous task didn't run).
 - name: "misp feeds | re-vérifier le marker après invalidation"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ kubeconfig_path }}"
@@ -47,10 +49,9 @@
     name: "{{ misp_feeds_marker_name }}"
   register: _mf_marker
   changed_when: false
-  when: _mf_marker_invalidated is changed
 
 - name: "misp feeds | bloc principal d'activation"
-  when: _mf_marker.resources | length == 0
+  when: (_mf_marker.resources | default([])) | length == 0
   block:
 
     - name: "misp feeds | lire la clé API svc-foundations"
@@ -256,5 +257,5 @@
 - name: "misp feeds | déjà actif — skip"
   ansible.builtin.debug:
     msg: "MISP feeds déjà configurés (marker {{ misp_feeds_marker_name }} présent, hash inchangé) — skip."
-  when: _mf_marker.resources | length > 0
+  when: (_mf_marker.resources | default([])) | length > 0
   changed_when: false
