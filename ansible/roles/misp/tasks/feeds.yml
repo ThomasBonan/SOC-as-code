@@ -149,6 +149,17 @@
       no_log: true
       failed_when: false
 
+    # Affichage des status sans body (no_log:true ci-dessus protège l'API key,
+    # mais .results[*].status reste accessible — on l'expose pour diagnostic).
+    - name: "misp feeds | [info] résultat /feeds/add par feed"
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.item.name }} → HTTP {{ item.status | default('NO_STATUS') }}
+          {{ '(skipped)' if item.skipped | default(false) else '' }}
+      loop: "{{ _mf_create_results.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
     # Re-lister pour récupérer les IDs (les nouveaux + les anciens).
 
     - name: "misp feeds | re-lister tous les feeds (avec IDs)"
@@ -164,13 +175,16 @@
       register: _mf_full_raw
       no_log: true
 
-    - name: "misp feeds | construire le mapping URL → ID"
+    # Matching par NAME plutôt que URL : MISP peut normaliser les URLs (trailing
+    # slash, etc.) ce qui casserait le mapping `url → id`. Le name est sous notre
+    # contrôle dans defaults/main.yml donc stable.
+    - name: "misp feeds | construire le mapping NAME → ID"
       ansible.builtin.set_fact:
-        _mf_url_to_id: >-
+        _mf_name_to_id: >-
           {{
             dict(
               (_mf_full_raw.json | default([]))
-              | map(attribute='Feed.url')
+              | map(attribute='Feed.name')
               | zip(
                   (_mf_full_raw.json | default([]))
                   | map(attribute='Feed.id')
@@ -178,12 +192,20 @@
             )
           }}
 
-    # Activation explicite + caching pour les feeds gérés par nous.
-    # POST /feeds/enable/{id} et /feeds/cacheFeed/{id} sont idempotents.
+    - name: "misp feeds | [info] mapping résolu"
+      ansible.builtin.debug:
+        msg:
+          - "Feeds gérés trouvés dans MISP : {{ _mf_name_to_id | length }}"
+          - "Noms : {{ _mf_name_to_id.keys() | list }}"
+          - "Manquants après /feeds/add : {{ misp_feeds | map(attribute='name') | reject('in', _mf_name_to_id.keys()) | list }}"
+
+    # Activation explicite (idempotente). /feeds/add accepte enabled=true à la
+    # création mais cette tâche garantit la synchro pour les feeds qui auraient
+    # été créés disabled (run précédent ou intervention manuelle).
 
     - name: "misp feeds | activer chaque feed géré"
       ansible.builtin.uri:
-        url: "{{ misp_feeds_api_url }}/feeds/enable/{{ _mf_url_to_id[item.url] }}"
+        url: "{{ misp_feeds_api_url }}/feeds/enable/{{ _mf_name_to_id[item.name] }}"
         method: POST
         headers:
           Authorization: "{{ _mf_api_key }}"
@@ -195,7 +217,7 @@
       loop_control:
         label: "{{ item.name }}"
       when:
-        - _mf_url_to_id[item.url] is defined
+        - item.name in _mf_name_to_id
         - item.enabled | default(true) | bool
       register: _mf_enable_results
       no_log: true
@@ -203,7 +225,7 @@
 
     - name: "misp feeds | déclencher le cache initial (asynchrone)"
       ansible.builtin.uri:
-        url: "{{ misp_feeds_api_url }}/feeds/cacheFeeds/{{ _mf_url_to_id[item.url] }}"
+        url: "{{ misp_feeds_api_url }}/feeds/cacheFeeds/{{ _mf_name_to_id[item.name] }}"
         method: POST
         headers:
           Authorization: "{{ _mf_api_key }}"
@@ -215,19 +237,25 @@
       loop_control:
         label: "{{ item.name }}"
       when:
-        - _mf_url_to_id[item.url] is defined
+        - item.name in _mf_name_to_id
         - item.caching_enabled | default(true) | bool
       register: _mf_cache_results
       no_log: true
       failed_when: false
 
+    # Rapport défensif : un item skippé n'a pas de .status, on filtre d'abord
+    # ceux qui ont un status (= la tâche a effectivement tourné), puis on compte
+    # les codes d'erreur. Pareil pour les pertes silencieuses.
     - name: "misp feeds | rapport d'activation"
       ansible.builtin.debug:
         msg:
           - "Feeds gérés          : {{ misp_feeds | length }}"
           - "Créés ce run         : {{ _mf_to_create | length }}"
-          - "Erreurs activation   : {{ _mf_enable_results.results | default([]) | rejectattr('status', 'in', [200, 302, None]) | list | length }}"
-          - "Erreurs cache        : {{ _mf_cache_results.results | default([]) | rejectattr('status', 'in', [200, 302, None]) | list | length }}"
+          - "Activations OK       : {{ _mf_enable_results.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'in', [200, 302]) | list | length }}"
+          - "Activations skip     : {{ _mf_enable_results.results | default([]) | selectattr('skipped', 'defined') | list | length }}"
+          - "Activations erreurs  : {{ _mf_enable_results.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'in', [200, 302]) | list | length }}"
+          - "Cache OK             : {{ _mf_cache_results.results | default([]) | selectattr('status', 'defined') | selectattr('status', 'in', [200, 302]) | list | length }}"
+          - "Cache erreurs        : {{ _mf_cache_results.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'in', [200, 302]) | list | length }}"
           - "Note : la première synchronisation s'exécute en arrière-plan via misp-workers."
           - "       Vérifier l'avancement : kubectl -n {{ soc_core_namespace }} exec deploy/misp -- tail -f /var/www/MISP/app/tmp/logs/misp-workers.log"
 
