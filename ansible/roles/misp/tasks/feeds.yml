@@ -150,8 +150,10 @@
                   soc.lab/feature:     "misp-admin-authkey"
                   soc.lab/created-by:  "misp/tasks/feeds.yml"
               type: Opaque
-              stringData:
-                "{{ misp_feeds_admin_authkey_secret_key }}": "{{ _mf_admin_authkey }}"
+              # Ansible ne template pas les CLÉS d'un mapping YAML, seulement
+              # les valeurs. On construit donc le dict via une expression Jinja2
+              # où misp_feeds_admin_authkey_secret_key est résolue comme variable.
+              stringData: "{{ { misp_feeds_admin_authkey_secret_key: _mf_admin_authkey } }}"
           no_log: true
 
     # Re-lecture (que l'authkey vienne d'être créée ou existait déjà).
@@ -359,6 +361,18 @@
           - "Cache erreurs        : {{ _mf_cache_results.results | default([]) | selectattr('status', 'defined') | rejectattr('status', 'in', [200, 302]) | list | length }}"
           - "Note : la première synchronisation s'exécute en arrière-plan via misp-workers."
           - "       Vérifier l'avancement : kubectl -n {{ soc_core_namespace }} exec deploy/misp -- tail -f /var/www/MISP/app/tmp/logs/misp-workers.log"
+
+    # Gating dur du marker : on ne le crée que si TOUS les feeds gérés sont
+    # présents dans MISP (mapping name→id complet). Sinon le marker se créerait
+    # sur un échec silencieux (ex. 403 svc-foundations) et bloquerait les
+    # retries futurs — bug réel observé le 2026-05-14.
+    - name: "misp feeds | exiger que tous les feeds gérés soient présents"
+      ansible.builtin.fail:
+        msg: >-
+          {{ (misp_feeds | length) - (_mf_name_to_id | length) }} feed(s) manquant(s) côté MISP :
+          {{ misp_feeds | map(attribute='name') | reject('in', _mf_name_to_id.keys()) | list }}.
+          Le marker d'idempotence ne sera PAS créé — relancer pour réessayer.
+      when: (_mf_name_to_id | length) < (misp_feeds | length)
 
     - name: "misp feeds | créer le marker d'idempotence"
       kubernetes.core.k8s:
