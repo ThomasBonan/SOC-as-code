@@ -104,7 +104,7 @@
       "parameters": [
         {
           "name": "url",
-          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_analysis.body._id/waitreport?atMost=5minutes"
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_analysis.body._id/waitreport?atMost=30seconds"
         },
         {
           "name": "method",
@@ -166,7 +166,7 @@
       "parameters": [
         {
           "name": "url",
-          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=5minutes"
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=30seconds"
         },
         {
           "name": "method",
@@ -228,7 +228,7 @@
       "parameters": [
         {
           "name": "url",
-          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=5minutes"
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=30seconds"
         },
         {
           "name": "method",
