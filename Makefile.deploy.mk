@@ -225,24 +225,37 @@ endif
 
 .PHONY: deploy-timed deploy-timings deploy-phased
 
-deploy-phased: ## Rejoue `make deploy` phase par phase avec chrono individuel (log par run dans .timings/)
+deploy-phased: ## Rejoue `make deploy` phase par phase avec chrono + indicateur d'avancement (ETA depuis historique, barre live)
 	@mkdir -p .timings
 	@ts=$$(date +%Y%m%d-%H%M%S); log=".timings/deploy-phased-$$ts.log"; \
+	  hist=$$(ls -t .timings/deploy-phased-*.log 2>/dev/null | \
+	    while read f; do grep -q '^TOTAL.*rc=0' "$$f" 2>/dev/null && { echo "$$f"; break; }; done); \
+	  [ -z "$$hist" ] && hist=$$(ls -t .timings/deploy-phased-*.log 2>/dev/null | head -1); \
+	  total_phases=$$(echo $(DEPLOY_PHASES) | wc -w); \
 	  printf '\n▶ deploy-phased démarré — log: %s\n' "$$log"; \
-	  printf '   phases : %s\n' "$(DEPLOY_PHASES)"; \
+	  printf '   phases : %s (%d au total)\n' "$(DEPLOY_PHASES)" "$$total_phases"; \
+	  if [ -n "$$hist" ] && [ -f "$$hist" ]; then \
+	    eta=$$(awk -F'\t' '$$1=="TOTAL" {print $$5; exit}' "$$hist"); \
+	    printf '   historique : %s (ETA total %s)\n' "$$hist" "$$eta"; \
+	  else \
+	    printf '   historique : aucun (1er run — ETA indisponible)\n'; \
+	  fi; \
 	  global_start=$$(date +%s); \
 	  global_start_iso=$$(date -Iseconds); \
+	  idx=0; \
 	  for phase in $(DEPLOY_PHASES); do \
-	    bash $(SCRIPTS)/time-phase.sh "$$log" "$$phase" $(MAKE) "$$phase" || { \
+	    idx=$$((idx + 1)); \
+	    bash $(SCRIPTS)/phase-progress.sh "$$log" "$$idx" "$$total_phases" "$$hist" "$$global_start" "$$phase" $(MAKE) "$$phase" || { \
 	      rc=$$?; \
 	      printf '\n❌ phase %s a échoué (rc=%d) — arrêt du pipeline\n' "$$phase" "$$rc"; \
-	      $(MAKE) --no-print-directory _phased_summary LOG="$$log" GLOBAL_START="$$global_start" GLOBAL_START_ISO="$$global_start_iso" GLOBAL_RC="$$rc"; \
+	      $(MAKE) --no-print-directory _phased_summary LOG="$$log" HIST="$$hist" GLOBAL_START="$$global_start" GLOBAL_START_ISO="$$global_start_iso" GLOBAL_RC="$$rc"; \
 	      exit $$rc; \
 	    }; \
 	  done; \
-	  $(MAKE) --no-print-directory _phased_summary LOG="$$log" GLOBAL_START="$$global_start" GLOBAL_START_ISO="$$global_start_iso" GLOBAL_RC=0
+	  $(MAKE) --no-print-directory _phased_summary LOG="$$log" HIST="$$hist" GLOBAL_START="$$global_start" GLOBAL_START_ISO="$$global_start_iso" GLOBAL_RC=0
 
 # Cible interne : imprime un tableau récapitulatif des phases + ligne TOTAL.
+# Si HIST est fourni et lisible, ajoute deux colonnes ETA (réf. historique) et Δ.
 .PHONY: _phased_summary
 _phased_summary:
 	@end=$$(date +%s); end_iso=$$(date -Iseconds); \
@@ -251,9 +264,31 @@ _phased_summary:
 	  printf '%s\t%s\t%s\t%d\t%02d:%02d:%02d\trc=%s\n' "TOTAL" "$(GLOBAL_START_ISO)" "$$end_iso" "$$dur" $$h $$m $$s "$(GLOBAL_RC)" >> "$(LOG)"; \
 	  printf '\n══════════════════════════════════════════════════════════════════════════════════\n'; \
 	  printf '   Récapitulatif phase-par-phase (log: %s)\n' "$(LOG)"; \
+	  [ -n "$(HIST)" ] && [ -f "$(HIST)" ] && printf '   référence ETA   : %s\n' "$(HIST)"; \
 	  printf '══════════════════════════════════════════════════════════════════════════════════\n'; \
-	  printf '%-25s %10s %10s   %s\n' "PHASE" "SECONDS" "HH:MM:SS" "RC"; \
-	  awk -F'\t' '{ printf "%-25s %10s %10s   %s\n", $$1, $$4, $$5, $$6 }' "$(LOG)"; \
+	  if [ -n "$(HIST)" ] && [ -f "$(HIST)" ]; then \
+	    printf '%-25s %10s %10s %10s %10s   %s\n' "PHASE" "SECONDS" "HH:MM:SS" "ETA" "Δ" "RC"; \
+	    awk -F'\t' -v hist="$(HIST)" 'BEGIN { \
+	      while ((getline line < hist) > 0) { split(line, a, "\t"); eta[a[1]] = a[4] } \
+	      close(hist) \
+	    } { \
+	      ph=$$1; sec=$$4; hms=$$5; rc=$$6; \
+	      e=eta[ph]; \
+	      if (e == "" || e == 0) { delta_str="—"; eta_str="—" } \
+	      else { \
+	        d = sec - e; \
+	        sign = (d >= 0) ? "+" : "-"; ad = (d < 0) ? -d : d; \
+	        h = int(ad/3600); m = int((ad%3600)/60); s = ad%60; \
+	        delta_str = sprintf("%s%02d:%02d:%02d", sign, h, m, s); \
+	        h = int(e/3600); m = int((e%3600)/60); s = e%60; \
+	        eta_str = sprintf("%02d:%02d:%02d", h, m, s); \
+	      } \
+	      printf "%-25s %10s %10s %10s %10s   %s\n", ph, sec, hms, eta_str, delta_str, rc; \
+	    }' "$(LOG)"; \
+	  else \
+	    printf '%-25s %10s %10s   %s\n' "PHASE" "SECONDS" "HH:MM:SS" "RC"; \
+	    awk -F'\t' '{ printf "%-25s %10s %10s   %s\n", $$1, $$4, $$5, $$6 }' "$(LOG)"; \
+	  fi; \
 	  printf '══════════════════════════════════════════════════════════════════════════════════\n'
 
 deploy-timed: ## Lance `make deploy` en chronométrant la durée totale (log dans .timings/deploy.log)
