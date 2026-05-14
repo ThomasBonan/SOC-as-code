@@ -17,7 +17,6 @@ soc_foundations_validate_certs: "{{ soc_validate_tls | default(false) }}"
 soc_foundations_enable_preflight: true
 soc_foundations_enable_rbac: true
 soc_foundations_enable_rbac_thehive: true
-soc_foundations_enable_rbac_thehive_selftest: true
 soc_foundations_enable_rbac_cortex: true
 soc_foundations_enable_rbac_misp: true
 soc_foundations_enable_rbac_wazuh: true
@@ -63,21 +62,6 @@ soc_foundations_thehive_ingress_api_base: >-
         ''
       )
   }}
-
-# Compte de service Shuffle + selftest (210-soc-selftest)
-# Profil analyst étendu (rbac_thehive.yml) — toutes les permissions workflow y sont ajoutées.
-# Le profil org-admin est un built-in protégé (PATCH → 403) : on utilise analyst à la place.
-# Org "SOC" = même org que le compte Cortex (soc_service_accounts.cortex.organisation).
-# rbac_thehive_selftest.yml crée l'org et assigne le profil si le SA existe déjà.
-soc_foundations_thehive_selftest_sa_login:        "svc-selftest@thehive.local"
-soc_foundations_thehive_selftest_sa_name:         "SOC Self-Test Service Account"
-soc_foundations_thehive_selftest_sa_profile:      "analyst"
-soc_foundations_thehive_selftest_sa_organisation: "{{ soc_service_accounts.cortex.organisation | default('SOC') }}"
-
-# Secret K8s de destination (create-once)
-soc_foundations_thehive_selftest_sa_secret_name:      "thehive-selftest-foundations"
-soc_foundations_thehive_selftest_sa_secret_key_api:   "api_key"
-soc_foundations_thehive_selftest_sa_secret_key_login: "login"
 
 # ============================================================
 # RBAC - Cortex

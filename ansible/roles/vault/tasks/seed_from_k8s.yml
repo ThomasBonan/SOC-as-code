@@ -20,7 +20,6 @@
 #   soc-wazuh/wazuh-credentials           → credentials/wazuh-credentials
 #   soc-wazuh/wazuh-api-cred              → credentials/wazuh-api-cred
 #   soc-thehive/thehive-sa-foundations    → service-accounts/thehive-sa
-#   soc-thehive/thehive-selftest-found.   → service-accounts/thehive-selftest-sa
 #   soc-cortex/cortex-sa-foundations      → service-accounts/cortex-sa
 #   soc-core/misp-sa-foundations          → service-accounts/misp-sa
 #   soc-wazuh/wazuh-sa-foundations        → service-accounts/wazuh-sa
@@ -154,8 +153,6 @@
          ['API_USERNAME', 'API_PASSWORD']),
         # Service accounts
         ('thehive-sa-foundations',       'soc-thehive', 'service-accounts/thehive-sa',
-         ['api_key', 'login']),
-        ('thehive-selftest-foundations', 'soc-thehive', 'service-accounts/thehive-selftest-sa',
          ['api_key', 'login']),
         ('cortex-sa-foundations',        'soc-cortex',  'service-accounts/cortex-sa',
          ['api_key', 'login']),

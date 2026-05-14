@@ -219,7 +219,7 @@ soc_service_accounts:
     login: "svc-foundations@thehive.local"
     name: "SOC Foundations Service Account"
     profile: "analyst"      # Non-admin, accès lecture/écriture d'alertes
-    organisation: "SOC"     # Même org que svc-selftest et Cortex SA
+    organisation: "SOC"     # Même org que Cortex SA
   cortex:
     login: "svc-foundations"
     name: "SOC Foundations Service Account"

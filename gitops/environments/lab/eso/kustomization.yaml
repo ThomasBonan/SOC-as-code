@@ -18,7 +18,6 @@ resources:
   - external-secret-wazuh-api-cred.yaml
   # Service accounts
   - external-secret-thehive-sa-foundations.yaml
-  - external-secret-thehive-selftest-foundations.yaml
   - external-secret-cortex-sa-foundations.yaml
   - external-secret-misp-sa-foundations.yaml
   - external-secret-wazuh-sa-foundations.yaml

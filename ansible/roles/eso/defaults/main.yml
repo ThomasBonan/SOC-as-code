@@ -134,15 +134,6 @@ eso_external_secrets:
       - secretKey: login
         remoteKey: login
 
-  - name: thehive-selftest-foundations
-    namespace: "{{ soc_namespaces.thehive }}"
-    vault_path: "service-accounts/thehive-selftest-sa"
-    data:
-      - secretKey: api_key
-        remoteKey: api_key
-      - secretKey: login
-        remoteKey: login
-
   - name: cortex-sa-foundations
     namespace: "{{ soc_namespaces.cortex }}"
     vault_path: "service-accounts/cortex-sa"

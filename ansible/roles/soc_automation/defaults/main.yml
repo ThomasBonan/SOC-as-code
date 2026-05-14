@@ -37,9 +37,11 @@ soc_automation_thehive_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
 soc_automation_thehive_sa_key:         "api_key"
 
 # Write SA for automation worker and Shuffle SOAR (ENV_THEHIVE_APIKEY).
-# svc-selftest is locked by the TheHive free-tier license (users.normal 0/0 quota).
 # svc-foundations (analyst profile, all workflow permissions added by rbac_thehive.yml)
 # handles both write and read operations. Belongs to the same org as the read SA.
+# Note : TheHive 5 Community quota users.normal 0/0 empêche tout compte dédié
+# supplémentaire (ex. svc-selftest) — un seul SA non-admin couvre tous les
+# usages d'intégration.
 soc_automation_thehive_write_sa_secret_name: "thehive-sa-foundations"
 soc_automation_thehive_write_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
 soc_automation_thehive_write_sa_key:         "api_key"
@@ -135,7 +137,7 @@ soc_automation_worker_creds_secret: "soc-automation-worker-creds"
 
 # ── Wazuh webhook (integration Shuffle) ──────────────────────────
 # Niveau d'alerte minimum envoyé à Shuffle (3 = tous les medium et plus)
-soc_automation_wazuh_webhook_min_level: 3
+soc_automation_wazuh_webhook_min_level: 9
 # ConfigMap créé par 165-shuffle.yml contenant l'URL du webhook
 soc_automation_shuffle_webhook_configmap_name: "soc-shuffle-webhook-config"
 soc_automation_shuffle_webhook_configmap_ns:   "{{ soc_namespaces.thehive }}"

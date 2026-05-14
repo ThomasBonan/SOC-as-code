@@ -180,7 +180,7 @@
 
 # ── Read SA Secrets (no_log on all reads) ────────────────────────
 
-- name: "preflight | Read TheHive write SA secret (thehive-selftest-foundations, org-admin)"
+- name: "preflight | Read TheHive write SA secret (thehive-sa-foundations — svc-selftest blocked by TheHive Community license)"
   kubernetes.core.k8s_info:
     kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
     kind: Secret

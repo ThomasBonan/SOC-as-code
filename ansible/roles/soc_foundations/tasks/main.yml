@@ -30,15 +30,6 @@
     - rbac
     - soc_foundations
 
-- name: RBAC - créer le compte de service TheHive selftest (210-soc-selftest)
-  ansible.builtin.import_tasks: rbac_thehive_selftest.yml
-  when:
-    - soc_foundations_enable_rbac | bool
-    - soc_foundations_enable_rbac_thehive_selftest | bool
-  tags:
-    - rbac
-    - soc_foundations
-
 - name: RBAC - créer le compte de service Cortex
   ansible.builtin.import_tasks: rbac_cortex.yml
   when:

@@ -85,12 +85,11 @@ soc_selftest_validate_certs:  "{{ soc_validate_tls | default(false) }}"
 soc_selftest_http_timeout:    "{{ soc_http.timeout | default(10) }}"
 
 # ── Write SA for injection, verify and cleanup (created by 170-soc-foundations) ──
-# Uses the same svc-foundations SA secret as the read SA.
-# Reason: svc-selftest (thehive-selftest-foundations) is locked due to TheHive free-tier
-# license limit (users.normal 0/0 quota). svc-foundations (analyst profile, all workflow
-# permissions added by rbac_thehive.yml) handles both write and read operations.
-# Both write and read keys resolve to the same org, so org isolation is not an issue.
-# no_log: true applied everywhere this key is used.
+# svc-foundations (profile analyst, toutes les permissions workflow ajoutées par
+# rbac_thehive.yml) gère write + read pour le selftest. Un compte svc-selftest
+# dédié n'est PAS supportable sur TheHive 5 Community : quota users.normal 0/0
+# bloque tout user non org-admin. Write et read sont dans la même org → pas de
+# problème d'isolation. no_log: true partout où la clé est utilisée.
 soc_selftest_thehive_write_sa_secret_name: "thehive-sa-foundations"
 soc_selftest_thehive_write_sa_secret_ns:   "{{ soc_namespaces.thehive }}"
 soc_selftest_thehive_write_sa_key:         "api_key"
