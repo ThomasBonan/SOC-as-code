@@ -19,6 +19,11 @@ soc_automation_enable_preflight:      true   # Vérification des SA credentials 
 soc_automation_enable_credentials:    true   # Créer le Secret agrégé soc-automation-worker-creds
 soc_automation_enable_cortex_to_misp: true   # Stocker la politique MISP push (lue par Shuffle)
 soc_automation_enable_wazuh_webhook:  true   # Injecter le bloc integration Shuffle dans ossec.conf
+# Sysmon hash decoder : nécessite un parent `windows_eventchannel` qui n'existe
+# que si un agent Windows envoie des events EventChannel. Sans Sysmon dans le
+# scope, wazuh-analysisd refuse de charger et l'integrator reste mort (cas
+# vécu 2026-05-14). Toggle à true UNIQUEMENT si un agent Sysmon est en place.
+soc_automation_deploy_sysmon_decoder: false
 
 # ── Runtime settings ──────────────────────────────────────────────
 soc_automation_kubeconfig_path: "{{ kubeconfig_path }}"

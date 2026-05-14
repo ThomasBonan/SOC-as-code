@@ -260,18 +260,14 @@
 # This decoder splits the field into data.hash_sha256/sha1/md5 so the Shuffle
 # alert-triage workflow can pass the SHA256 alone to the hash analyzers.
 
-- name: "wazuh_webhook | Vérifier si le décodeur soc-sysmon-hashes.xml existe"
-  when: _ww_hook_url is defined
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
-    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
-    test -f /var/ossec/etc/decoders/soc-sysmon-hashes.xml
-  register: _ww_sysmon_decoder_check
-  changed_when: false
-  failed_when: false
-
+# Le décodeur Sysmon hashes nécessite un parent `windows_eventchannel`. Ce
+# parent n'est matérialisé que si un agent Windows envoie des events
+# EventChannel ; sinon wazuh-analysisd refuse de charger et l'integrator reste
+# mort (cas vécu 2026-05-14 → selftest cassé). Gated par toggle, default false.
 - name: "wazuh_webhook | Déployer le décodeur Sysmon hashes (split Hashes field)"
-  when: _ww_hook_url is defined
+  when:
+    - _ww_hook_url is defined
+    - soc_automation_deploy_sysmon_decoder | default(false) | bool
   ansible.builtin.command:
     argv:
       - kubectl
@@ -315,10 +311,26 @@
   register: _ww_sysmon_decoder_deploy
   changed_when: _ww_sysmon_decoder_deploy.rc | default(1) == 0
 
-- name: "wazuh_webhook | Confirmer le déploiement du décodeur Sysmon hashes"
-  when: _ww_hook_url is defined
-  ansible.builtin.debug:
-    msg: "{{ _ww_sysmon_decoder_deploy.stdout | default('Décodeur soc-sysmon-hashes.xml déjà présent — aucune modification') }}"
+# Si le toggle est désactivé mais qu'un précédent run avec toggle=true a laissé
+# le fichier en place, le retirer pour ne pas re-casser wazuh-analysisd au
+# prochain restart.
+- name: "wazuh_webhook | Nettoyer le décodeur Sysmon si toggle désactivé"
+  when:
+    - _ww_hook_url is defined
+    - not (soc_automation_deploy_sysmon_decoder | default(false) | bool)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - rm
+      - -f
+      - /var/ossec/etc/decoders/soc-sysmon-hashes.xml
   changed_when: false
 
 # ── Ruleset: s'assurer que etc/rules ET etc/decoders sont inclus (ephemeral) ──
