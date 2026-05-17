@@ -1,0 +1,345 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# _verify_one_scenario.yml — Sous-fichier appelé par verify_scenario_routing.yml
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Input fact attendu (set par include_tasks ... loop_var: _vsr_scn):
+#   _vsr_scn: dict {key, rule_id, expected_score_min, expected_score_max,
+#                   payload_overrides}
+#
+# Output (append dans _vsr_results[_vsr_scn.key]):
+#   {webhook_post_status, case_id, risk_score, risk_decision, scenario_tag_present,
+#    score_in_range, status}
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Webhook URL pour ce scenario (extrait du dict du caller)
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Resolve webhook URL"
+  ansible.builtin.set_fact:
+    _vsr_one_webhook: "{{ _vsr_webhook_urls[_vsr_scn.key] | default('') }}"
+    _vsr_one_sourceref: "soc-selftest-scn-{{ _vsr_scn.key }}-{{ _vsr_run_id }}"
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Assert webhook URL trouvée"
+  ansible.builtin.assert:
+    that: _vsr_one_webhook | length > 0
+    fail_msg: >-
+      Pas d'URL webhook pour scenario={{ _vsr_scn.key }}.
+      Vérifier que shuffle_scenarios contient cette clé et que 185-shuffle
+      a bien re-déployé (marker invalidé).
+
+# Construire le payload synthétique "Wazuh alert webhook" — Shuffle attend
+# le format Wazuh JSON brut où `all_fields` contient l'event original.
+# Le scenario-specific payload_overrides est mergé dans .data.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Build synthetic payload"
+  ansible.builtin.set_fact:
+    _vsr_one_payload: >-
+      {{
+        {
+          'all_fields': {
+            'rule': {
+              'id':    _vsr_scn.rule_id | string,
+              'level': 10,
+              'description': 'SOC selftest synthetic ' ~ _vsr_scn.key ~ ' alert'
+            },
+            'agent': {
+              'id':     '000',
+              'name':   'soc-selftest-agent',
+              'ip':     '127.0.0.1',
+              'labels': {'type': 'lab'}
+            },
+            'timestamp': now(utc=True).isoformat() ~ 'Z',
+            'data':      (_vsr_scn.payload_overrides.data | default({}))
+          }
+        }
+      }}
+
+# Note: le sourceRef du TheHive alert est dérivé de agent.id + rule.id + timestamp.
+# Pour un selftest reproductible et trackable, on injecte aussi run_id dans
+# all_fields.data.run_id que les rules custom pourraient lire si besoin.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Inject run_id into payload"
+  ansible.builtin.set_fact:
+    _vsr_one_payload: >-
+      {{
+        _vsr_one_payload | combine({
+          'all_fields': _vsr_one_payload.all_fields | combine({
+            'data': _vsr_one_payload.all_fields.data | combine({
+              'run_id':      _vsr_run_id,
+              'scenario_id': _vsr_scn.key,
+              'selftest':    true
+            })
+          })
+        }, recursive=True)
+      }}
+
+# POST sur le webhook scenario via kubectl exec (in-cluster URL)
+# Le webhook URL est interne (.svc) donc kubectl exec depuis un pod Wazuh.
+# On utilise le pod Wazuh manager (déjà accessible) comme jump pour le POST.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] POST sur webhook Shuffle"
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+      exec -i -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+      curl -sS -m 30 -o /dev/null -w '%{http_code}' -X POST
+      -H 'Content-Type: application/json'
+      --data-binary @-
+      '{{ _vsr_one_webhook }}'
+    stdin: "{{ _vsr_one_payload | to_json }}"
+  register: _vsr_one_post
+  changed_when: false
+  failed_when: false
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Show POST result"
+  ansible.builtin.debug:
+    msg: >-
+      POST {{ _vsr_one_webhook }} -> HTTP {{ _vsr_one_post.stdout | default('?') }}
+      (rc={{ _vsr_one_post.rc | default('?') }})
+
+# Si POST KO, on enregistre l'échec et on continue (autres scenarios)
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Record failure si POST KO"
+  when: _vsr_one_post.stdout | default('') not in ['200', '201', '202']
+  ansible.builtin.set_fact:
+    _vsr_results: >-
+      {{
+        _vsr_results | combine({
+          _vsr_scn.key: {
+            'status':              'fail-post',
+            'webhook_post_status': _vsr_one_post.stdout | default('?'),
+            'case_id':             '',
+            'risk_score':          0,
+            'risk_decision':       '',
+            'scenario_tag_present': false,
+            'score_in_range':      false
+          }
+        })
+      }}
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Skip remaining checks if POST failed"
+  when: _vsr_one_post.stdout | default('') not in ['200', '201', '202']
+  ansible.builtin.meta: end_host
+  # NOTE: end_host arrête CE host pour le play en cours — pour un play localhost
+  # ça arrête le play complet. Mais comme on est dans un loop include_tasks,
+  # end_host saute le reste de l'inclusion et passe à la prochaine itération.
+  # Si problématique, alternative: bloquer les tâches suivantes par un when:.
+
+# Convertir _vsr_run_id (YYYYMMDDHHMMSS UTC) en epoch_ms pour filtrer
+# les alertes créées APRÈS le start du test. Évite de tomber sur d'anciens cases.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Compute test start epoch_ms"
+  ansible.builtin.set_fact:
+    _vsr_one_test_start_ms: >-
+      {{
+        ((_vsr_run_id | to_datetime('%Y%m%d%H%M%S')).timestamp() * 1000) | int
+      }}
+
+# ── Poll TheHive pour le case du test courant ─────────────────────
+# Critères:
+#   - tag scenario:<key> AND tag rule:<id>
+#   - _createdAt >= test_start_ms (exclure les vieux runs)
+#   - sort _createdAt desc (premier résultat = le plus récent)
+#   - until: alerte trouvée ET caseId présent (promotion terminée)
+# Retry: 36*5s = 180s pour couvrir Cortex waitreport (30s x 3) + promote + observable
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Poll TheHive (sort+filter date)"
+  ansible.builtin.uri:
+    url: "{{ soc_selftest_thehive_api_base }}/v1/query?name=getAlertsByScenarioRun-{{ _vsr_scn.key }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _vsr_thive_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      query:
+        - _name: "listAlert"
+        - _name: "filter"
+          _and:
+            - _field: "tags"
+              _value: "scenario:{{ _vsr_scn.key }}"
+            - _field: "tags"
+              _value: "rule:{{ _vsr_scn.rule_id }}"
+            - _gte:
+                _field: "_createdAt"
+                _value: "{{ _vsr_one_test_start_ms | int }}"
+        - _name: "sort"
+          _fields:
+            - _createdAt: "desc"
+        - _name: "page"
+          from: 0
+          to: 5
+    timeout: "{{ soc_selftest_http_timeout | int }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+    status_code: [200]
+  register: _vsr_one_alerts
+  retries: 36
+  delay: 5
+  # Until: alerte trouvée OU 180s écoulés. La promotion en case n'est pas requise:
+  # un workflow scenario peut légitimement ne pas promouvoir (decision auto_closed,
+  # ou échec d'action intermédiaire). Le status final tient compte de la présence
+  # du case + du risk_score pour qualifier "PASS" vs "PARTIAL".
+  until:
+    - _vsr_one_alerts.status == 200
+    - (_vsr_one_alerts.json | default([])) is iterable
+    - (_vsr_one_alerts.json | default([])) is not mapping
+    - (_vsr_one_alerts.json | default([])) | length > 0
+  no_log: false
+  failed_when: false
+
+# Bonus poll: attendre encore jusqu'à 60s additionnelles pour la promotion en case.
+# Si pas de promotion dans ce délai, on tag le status comme 'partial' (alerte OK,
+# case non promu — workflow n'a pas réussi la chaîne complète).
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Wait for case promotion (best-effort)"
+  ansible.builtin.uri:
+    url: "{{ soc_selftest_thehive_api_base }}/v1/query?name=getAlertWithCase-{{ _vsr_scn.key }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ _vsr_thive_key }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      query:
+        - _name: "listAlert"
+        - _name: "filter"
+          _and:
+            - _field: "tags"
+              _value: "scenario:{{ _vsr_scn.key }}"
+            - _gte:
+                _field: "_createdAt"
+                _value: "{{ _vsr_one_test_start_ms | int }}"
+        - _name: "sort"
+          _fields:
+            - _createdAt: "desc"
+        - _name: "page"
+          from: 0
+          to: 3
+    timeout: "{{ soc_selftest_http_timeout | int }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+    status_code: [200]
+  register: _vsr_one_alerts
+  retries: 12
+  delay: 5
+  until:
+    - _vsr_one_alerts.status == 200
+    - (_vsr_one_alerts.json | default([])) | length > 0
+    - ((_vsr_one_alerts.json | default([]) | first | default({})).caseId | default('')) | length > 0
+  no_log: false
+  failed_when: false
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Extract case_id depuis alerts (defensive)"
+  # Accès défensif: extraData peut exister sans 'case' (alerte non promue).
+  # On prend la première alerte, drill down avec default à chaque niveau.
+  ansible.builtin.set_fact:
+    _vsr_one_first_alert: "{{ _vsr_one_alerts.json | default([]) | first | default({}) }}"
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Drill case_id + tags"
+  ansible.builtin.set_fact:
+    # TheHive v1 expose caseId au top-level de l'alerte (pas dans extraData.case._id).
+    # Si l'alerte n'est pas promue, caseId est absent ou vide.
+    _vsr_one_case_id: "{{ _vsr_one_first_alert.caseId | default('') }}"
+    _vsr_one_alert_tags: "{{ _vsr_one_first_alert.tags | default([]) }}"
+
+# Si pas de case (decision auto_closed = alerte fermée sans promotion), c'est OK :
+# l'alerte existe mais pas de case. On valide alors juste les tags de l'alerte.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Check scenario tag presence"
+  ansible.builtin.set_fact:
+    _vsr_one_scenario_tag_present: >-
+      {{
+        ('scenario:' ~ _vsr_scn.key) in _vsr_one_alert_tags
+      }}
+
+# Si case existe, poller son risk_score custom field
+# Le workflow Shuffle écrit risk_score_v2 via action_update_case_risk APRÈS la
+# promotion en case (séquence: promote → add_observable → update_case_risk).
+# Sans poll sur customFields.risk_score_v2, ce GET peut tomber entre la
+# promotion et la PATCH → customFields vide → score lu = 0 (faux négatif).
+# retries 18 × 5s = 90s pour couvrir add_observable + update_case_risk latence.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Get case details (si promu)"
+  when: _vsr_one_case_id | length > 0
+  ansible.builtin.uri:
+    url: "{{ soc_selftest_thehive_api_base }}/v1/case/{{ _vsr_one_case_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _vsr_thive_key }}"
+    timeout: "{{ soc_selftest_http_timeout | int }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+    status_code: [200]
+  register: _vsr_one_case_detail
+  retries: 18
+  delay: 5
+  until:
+    - _vsr_one_case_detail.status == 200
+    - >-
+      (_vsr_one_case_detail.json.customFields | default([])
+       | selectattr('name', 'equalto', 'risk_score_v2')
+       | list | length) > 0
+  no_log: true
+  failed_when: false
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Extract risk_score + decision"
+  # TheHive v1 retourne customFields comme liste [{name, type, value}, ...],
+  # PAS comme dict customFields.<name>.<type>. Parser via selectattr by name.
+  ansible.builtin.set_fact:
+    _vsr_one_risk_score: >-
+      {{
+        ((_vsr_one_case_detail.json.customFields | default([]))
+         | selectattr('name', 'equalto', 'risk_score_v2')
+         | map(attribute='value') | list | first | default(0))
+        if _vsr_one_case_id | length > 0
+        else 0
+      }}
+    _vsr_one_risk_decision: >-
+      {{
+        ((_vsr_one_case_detail.json.customFields | default([]))
+         | selectattr('name', 'equalto', 'risk_decision')
+         | map(attribute='value') | list | first | default(''))
+        if _vsr_one_case_id | length > 0
+        else 'no_case'
+      }}
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Assert score dans plage"
+  ansible.builtin.set_fact:
+    _vsr_one_in_range: >-
+      {{
+        (_vsr_one_risk_score | float) >= _vsr_scn.expected_score_min
+        and (_vsr_one_risk_score | float) <= _vsr_scn.expected_score_max
+      }}
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Compute final status"
+  ansible.builtin.set_fact:
+    _vsr_one_status: >-
+      {%- if not _vsr_one_scenario_tag_present -%}
+      fail-no-tag
+      {%- elif _vsr_one_case_id | length == 0 -%}
+      partial-no-case
+      {%- elif (_vsr_one_risk_score | float) == 0 and _vsr_one_risk_decision in ['', 'no_case'] -%}
+      partial-no-score
+      {%- elif not _vsr_one_in_range -%}
+      fail-out-of-range
+      {%- else -%}
+      pass
+      {%- endif -%}
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Append result"
+  ansible.builtin.set_fact:
+    _vsr_results: >-
+      {{
+        _vsr_results | combine({
+          _vsr_scn.key: {
+            'status':              _vsr_one_status,
+            'webhook_post_status': _vsr_one_post.stdout | default('?'),
+            'case_id':             _vsr_one_case_id,
+            'risk_score':          _vsr_one_risk_score,
+            'risk_decision':       _vsr_one_risk_decision,
+            'scenario_tag_present': _vsr_one_scenario_tag_present,
+            'score_in_range':      _vsr_one_in_range,
+            'expected_score_min':  _vsr_scn.expected_score_min,
+            'expected_score_max':  _vsr_scn.expected_score_max
+          }
+        })
+      }}
+
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Result summary"
+  ansible.builtin.debug:
+    msg:
+      - "Scenario {{ _vsr_scn.key }}:"
+      - "  POST           -> HTTP {{ _vsr_one_post.stdout | default('?') }}"
+      - "  Case ID        -> {{ _vsr_one_case_id | default('(pas de case — workflow incomplet)') }}"
+      - "  Risk score     -> {{ _vsr_one_risk_score }} (attendu {{ _vsr_scn.expected_score_min }}-{{ _vsr_scn.expected_score_max }})"
+      - "  Decision       -> {{ _vsr_one_risk_decision }}"
+      - "  Tag scenario   -> {{ 'OK' if _vsr_one_scenario_tag_present else 'MISSING' }}"
+      - "  Status         -> {{ _vsr_one_status | upper }}"

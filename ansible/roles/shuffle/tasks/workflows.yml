@@ -6,7 +6,40 @@
 - name: "shuffle | Workflows - calculate alert-triage.json hash"
   ansible.builtin.set_fact:
     _sh_alert_triage_hash: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | hash('sha256') }}"
-    _sh_workflows_marker_version: "2026-05-14-risk-payload-v6"
+    _sh_workflows_marker_version: "2026-05-17-wazuh-url-and-verify-fix-v2"
+
+# Pré-calcul des hashs des workflows scenarios (dict key -> sha256).
+# Sert à invalider le marker quand un JSON change ET à persister la matrice
+# dans le marker pour traçabilité (champs scenario_<key>_hash).
+- name: "shuffle | Workflows - initialize scenario hashes accumulator"
+  ansible.builtin.set_fact:
+    _sh_scenario_hashes: {}
+
+- name: "shuffle | Workflows - compute scenario hashes (per file)"
+  ansible.builtin.set_fact:
+    _sh_scenario_hashes: >-
+      {{
+        _sh_scenario_hashes | combine({
+          item.key: (lookup('file', role_path + '/files/workflows/' + item.json) | hash('sha256'))
+        })
+      }}
+  loop: "{{ shuffle_scenarios | default([]) }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# Hash composite = sha256 sur les hashs concaténés triés par clé.
+# Cas où shuffle_scenarios est vide -> hash de la chaîne vide (constant).
+- name: "shuffle | Workflows - compute composite scenarios hash (for marker invalidation)"
+  ansible.builtin.set_fact:
+    _sh_scenarios_composite_hash: >-
+      {{
+        (
+          (_sh_scenario_hashes | dict2items | sort(attribute='key'))
+          | map(attribute='value')
+          | list
+          | join(',')
+        ) | hash('sha256')
+      }}
 
 - name: "shuffle | Workflows - read existing marker"
   kubernetes.core.k8s_info:
@@ -32,6 +65,10 @@
       (
         _sh_existing_marker_check.resources[0].data.selftest_workflow_id | default('')
       ) != 'disabled'
+      or
+      (
+        _sh_existing_marker_check.resources[0].data.scenarios_composite_hash | default('')
+      ) != _sh_scenarios_composite_hash
   kubernetes.core.k8s:
     kubeconfig: "{{ shuffle_kubeconfig_path }}"
     state: absent
@@ -176,13 +213,17 @@
           }}
 
     - name: "shuffle | Workflows - résoudre les analyzer IDs (IP + hash)"
+      # Convention ConfigMap soc-cortex-analyzers-enabled: clé = (name|lower|regex_replace('[^a-z0-9_]','_')) ~ '_analyzer_uuid'
+      # Doit matcher les noms du catalog Cortex (cf soc_foundations_cortex_analyzers).
+      # MalwareBazaar v1.0 → malwarebazaar_1_0_analyzer_uuid
+      # CIRCLHashlookup v1.1 → circlhashlookup_1_1_analyzer_uuid
       ansible.builtin.set_fact:
         _sh_cortex_analyzer_id:           >-
           {{ _sh_cortex_anlz_cm_data.maxmind_analyzer_uuid | default('MaxMind_GeoIP_4_0') }}
         _sh_cortex_hash_analyzer_mb_id:   >-
-          {{ _sh_cortex_anlz_cm_data.malwarebazaar_getreport_1_0_analyzer_uuid | default('MalwareBazaar_GetReport_1_0') }}
+          {{ _sh_cortex_anlz_cm_data.malwarebazaar_1_0_analyzer_uuid | default('MalwareBazaar_1_0') }}
         _sh_cortex_hash_analyzer_circl_id: >-
-          {{ _sh_cortex_anlz_cm_data.circlhashlookup_1_0_analyzer_uuid | default('CIRCLHashlookup_1_0') }}
+          {{ _sh_cortex_anlz_cm_data.circlhashlookup_1_1_analyzer_uuid | default('CIRCLHashlookup_1_1') }}
 
     - name: "shuffle | Workflows - [info] analyzer IDs injectés dans workflow"
       ansible.builtin.debug:
@@ -611,6 +652,38 @@
         _sh_hook_verify.rc != 0
         or '"found":true' not in _sh_hook_verify.stdout
 
+    # ════════════════════════════════════════════════════════════════════════
+    # Scenarios import loop (no-op si shuffle_scenarios est vide).
+    # Réutilise tous les facts pré-calculés ci-dessus (apikey, env, http_app_id,
+    # analyzer IDs, credentials). Chaque itération importe 1 workflow + repair
+    # OpenSearch + registre le hook + accumule dans _sh_scenario_results.
+    # ════════════════════════════════════════════════════════════════════════
+    - name: "shuffle | Workflows - initialize scenario results accumulator"
+      ansible.builtin.set_fact:
+        _sh_scenario_results: {}
+
+    - name: "shuffle | Workflows - import scenarios (loop)"
+      ansible.builtin.include_tasks: _import_scenario_workflow.yml
+      loop: "{{ shuffle_scenarios | default([]) }}"
+      loop_control:
+        loop_var: _sh_scenario
+        label: "{{ _sh_scenario.key }}"
+
+    - name: "shuffle | Workflows - build webhook_urls dict from scenarios"
+      ansible.builtin.set_fact:
+        _sh_webhook_urls_dict: >-
+          {{
+            dict(
+              (_sh_scenario_results | dict2items)
+              | map(attribute='key')
+              | zip(
+                  (_sh_scenario_results | dict2items)
+                  | map(attribute='value.webhook_url')
+                  | list
+              )
+            )
+          }}
+
     - name: "shuffle | Workflows - store webhook URL in ConfigMap"
       kubernetes.core.k8s:
         kubeconfig: "{{ shuffle_kubeconfig_path }}"
@@ -625,12 +698,20 @@
             annotations:
               soc.lab/feature: "shuffle-webhook"
           data:
+            # Legacy fields (alert-triage fallback) - conservés pour rétro-compat
             webhook_url: "{{ _sh_webhook_url }}"
             trigger_id: "{{ _sh_webhook_trigger_id }}"
             triage_workflow_id: "{{ _sh_triage_workflow_id }}"
             selftest_workflow_id: "disabled"
             shuffle_api_url: "{{ shuffle_internal_url }}"
             environment: "{{ soc_environment | default('dev') }}"
+            # Multi-scenario: dict JSON encodé scenario_key -> webhook_url
+            # Consommé par roles/soc_automation/tasks/wazuh_webhook.yml (Phase 3)
+            # pour générer N blocs <integration> dans ossec.conf, chacun filtré
+            # par rule_id. Vide ({}) tant que shuffle_scenarios est vide -> le
+            # consommateur retombe sur le legacy webhook_url (alert-triage).
+            webhook_urls: "{{ _sh_webhook_urls_dict | default({}) | to_json }}"
+            scenarios_meta: "{{ _sh_scenario_results | default({}) | to_json }}"
 
     - name: "shuffle | Workflows - summary"
       ansible.builtin.debug:
@@ -638,6 +719,7 @@
           Workflows imported.
           alert-triage={{ _sh_triage_workflow_id }},
           selftest=disabled,
+          scenarios={{ (_sh_scenario_results | default({})).keys() | list | to_json }},
           webhook_url={{ _sh_webhook_url }}
 
     - name: "shuffle | Workflows - create idempotence marker"
@@ -662,3 +744,7 @@
             triage_workflow_id: "{{ _sh_triage_workflow_id }}"
             selftest_workflow_id: "disabled"
             alert_triage_hash: "{{ _sh_alert_triage_hash }}"
+            # Hash composite invalide le marker si un JSON scenario change.
+            scenarios_composite_hash: "{{ _sh_scenarios_composite_hash }}"
+            # Snapshot complet: scenario_key -> {workflow_id, hash, rule_ids, ar_command}
+            scenarios_meta: "{{ _sh_scenario_results | default({}) | to_json }}"

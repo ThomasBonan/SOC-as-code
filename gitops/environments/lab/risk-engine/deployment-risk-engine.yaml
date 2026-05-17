@@ -37,6 +37,12 @@ spec:
         app.kubernetes.io/component: soc-risk-engine
         soc.lab/playbook: "190-soc-risk-engine"
         soc.lab/environment: dev
+      # SHA256(data.risk-engine-app.py) — recalculé par _bump-checksums.py.
+      # Tout changement du script ci-contre invalide l'annotation, ce qui force
+      # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
+      # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
+      annotations:
+        checksum/script: "a5b203a4dc03d16b7a399e81bfddeb567bf53e78140ae449588d36eb2d365b1c"
     spec:
       securityContext:
         runAsNonRoot: true

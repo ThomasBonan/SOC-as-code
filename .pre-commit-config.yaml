@@ -50,3 +50,17 @@ repos:
         files: ^iac/
         args:
           - --args=--config=__GIT_WORKING_DIR__/.tflint.hcl
+
+  # ── GitOps ConfigMap checksums ───────────────────────────────────
+  # Garde l'annotation checksum/script du Deployment risk-engine en phase
+  # avec le contenu de la ConfigMap soc-risk-engine-app-script. Sans ce
+  # bump, ArgoCD sync la ConfigMap mais le pod n'est pas redémarré
+  # (bug observé 2026-05-17, policy_version reste figé sur l'ancienne valeur).
+  - repo: local
+    hooks:
+      - id: bump-risk-engine-checksums
+        name: bump risk-engine checksum/script annotation
+        entry: python3 gitops/environments/lab/risk-engine/_bump-checksums.py
+        language: system
+        pass_filenames: false
+        files: ^gitops/environments/lab/risk-engine/configmap-app-script\.yaml$

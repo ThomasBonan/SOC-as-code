@@ -105,17 +105,26 @@ soc_foundations_cortex_ingress_api_base: >-
 # Chaque entrée : name (identifiant Cortex exact) + config (dict, optionnel)
 # Clés API sensibles (ex: abuseipdb_api_key) → Ansible Vault ou group_vars chiffrées.
 soc_foundations_enable_rbac_cortex_analyzers: true
+# IMPORTANT: les noms doivent matcher EXACTEMENT le format <name>_<version-with-underscores>
+# du catalog Cortex (/opt/cortex/catalog/analyzers.json). Le scoring_model lookup ES
+# fait un term-match strict sur `workerDefinitionId`. Toute typo = 0 UUID résolu et
+# le workflow Shuffle tombe en 404 (worker not found).
 soc_foundations_cortex_analyzers:
   - name: "MaxMind_GeoIP_4_0"
     config: {}
   - name: "Abuse_Finder_3_0"
     config: {}
-  # Hash analyzers (free, no API key) — used by alert-triage workflow when
-  # the Wazuh alert carries a SHA1/SHA256/MD5 (Sysmon, FIM, sigma rules…).
-  - name: "MalwareBazaar_GetReport_1_0"
+  # CIRCLHashlookup v1.1 — hash lookup public et gratuit, AUCUNE clé requise.
+  # Utilisé par wf-malware pour SHA256/SHA1/MD5 sur les Sysmon ProcessCreate.
+  - name: "CIRCLHashlookup_1_1"
     config: {}
-  - name: "CIRCLHashlookup_1_0"
-    config: {}
+  # ── Analyzers nécessitant une clé API (commentés pour lab) ─────────────────────
+  # MalwareBazaar v1.0 demande une api_key (free subscription bazaar.abuse.ch).
+  # Pour l'activer en prod, override soc_foundations_cortex_analyzers dans envs/prod.yml
+  # et fournir la clé via Vault/secret (configurationItems.api_key requis).
+  # - name: "MalwareBazaar_1_0"
+  #   config:
+  #     api_key: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=soc/cortex:malwarebazaar_api_key') }}"
 
 # ============================================================
 # RBAC - MISP
@@ -261,7 +270,8 @@ soc_foundations_netpol_misp_pod_selector:
 
 soc_foundations_netpol_wazuh_pod_selector:
   matchLabels:
-    app.kubernetes.io/component: wazuh-manager
+    app: wazuh-manager
+    node-type: master
 
 # ============================================================
 # Integration placeholders (stubs ConfigMaps)

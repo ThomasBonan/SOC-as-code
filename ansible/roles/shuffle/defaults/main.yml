@@ -47,6 +47,10 @@ shuffle_validate_certs:   "{{ soc_validate_tls | default(false) }}"
 shuffle_http_timeout:     "{{ soc_http.timeout | default(10) }}"
 shuffle_http_retries:     "{{ soc_http.retries | default(20) }}"
 shuffle_http_delay:       "{{ soc_http.delay   | default(3)  }}"
+# /api/v1/users/register est lent au premier appel : Shuffle initialise
+# l'org "default" puis attend OpenSearch (search_phase_execution_exception
+# pendant que les shards se warm-up). Mesuré ~65s sur cluster neuf.
+shuffle_register_timeout:  180
 # Short probe retries for preflight (services must already be up)
 shuffle_preflight_retries: 3
 shuffle_preflight_delay:   5
@@ -83,10 +87,12 @@ shuffle_worker_creds_ns:     "{{ soc_namespaces.thehive }}"
 shuffle_thehive_url:  "{{ soc_endpoints.thehive.url  | default('http://thehive.soc-thehive.svc:9000') }}"
 shuffle_cortex_url:   "{{ soc_endpoints.cortex.url   | default('http://cortex.soc-cortex.svc:9001')  }}"
 shuffle_misp_url:     "{{ soc_endpoints.misp.url     | default('https://misp.soc-core.svc:443')      }}"
-# Wazuh API — manager pod DNS behind the chart headless service (port 55000).
-# The simple service host `wazuh-manager-master.<ns>.svc` is not resolvable in this stack.
-shuffle_wazuh_api_url: >-
-  https://wazuh-manager-master-0.{{ wazuh_app_name | default('wazuh') }}-{{ wazuh_app_id | default('core') }}-cluster.{{ soc_namespaces.wazuh }}.svc:55000
+# Wazuh API — service ClusterIP `wazuh` qui expose 55000 (selectors app=wazuh-manager,node-type=master).
+# Historiquement on visait wazuh-manager-master-0.<headless-svc> mais le chart actuel
+# nomme le service headless `wazuh-manager-cluster` (et non `wazuh-core-cluster`),
+# donc le DNS pod-DNS ne résolvait pas → ConnectionError depuis les workers Shuffle.
+# Le ClusterIP service `wazuh` route déjà vers le master, simpler + stable.
+shuffle_wazuh_api_url: "https://wazuh.{{ soc_namespaces.wazuh }}.svc:55000"
 
 # ── Risk engine service (deployed by 190-soc-risk-engine) ─────────
 # Shuffle calls this HTTP service to compute the 5-dim risk score.
@@ -129,3 +135,35 @@ shuffle_marker_ns:         "{{ shuffle_namespace }}"
 # GitOps gating — Phase 7
 # Mettre "ansible" temporairement si ArgoCD n'est pas opérationnel lors d'un redéploiement
 shuffle_ingress_managed_by: "gitops"
+
+# ── Scenario workflows (Phase multi-scenario) ────────────────────
+# Chaque entrée déploie un workflow Shuffle dédié, branché sur Wazuh via un
+# bloc <integration> séparé (configuré par soc_automation/wazuh_webhook).
+# Le filtre rule_ids est appliqué côté Wazuh (rendu XML <rule_id>...</rule_id>).
+#
+# Schéma d'une entrée:
+#   key:        identifiant court (lowercase, [a-z0-9_]) — utilisé comme suffixe marker/configmap
+#   json:       chemin relatif au role_path/files/workflows/
+#   rule_ids:   liste d'IDs Wazuh qui doivent router vers ce workflow
+#   ar_command: nom de l'Active Response déclenchée par le workflow (informatif,
+#               consommé par roles/soc_automation/tasks/wazuh_ar_scripts.yml)
+#   description: documentation libre (apparaît dans le résumé Ansible)
+#
+# Liste vide → comportement legacy (alert-triage seul). Activer scenario par
+# scenario en ajoutant les entrées correspondantes ci-dessous.
+shuffle_scenarios:
+  - key: malware
+    json: scenarios/wf-malware.json
+    rule_ids: [100200, 100201, 100202]
+    ar_command: isolate-agent
+    description: "Malware execution (Sysmon hash) -> hash analyzers + isolate-agent if score>=75"
+  - key: bruteforce
+    json: scenarios/wf-bruteforce.json
+    rule_ids: [5712, 60122, 92657]
+    ar_command: firewall-drop
+    description: "Auth brute-force (SSH/Win/RDP) -> GeoIP + MISP IP + firewall-drop if score>=75"
+  - key: privesc
+    json: scenarios/wf-privesc.json
+    rule_ids: [5402, 5403, 4672]
+    ar_command: disable-account
+    description: "Privilege escalation -> user context enrichment + disable-account if score>=75"
