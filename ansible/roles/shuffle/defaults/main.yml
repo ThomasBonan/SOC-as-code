@@ -154,16 +154,21 @@ shuffle_ingress_managed_by: "gitops"
 shuffle_scenarios:
   - key: malware
     json: scenarios/wf-malware.json
-    rule_ids: [100200, 100201, 100202]
+    # rule_ids inclut les rules production (Sysmon ProcessCreate 100200-100202)
+    # ET la rule selftest synthétique 999901. Les deux routent vers le même
+    # workflow wf-malware → permet de valider le pipeline E2E sans agent Sysmon.
+    rule_ids: [100200, 100201, 100202, 999901]
     ar_command: isolate-agent
     description: "Malware execution (Sysmon hash) -> hash analyzers + isolate-agent if score>=75"
   - key: bruteforce
     json: scenarios/wf-bruteforce.json
-    rule_ids: [5712, 60122, 92657]
+    # Production rules SSH/Win/RDP brute-force + rule selftest 999902.
+    rule_ids: [5712, 60122, 92657, 999902]
     ar_command: firewall-drop
     description: "Auth brute-force (SSH/Win/RDP) -> GeoIP + MISP IP + firewall-drop if score>=75"
   - key: privesc
     json: scenarios/wf-privesc.json
-    rule_ids: [5402, 5403, 4672]
+    # Production rules sudo/SeDebug/AD admin + rule selftest 999903.
+    rule_ids: [5402, 5403, 4672, 999903]
     ar_command: disable-account
     description: "Privilege escalation -> user context enrichment + disable-account if score>=75"

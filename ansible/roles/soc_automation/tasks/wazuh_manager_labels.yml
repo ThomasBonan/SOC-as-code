@@ -1,0 +1,149 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_manager_labels.yml — Injecter labels.type=<asset_class> dans ossec.conf
+# tag: integration, labels
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Pourquoi :
+# Le risk-engine calcule asset_dim à partir de agent.labels.type (lab=1,
+# workstation=2, server-internal=3, server-prod=5). Sans labels explicites,
+# l'heuristique du moteur tombe en fallback sur le nom de l'agent (`wazuh-manager`
+# matche `\bwazuh[-_]manager` → server-internal=3 → asset_dim=50) ce qui plafonne
+# les scores des alertes émises par le manager.
+#
+# Pour les scénarios selftest qui simulent une attaque sur un host CRITIQUE (e.g.
+# DC, prod server), il faut que le manager labellise ses propres events avec
+# `type=server-prod` (weight=5 → asset_dim=100).
+#
+# Format injecté (au top-level de <ossec_config>) :
+#   <labels>
+#     <label key="type">server-prod</label>
+#     <label key="environment">{{ soc_environment }}</label>
+#   </labels>
+#
+# Ces labels sont propagés à TOUS les events que le manager émet localement
+# (logger, ruled, etc.) sous le champ `agent.labels.{key}` dans le JSON alert.
+# Idempotence : signature sha256(labels_dict) dans un commentaire HTML inline.
+# Le pod filesystem étant éphémère, ce task est rejoué à chaque run (auto-repair).
+
+- name: "wazuh_manager_labels | Calculer la signature des labels"
+  ansible.builtin.set_fact:
+    _wml_labels_sig: "{{ soc_automation_wazuh_manager_labels | to_json | hash('sha256') }}"
+
+- name: "wazuh_manager_labels | Vérifier la signature déjà présente dans ossec.conf"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-wazuh-labels-sig:{{ _wml_labels_sig }}" /var/ossec/etc/ossec.conf
+  register: _wml_sig_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_manager_labels | Skip si signature déjà à jour"
+  when: _wml_sig_check.rc == 0
+  ansible.builtin.debug:
+    msg: "Labels manager déjà à jour (sig={{ _wml_labels_sig[:12] }}…) — skip."
+  changed_when: false
+
+- name: "wazuh_manager_labels | Bloc d'injection (signature différente ou absente)"
+  when: _wml_sig_check.rc | default(1) != 0
+  block:
+
+    - name: "wazuh_manager_labels | Backup ossec.conf"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ soc_automation_kubeconfig_path }}"
+          - exec
+          - -n
+          - "{{ soc_automation_wazuh_ns }}"
+          - "{{ soc_automation_wazuh_manager_pod }}"
+          - --
+          - bash
+          - -c
+          - 'cp -a /var/ossec/etc/ossec.conf /var/ossec/etc/ossec.conf.bak-labels-$(date +%Y%m%d%H%M%S) && ls -t /var/ossec/etc/ossec.conf.bak-labels-* | tail -n +4 | xargs -r rm -f'
+      register: _wml_backup
+      changed_when: _wml_backup.rc == 0
+      failed_when: _wml_backup.rc != 0
+
+    - name: "wazuh_manager_labels | Injecter le bloc <labels> dans ossec.conf"
+      ansible.builtin.shell:
+        cmd: >
+          kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+          exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+          python3 -
+        stdin: |
+          import json, re, sys
+          labels = json.loads({{ soc_automation_wazuh_manager_labels | to_json | to_json }})
+          sig = '{{ _wml_labels_sig }}'
+
+          lines = ['<!-- soc-wazuh-labels-sig:' + sig + ' (managed by 180-soc-automation/wazuh_manager_labels) -->']
+          lines.append('  <labels>')
+          for k, v in labels.items():
+              lines.append('    <label key="' + str(k) + '">' + str(v) + '</label>')
+          lines.append('  </labels>')
+          new_section = '\n  ' + '\n  '.join(lines) + '\n'
+
+          with open('/var/ossec/etc/ossec.conf', 'r') as f:
+              content = f.read()
+
+          # Strip ALL existing labels blocks + previous signature comment
+          content = re.sub(
+              r'\s*<!--\s*soc-wazuh-labels-sig:[^-]*-->\s*', '\n  ', content
+          )
+          content = re.sub(
+              r'\s*<labels>.*?</labels>',
+              '', content, flags=re.DOTALL
+          )
+          closing = '</ossec_config>'
+          if closing not in content:
+              raise SystemExit('Tag </ossec_config> non trouve dans ossec.conf')
+          new_content = content.replace(closing, new_section + closing)
+          with open('/var/ossec/etc/ossec.conf', 'w') as f:
+              f.write(new_content)
+          print('Wrote labels block (keys=' + ','.join(labels.keys()) + ' sig=' + sig[:12] + ')')
+      register: _wml_inject
+      changed_when: _wml_inject.rc == 0
+      failed_when: _wml_inject.rc != 0
+
+    - name: "wazuh_manager_labels | Restart wazuh-manager pour appliquer les labels"
+      # Les labels sont lus au démarrage de wazuh-analysisd ; un SIGHUP ne suffit
+      # pas (testé). On utilise wazuh-control restart qui orchestre tous les
+      # processus du manager. Pas de risque pod-restart car ça ne fait que
+      # restart les daemons à l'intérieur du conteneur.
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - "{{ soc_automation_kubeconfig_path }}"
+          - exec
+          - -n
+          - "{{ soc_automation_wazuh_ns }}"
+          - "{{ soc_automation_wazuh_manager_pod }}"
+          - --
+          - /var/ossec/bin/wazuh-control
+          - restart
+      register: _wml_restart
+      changed_when: true
+      failed_when: false
+
+    - name: "wazuh_manager_labels | Attendre que wazuh-analysisd écoute à nouveau"
+      ansible.builtin.command: >
+        kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+        exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+        /var/ossec/bin/wazuh-control status
+      register: _wml_status
+      changed_when: false
+      retries: 30
+      delay: 4
+      until:
+        - _wml_status.rc == 0
+        - "'wazuh-analysisd is running' in _wml_status.stdout"
+
+    - name: "wazuh_manager_labels | [info] Labels injectés"
+      ansible.builtin.debug:
+        msg:
+          - "Labels manager Wazuh injectés :"
+          - "{{ soc_automation_wazuh_manager_labels | to_nice_yaml }}"
+          - "sig={{ _wml_labels_sig[:12] }}…"

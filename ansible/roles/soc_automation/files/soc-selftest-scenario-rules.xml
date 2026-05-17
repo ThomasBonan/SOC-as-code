@@ -1,0 +1,42 @@
+<!--
+  soc-selftest-scenario-rules.xml — Wazuh rules pour selftest scenarios E2E
+  Géré par : 180-soc-automation/wazuh_selftest_scenarios.yml (déployé /var/ossec/etc/rules/)
+
+  Chaque rule matche un mot-clé spécifique dans le payload syslog SOC-selftest et
+  expose les IOCs (hash_sha256, srcip, dstuser) via le décodeur soc-syslog-net*.
+  Les <integration> de ossec.conf routent chaque rule vers son webhook Shuffle
+  scenario (wf-malware, wf-bruteforce, wf-privesc) — la décision finale (PASS,
+  contained, escalated) dépend du score retourné par le risk engine, qui consomme
+  les enrichissements Cortex + MISP appliqués sur les IOCs.
+-->
+<group name="soc-selftest,scenario,">
+
+  <rule id="999901" level="10">
+    <decoded_as>soc-syslog-net</decoded_as>
+    <match>soc-selftest-malware-event</match>
+    <description>SOC Self-Test: synthetic malware execution (hash $(hash_sha256))</description>
+    <group>soc-selftest,malware,</group>
+  </rule>
+
+  <rule id="999902" level="10">
+    <decoded_as>soc-syslog-net</decoded_as>
+    <match>soc-selftest-bruteforce-event</match>
+    <description>SOC Self-Test: synthetic brute-force authentication failure (srcip $(srcip))</description>
+    <group>soc-selftest,bruteforce,authentication_failures,</group>
+  </rule>
+
+  <rule id="999903" level="10">
+    <decoded_as>soc-syslog-net</decoded_as>
+    <match>soc-selftest-privesc-event</match>
+    <description>SOC Self-Test: synthetic privilege escalation (dstuser $(dstuser))</description>
+    <group>soc-selftest,privesc,</group>
+  </rule>
+
+  <!-- Legacy rule pour le selftest alert-triage existant (210 inject_wazuh_alert) -->
+  <rule id="999999" level="10">
+    <match>soc-selftest-test-event</match>
+    <description>SOC Self-Test synthetic alert injection (210-soc-selftest)</description>
+    <group>soc-selftest</group>
+  </rule>
+
+</group>

@@ -1,0 +1,13 @@
+# SOC AR whitelist - users protégés contre disable-account
+# Format: 1 username par ligne. Commentaires avec '#'.
+# Le script disable-account.sh fait grep exact-match.
+#
+# Pré-remplie avec les comptes critiques système / SOC ops :
+root
+admin
+soc-ops
+ansible
+wazuh
+# Ajouter ici les comptes d'astreinte / utilisateurs critiques métier:
+# operator
+# helpdesk

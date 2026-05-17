@@ -109,6 +109,17 @@ soc_foundations_enable_rbac_cortex_analyzers: true
 # du catalog Cortex (/opt/cortex/catalog/analyzers.json). Le scoring_model lookup ES
 # fait un term-match strict sur `workerDefinitionId`. Toute typo = 0 UUID résolu et
 # le workflow Shuffle tombe en 404 (worker not found).
+#
+# Les clés API sont chargées depuis ansible/.secrets/cortex_analyzers.yml (gitignored).
+# Si le fichier n'existe pas, les analyzers concernés sont SKIP (lookup retourne {}).
+soc_foundations_cortex_analyzer_secrets: >-
+  {{
+    lookup('file', playbook_dir + '/../.secrets/cortex_analyzers.yml', errors='ignore')
+    | default('', true)
+    | from_yaml
+    | default({})
+  }}
+
 soc_foundations_cortex_analyzers:
   - name: "MaxMind_GeoIP_4_0"
     config: {}
@@ -118,13 +129,19 @@ soc_foundations_cortex_analyzers:
   # Utilisé par wf-malware pour SHA256/SHA1/MD5 sur les Sysmon ProcessCreate.
   - name: "CIRCLHashlookup_1_1"
     config: {}
-  # ── Analyzers nécessitant une clé API (commentés pour lab) ─────────────────────
-  # MalwareBazaar v1.0 demande une api_key (free subscription bazaar.abuse.ch).
-  # Pour l'activer en prod, override soc_foundations_cortex_analyzers dans envs/prod.yml
-  # et fournir la clé via Vault/secret (configurationItems.api_key requis).
-  # - name: "MalwareBazaar_1_0"
-  #   config:
-  #     api_key: "{{ lookup('community.hashi_vault.hashi_vault', 'secret=soc/cortex:malwarebazaar_api_key') }}"
+  # MalwareBazaar v1.0 — clé API requise (free, bazaar.abuse.ch). Classification
+  # `malicious` sur les hashes connus (Mimikatz, Cobalt Strike, etc.) → cortex_dim=100.
+  - name: "MalwareBazaar_1_0"
+    config:
+      api_key: "{{ soc_foundations_cortex_analyzer_secrets.malwarebazaar_api_key | default('') }}"
+    enabled_when: "{{ (soc_foundations_cortex_analyzer_secrets.malwarebazaar_api_key | default('')) | length > 0 }}"
+  # AbuseIPDB v2.0 — clé API requise (free 1000/jour, abuseipdb.com). Score >= 25
+  # → predicate level malicious → cortex_dim=100 pour les IPs de brute-force, TOR exit, etc.
+  - name: "AbuseIPDB_2_0"
+    config:
+      key:  "{{ soc_foundations_cortex_analyzer_secrets.abuseipdb_api_key | default('') }}"
+      days: 30
+    enabled_when: "{{ (soc_foundations_cortex_analyzer_secrets.abuseipdb_api_key | default('')) | length > 0 }}"
 
 # ============================================================
 # RBAC - MISP

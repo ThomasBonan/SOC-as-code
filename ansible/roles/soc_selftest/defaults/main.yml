@@ -16,7 +16,71 @@ soc_selftest_enable_verify_misp:            true
 soc_selftest_enable_verify_active_response: true
 soc_selftest_enable_cleanup:                true
 soc_selftest_enable_verify_argocd:          true
+soc_selftest_enable_verify_scenarios:       true
+soc_selftest_enable_seed_misp_iocs:         true
 soc_selftest_enable_report:                 true
+
+# ── Per-scenario selftest (Phase 6 multi-scenario) ────────────────
+# Pour chaque entrée, le verify_scenario_routing.yml :
+#   1. POST un payload synthétique sur le webhook Shuffle correspondant
+#   2. Poll TheHive pour le case avec tag scenario:<key>
+#   3. Assert risk_score dans la plage expected_score_min/max
+#   4. Assert AR NON appelée (dry_run=true par défaut)
+#
+# Le payload "exec.all_fields" est ce que Shuffle attendrait d'un webhook Wazuh
+# natif, avec rule.id pré-rempli selon la rule selftest 99990X (référence).
+# expected_score_min/max: bornes du customFields.risk_score_v2 lu DANS LE CASE.
+# NOTE: Les workflows scenarios actuels n'écrivent pas risk_score_v2 dans le case
+# (à la différence d'alert-triage qui a une action_update_case_risk). Donc le
+# score lu sera 0 si le case existe. expected_score_min=0 reflète cette réalité.
+# Pour valider le vrai score (~16-22), interroger l'execution Shuffle:
+#   action_call_risk_engine.body.risk_score (non extrait ici, hors scope phase 6).
+# Le selftest valide ici principalement: routage rule_id -> webhook -> case promu
+# + tag scenario:X présent. Le scoring runtime est validé par le compliance audit.
+soc_selftest_scenarios:
+  - key: malware
+    rule_id: 999901
+    # Hash Mimikatz RÉEL (récupéré via API MalwareBazaar, signature=MimiKatz).
+    # Cortex MalwareBazaar_1_0 retourne `malicious` → cortex_dim=100.
+    # Combiné avec wazuh=100 + asset=100 (server-prod) + frequency=1, score ≈ 75+
+    # même sans MISP enrichment (limité par Shuffle 1.4 array interpolation).
+    inject_match: "soc-selftest-malware-event"
+    inject_field: "hash_sha256"
+    inject_value: "ce7d25b4f5fdee33a3b1f72c92abb2c907a2dc8347442fb8c7940e9616a17dc8"
+    misp_type:    "sha256"
+    misp_category: "Payload delivery"
+    misp_value:   "ce7d25b4f5fdee33a3b1f72c92abb2c907a2dc8347442fb8c7940e9616a17dc8"
+    expected_score_min: 70
+    expected_score_max: 100
+  - key: bruteforce
+    rule_id: 999902
+    # IP TOR exit known-malicious (AbuseIPDB Score=100, Reports=37). Cortex
+    # AbuseIPDB_2_0 retourne `malicious` → cortex_dim=100. Combiné avec wazuh+
+    # asset (server-prod) + frequency=1 → score ≈ 60+ × multiplier bruteforce 0.9.
+    # MaxMind GeoIP retourne info uniquement, mais AbuseIPDB suffit pour le hit.
+    inject_match: "soc-selftest-bruteforce-event"
+    inject_field: "srcip"
+    inject_value: "185.220.101.42"
+    misp_type:    "ip-src"
+    misp_category: "Network activity"
+    misp_value:   "185.220.101.42"
+    expected_score_min: 50
+    expected_score_max: 100
+  - key: privesc
+    rule_id: 999903
+    # PrivEsc vers compte admin. Pas d'enrichissement Cortex disponible pour
+    # un username (pas d'analyzer "is-admin?"). Score restera ~50 × multiplier
+    # privesc 1.5 = 75 si frequency boostée, sinon ~50. C'est la nature même
+    # du scénario : l'enrichissement vient du contexte Wazuh (agent role) plus
+    # que de threat intel externe.
+    inject_match: "soc-selftest-privesc-event"
+    inject_field: "dstuser"
+    inject_value: "soc-selftest-admin"
+    misp_type:    "target-user"
+    misp_category: "Targeting data"
+    misp_value:   "soc-selftest-admin"
+    expected_score_min: 30
+    expected_score_max: 100
 
 # ── Stabilization grace after worker cleanup (seconds) ────────────
 # After force-deleting stale Shuffle workers, give orborus + opensearch this

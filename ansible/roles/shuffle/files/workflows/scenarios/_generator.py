@@ -79,8 +79,15 @@ def _branch(source_id: str, destination_id: str, condition_value: str | None = N
 
 def _http_action(action_id: str, method: str, x: int, y: int,
                  url: str, headers: str = "", body: str | None = None,
-                 ssl_verify: str = "false") -> dict[str, Any]:
-    """Build an HTTP action with the standard parameter set."""
+                 ssl_verify: str = "false", timeout: int = 60) -> dict[str, Any]:
+    """Build an HTTP action with the standard parameter set.
+
+    `timeout` (default 60s) override le default 5s du worker Shuffle http app.
+    Indispensable pour les Cortex waitreport (atMost=30s) qui peuvent prendre
+    jusqu'à 30s côté Cortex avant de retourner le report — sans bump à 60s côté
+    worker, on tombe en ReadTimeout(5s) avant que Cortex ait répondu et le
+    workflow part en ABORTED (cas vécu 2026-05-17 sur le pipeline E2E selftest).
+    """
     params = [
         _param("url", url),
         _param("method", method),
@@ -89,6 +96,7 @@ def _http_action(action_id: str, method: str, x: int, y: int,
     if body is not None:
         params.append(_param("body", body))
     params.append(_param("verify", ssl_verify))
+    params.append(_param("timeout", str(timeout)))
     return {
         "id": action_id,
         "label": action_id,
@@ -142,8 +150,18 @@ def make_create_alert(scenario_key: str, severity: int = 2) -> dict[str, Any]:
 
 
 def make_risk_engine_call(scenario_key: str, extra_fields: dict[str, str] | None = None,
+                          bare_value_fields: dict[str, str] | None = None,
                           x: int = 400, y: int = 0) -> dict[str, Any]:
-    """Risk engine call — payload includes scenario key for multiplier (Phase 5)."""
+    """Risk engine call — payload includes scenario key for multiplier (Phase 5).
+
+    `bare_value_fields` accepte des paires nom→ref-Shuffle qui sont injectées
+    SANS guillemets autour de la variable, pour que Shuffle 1.4 résolve la
+    référence à une valeur JSON native (array ou dict) sans corrompre la
+    syntaxe du body. Indispensable pour les arrays `cortex_*_taxonomies` et
+    `misp_*_attributes` que Shuffle ne sait pas escape correctement quand
+    on les injecte dans une string ("[{...nested-quotes...}]" → SyntaxError
+    côté worker http app, cas vécu 2026-05-17).
+    """
     headers = "Content-Type: application/json"
     payload = {
         "case_id": "$action_create_thehive_alert.body._id",
@@ -156,7 +174,17 @@ def make_risk_engine_call(scenario_key: str, extra_fields: dict[str, str] | None
     }
     if extra_fields:
         payload.update(extra_fields)
+
+    # Sérialisation : json.dumps pour les fields normaux puis on injecte les
+    # bare_value_fields à la main (sans guillemets autour de la valeur Shuffle).
     body = json.dumps(payload)
+    if bare_value_fields:
+        # Strip closing brace, append bare-value fields, re-close.
+        body = body.rstrip("}")
+        if not body.endswith("{"):
+            body += ", "
+        bare_parts = [f'"{k}": {v}' for k, v in bare_value_fields.items()]
+        body += ", ".join(bare_parts) + "}"
     return _http_action("action_call_risk_engine", "POST", x, y,
                         url="$ENV_RISK_ENGINE_URL/score",
                         headers=headers, body=body)
@@ -332,16 +360,14 @@ def build_malware_workflow() -> dict[str, Any]:
                      headers="Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json\nAccept: application/json",
                      body=json.dumps({"value": "$exec.all_fields.data.hash_sha256", "returnFormat": "json"})),
 
-        # Risk engine — pass cortex taxonomy_level (scalar string) only.
-        # Les fields *_taxonomies (arrays) ont été retirés : Shuffle injecte la valeur
-        # comme string brute dans le JSON body, ce qui corrompt la syntaxe quand le
-        # tableau contient des guillemets (`"[{"level":"safe"...}]"` casse ast.literal_eval
-        # côté worker → SyntaxError, jamais d'appel au risk-engine).
-        # Le risk-engine v2.4 sait inférer max_level à partir de _taxonomy_level scalaire.
-        make_risk_engine_call("malware", extra_fields={
-            "cortex_hash_mb_taxonomy_level":    "$action_get_cortex_hash_mb_result.body.report.summary.taxonomies.0.level",
-            "cortex_hash_circl_taxonomy_level": "$action_get_cortex_hash_circl_result.body.report.summary.taxonomies.0.level",
-            "misp_hash_attributes":             "$action_search_misp_hash.body.response.Attribute",
+        # Risk engine — bare-value interpolation pour les arrays (cortex_*_taxonomies +
+        # misp_hash_attributes). Voir _http_action.bare_value_fields pour explication.
+        # Le risk-engine v2.4 sait parser ces arrays via _resolve_cortex_max_level +
+        # _resolve_misp_hit. Cortex MalwareBazaar `malicious` → cortex_dim=100.
+        make_risk_engine_call("malware", bare_value_fields={
+            "cortex_hash_mb_taxonomies":    "$action_get_cortex_hash_mb_result.body.report.summary.taxonomies",
+            "cortex_hash_circl_taxonomies": "$action_get_cortex_hash_circl_result.body.report.summary.taxonomies",
+            "misp_hash_attributes":         "$action_search_misp_hash.body.response.Attribute",
         }),
 
         # Branches
@@ -447,11 +473,11 @@ def build_bruteforce_workflow() -> dict[str, Any]:
                      headers="Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json\nAccept: application/json",
                      body=json.dumps({"value": "$exec.all_fields.data.srcip", "returnFormat": "json"})),
 
-        # NOTE: cortex_taxonomies (array) retiré — corrompt le body JSON quand Shuffle
-        # interpole un tableau de dicts comme string. Voir wf-malware pour le pattern.
-        make_risk_engine_call("bruteforce", extra_fields={
-            "cortex_taxonomy_level": "$action_get_cortex_geoip_result.body.report.summary.taxonomies.0.level",
-            "misp_attributes":       "$action_search_misp_ip.body.response.Attribute",
+        # Bare-value interpolation (cf wf-malware). AbuseIPDB `malicious` sur les
+        # IPs abusives → cortex_dim=100. MISP search par IP → misp_dim=100.
+        make_risk_engine_call("bruteforce", bare_value_fields={
+            "cortex_taxonomies": "$action_get_cortex_geoip_result.body.report.summary.taxonomies",
+            "misp_attributes":   "$action_search_misp_ip.body.response.Attribute",
         }),
 
         make_ignore_alert(),

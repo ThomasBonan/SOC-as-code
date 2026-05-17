@@ -19,11 +19,65 @@ soc_automation_enable_preflight:      true   # Vérification des SA credentials 
 soc_automation_enable_credentials:    true   # Créer le Secret agrégé soc-automation-worker-creds
 soc_automation_enable_cortex_to_misp: true   # Stocker la politique MISP push (lue par Shuffle)
 soc_automation_enable_wazuh_webhook:  true   # Injecter le bloc integration Shuffle dans ossec.conf
+# Fallback alert-triage catchall : si true, ajoute une integration sans rule_id
+# qui attrape tous les events level >= min_level. Désactivé par défaut car
+# wazuh-integratord ne supporte pas l'exclusion (!rule_id) → le catchall fire
+# en plus du scenario → 2 workers Shuffle concurrents → ABORTED par routing
+# load-balance Service shuffle-workers (Shuffle 1.4 K8s limitation).
+soc_automation_wazuh_webhook_enable_fallback: false
+soc_automation_enable_wazuh_manager_labels: true   # Injecter <labels> agent.type dans ossec.conf manager
+soc_automation_enable_wazuh_selftest_scenarios: true   # Rules 999901-999903 + décodeurs IOC pour selftest E2E
+soc_automation_enable_ar_scripts:     true   # Déployer scripts AR custom (isolate-agent, disable-account)
+
+# ── Labels du Wazuh manager (agent 000) ────────────────────────────
+# Propagés à TOUTES les alertes émises par le manager local (selftest, logger
+# direct, etc.) sous agent.labels.{key} dans le JSON alert. Lu par le risk-engine
+# pour calculer asset_dim (server-prod=weight 5 → asset_dim=100).
+#
+# En lab : conserver server-prod pour que les selftests scenarios scorent
+# naturellement entre 75-100 (auto_contain / escalated) sur de vraies attaques
+# simulées via Wazuh logger. Pour un déploiement réel, ces labels doivent
+# refléter la criticité du host hébergeant le manager — un manager SOC est
+# typiquement un asset critique (perte de monitoring = blind spot).
+soc_automation_wazuh_manager_labels:
+  type: "server-prod"
+  environment: "{{ soc_environment | default('dev') }}"
+  role: "wazuh-manager"
 # Sysmon hash decoder : nécessite un parent `windows_eventchannel` qui n'existe
 # que si un agent Windows envoie des events EventChannel. Sans Sysmon dans le
 # scope, wazuh-analysisd refuse de charger et l'integrator reste mort (cas
 # vécu 2026-05-14). Toggle à true UNIQUEMENT si un agent Sysmon est en place.
 soc_automation_deploy_sysmon_decoder: false
+
+# ── Active Response custom scripts (Phase 4 multi-scenario) ───────────
+# Mode "log only" par défaut: SOC_AR_DRY_RUN=1 dans /var/ossec/active-response/soc-ar.env
+# Passer à false pour activer les actions destructives (iptables drop, passwd -l).
+# Recommandation: rester en dry-run au moins jusqu'à validation E2E selftest +
+# 1 sprint d'observation sur volume d'alertes réel (identifier faux-positifs).
+soc_automation_ar_dry_run: true
+
+# Commandes Active Response à déclarer dans ossec.conf.
+# Chaque entrée -> 1 bloc <command> + 1 <active-response>.
+# rule_ids   : limite l'AR aux alertes matchant ces rules (rules_id Wazuh).
+# Garde-fou principal côté Shuffle: l'AR n'est appelée que si risk_decision
+# in [contained, escalated] (score >= soc_risk_thresholds.auto_contain = 75).
+# Les rule_ids ici servent au déclenchement direct si on bypass Shuffle
+# (mode debug / rules très haute confiance) et au filtrage Wazuh-side.
+soc_automation_ar_commands:
+  - name: isolate-agent
+    executable: isolate-agent.sh
+    rule_ids: [100200, 100201, 100202]      # rules malware Sysmon
+    timeout_allowed: "yes"                   # Wazuh appelle action="delete" après timeout
+    timeout: 3600                            # 1h d'isolation max, puis auto-restore
+  - name: disable-account
+    executable: disable-account.sh
+    rule_ids: [5402, 5403, 4672]            # rules privesc
+    timeout_allowed: "yes"
+    timeout: 1800                            # 30 min de lock, puis auto-unlock
+  # firewall-drop est natif Wazuh (déjà installé), pas besoin de re-déclarer ici.
+  # Il est appelé via le workflow Shuffle wf-bruteforce qui POST à
+  # /active-response avec command=firewall-drop directement (déjà fourni
+  # par /var/ossec/active-response/bin/firewall-drop).
 
 # ── Runtime settings ──────────────────────────────────────────────
 soc_automation_kubeconfig_path: "{{ kubeconfig_path }}"

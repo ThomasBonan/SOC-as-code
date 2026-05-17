@@ -6,7 +6,7 @@
 - name: "shuffle | Workflows - calculate alert-triage.json hash"
   ansible.builtin.set_fact:
     _sh_alert_triage_hash: "{{ lookup('file', role_path + '/files/workflows/alert-triage.json') | hash('sha256') }}"
-    _sh_workflows_marker_version: "2026-05-17-wazuh-url-and-verify-fix-v2"
+    _sh_workflows_marker_version: "2026-05-17-bare-value-bodies-v3"
 
 # Pré-calcul des hashs des workflows scenarios (dict key -> sha256).
 # Sert à invalider le marker quand un JSON change ET à persister la matrice
@@ -215,11 +215,14 @@
     - name: "shuffle | Workflows - résoudre les analyzer IDs (IP + hash)"
       # Convention ConfigMap soc-cortex-analyzers-enabled: clé = (name|lower|regex_replace('[^a-z0-9_]','_')) ~ '_analyzer_uuid'
       # Doit matcher les noms du catalog Cortex (cf soc_foundations_cortex_analyzers).
-      # MalwareBazaar v1.0 → malwarebazaar_1_0_analyzer_uuid
-      # CIRCLHashlookup v1.1 → circlhashlookup_1_1_analyzer_uuid
+      # Pour les IP analyzers, on PRÉFÈRE AbuseIPDB (level=malicious sur abuse) à
+      # MaxMind GeoIP (level=info uniquement). Fallback MaxMind si AbuseIPDB n'est pas
+      # activé (pas de clé API dans .secrets/cortex_analyzers.yml).
       ansible.builtin.set_fact:
         _sh_cortex_analyzer_id:           >-
-          {{ _sh_cortex_anlz_cm_data.maxmind_analyzer_uuid | default('MaxMind_GeoIP_4_0') }}
+          {{ _sh_cortex_anlz_cm_data.abuseipdb_2_0_analyzer_uuid
+             | default(_sh_cortex_anlz_cm_data.maxmind_analyzer_uuid)
+             | default('AbuseIPDB_2_0') }}
         _sh_cortex_hash_analyzer_mb_id:   >-
           {{ _sh_cortex_anlz_cm_data.malwarebazaar_1_0_analyzer_uuid | default('MalwareBazaar_1_0') }}
         _sh_cortex_hash_analyzer_circl_id: >-

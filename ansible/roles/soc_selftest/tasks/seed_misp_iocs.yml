@@ -1,0 +1,207 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# seed_misp_iocs.yml — Pré-seed MISP avec les IOCs synthétiques du selftest
+# tag: bootstrap, soc_selftest
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Pourquoi :
+# Dans le lab, MISP n'a pas d'egress vers internet (NetPol restrictive : seuls
+# MariaDB, Redis, misp-modules + DNS sont autorisés). Les feeds OSINT configurés
+# (CIRCL, Botvrij, abuse.ch) restent à 0 attributs car les jobs cache_feeds
+# échouent en timeout curl. Conséquence : aucun MISP hit naturel → misp_dim=0 →
+# scores des selftests plafonnés.
+#
+# Pattern adopté : un analyste SOC publie manuellement un event MISP avec les
+# IOCs identifiés par son équipe (workflow standard en threat intel curation).
+# On reproduit cette opération avant chaque selftest : un event MISP "SOC
+# selftest baseline" qui porte le hash + l'IP injectés ensuite via Wazuh.
+#
+# L'alerte qui résultera de l'injection Wazuh va naturellement chercher ces
+# IOCs dans MISP (action_search_misp_* dans les workflows Shuffle) et obtenir
+# un hit légitime → misp_dim=100 dans le risk-engine.
+#
+# Idempotence : on cherche d'abord un event existant avec le tag
+# soc.lab:selftest-baseline ; si trouvé, on le met à jour, sinon on le crée.
+# Les attributs sont marqués `to_ids=true` pour matcher les MISP searches.
+
+- name: "seed_misp_iocs | Skip si pas de scenarios configurés"
+  when: (soc_selftest_scenarios | default([])) | length == 0
+  ansible.builtin.meta: end_play
+
+- name: "seed_misp_iocs | Ingress fallback pour MISP API base"
+  ansible.builtin.set_fact:
+    _smi_misp_api: >-
+      {{
+        (
+          '.svc' in soc_selftest_misp_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.misp | default('misp')) ~ '.' ~ apps_domain,
+            soc_selftest_misp_api_base
+          )
+      }}
+
+- name: "seed_misp_iocs | Lire la clé MISP SA"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_misp_sa_secret_ns }}"
+    name: "{{ soc_selftest_misp_sa_secret_name }}"
+  register: _smi_misp_sa
+  no_log: true
+  changed_when: false
+
+- name: "seed_misp_iocs | Décoder la clé"
+  ansible.builtin.set_fact:
+    _smi_misp_key: "{{ _smi_misp_sa.resources[0].data[soc_selftest_misp_sa_key] | b64decode }}"
+  no_log: true
+
+# ── Chercher l'event baseline existant ────────────────────────────
+
+- name: "seed_misp_iocs | Chercher l'event SOC selftest baseline existant"
+  ansible.builtin.uri:
+    url: "{{ _smi_misp_api }}/events/restSearch"
+    method: POST
+    headers:
+      Authorization: "{{ _smi_misp_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      tags: ["soc.lab:selftest-baseline"]
+      returnFormat: json
+      limit: 1
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+    status_code: [200]
+    timeout: "{{ soc_selftest_http_timeout | int }}"
+  register: _smi_event_search
+  no_log: false
+  failed_when: false
+
+- name: "seed_misp_iocs | Extraire l'event_id existant si présent"
+  ansible.builtin.set_fact:
+    _smi_existing_event_id: >-
+      {{
+        ((_smi_event_search.json.response | default([])) | first | default({})).Event.id
+        | default('')
+      }}
+
+- name: "seed_misp_iocs | [info] État baseline event"
+  ansible.builtin.debug:
+    msg: >-
+      Event baseline:
+      {{ 'existant id=' ~ _smi_existing_event_id if _smi_existing_event_id | length > 0
+         else 'absent — sera créé' }}
+
+# ── Construire la liste d'attributs depuis soc_selftest_scenarios ─
+
+- name: "seed_misp_iocs | Construire la liste d'attributs MISP"
+  ansible.builtin.set_fact:
+    _smi_attributes: >-
+      {{
+        (soc_selftest_scenarios | default([])) | map('community.general.json_query',
+          '{type: misp_type, value: misp_value, comment: comment}')
+        | list
+      }}
+  vars:
+    # On va construire manuellement parce que json_query n'a pas accès aux vars du loop_var
+    # Cette tâche est remplacée par la suivante (loop accumulator)
+
+- name: "seed_misp_iocs | Initialiser accumulateur d'attributs"
+  ansible.builtin.set_fact:
+    _smi_attributes: []
+
+- name: "seed_misp_iocs | Mapper chaque scenario → attribute MISP"
+  ansible.builtin.set_fact:
+    _smi_attributes: >-
+      {{
+        _smi_attributes + [
+          {
+            'type':     item.misp_type,
+            'category': item.misp_category | default('Network activity'),
+            'value':    item.misp_value,
+            'to_ids':   true,
+            'comment':  'SOC selftest baseline — scenario=' ~ item.key ~ ' rule=' ~ (item.rule_id | string)
+          }
+        ]
+      }}
+  loop: "{{ soc_selftest_scenarios | default([]) }}"
+  loop_control:
+    label: "{{ item.key }} ({{ item.misp_type | default('?') }}={{ item.misp_value | default('?') | truncate(40) }})"
+  when:
+    - item.misp_type is defined
+    - item.misp_value is defined
+
+# ── Créer ou mettre à jour l'event ────────────────────────────────
+
+- name: "seed_misp_iocs | Créer l'event baseline (si absent)"
+  when: _smi_existing_event_id | length == 0
+  ansible.builtin.uri:
+    url: "{{ _smi_misp_api }}/events/add"
+    method: POST
+    headers:
+      Authorization: "{{ _smi_misp_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      Event:
+        info: "[SOC selftest] Baseline IOCs for synthetic attack scenarios"
+        distribution: 0
+        threat_level_id: 2
+        analysis: 1
+        Tag:
+          - name: "soc.lab:selftest-baseline"
+          - name: "tlp:amber"
+        Attribute: "{{ _smi_attributes }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ soc_selftest_http_timeout | int }}"
+  register: _smi_event_create
+  no_log: false
+
+- name: "seed_misp_iocs | Capturer l'event_id (si création)"
+  when: _smi_existing_event_id | length == 0
+  ansible.builtin.set_fact:
+    _smi_event_id: "{{ _smi_event_create.json.Event.id }}"
+
+- name: "seed_misp_iocs | Re-utiliser event_id existant (si update)"
+  when: _smi_existing_event_id | length > 0
+  ansible.builtin.set_fact:
+    _smi_event_id: "{{ _smi_existing_event_id }}"
+
+# Si event existait déjà, on s'assure que tous les attributs voulus sont présents.
+# MISP /attributes/add est idempotent : retourne 200 si déjà présent, 200 sinon.
+- name: "seed_misp_iocs | Ajouter (ou vérifier) chaque attribut sur l'event existant"
+  when: _smi_existing_event_id | length > 0
+  ansible.builtin.uri:
+    url: "{{ _smi_misp_api }}/attributes/add/{{ _smi_event_id }}"
+    method: POST
+    headers:
+      Authorization: "{{ _smi_misp_key }}"
+      Accept: "application/json"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      type: "{{ item.type }}"
+      category: "{{ item.category }}"
+      value: "{{ item.value }}"
+      to_ids: "{{ item.to_ids }}"
+      comment: "{{ item.comment }}"
+    validate_certs: "{{ soc_selftest_validate_certs }}"
+    # 403 = déjà présent (duplicate) → accepté
+    status_code: [200, 201, 403]
+    timeout: "{{ soc_selftest_http_timeout | int }}"
+  loop: "{{ _smi_attributes }}"
+  loop_control:
+    label: "{{ item.type }}={{ item.value | truncate(40) }}"
+  register: _smi_attr_results
+  failed_when: false
+
+- name: "seed_misp_iocs | [info] Récap seed MISP"
+  ansible.builtin.debug:
+    msg:
+      - "MISP event baseline: id={{ _smi_event_id }}"
+      - "Attributs publiés: {{ _smi_attributes | length }}"
+      - "Tag: soc.lab:selftest-baseline (utilisable pour cleanup ultérieur)"

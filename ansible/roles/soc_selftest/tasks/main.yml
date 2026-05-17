@@ -67,6 +67,16 @@
   tags: [verify, argocd, soc_selftest]
   when: soc_selftest_enable_verify_argocd | default(true) | bool
 
+- import_tasks: seed_misp_iocs.yml
+  tags: [bootstrap, scenarios, soc_selftest]
+  when:
+    - soc_selftest_enable_verify_scenarios | default(true) | bool
+    - soc_selftest_enable_seed_misp_iocs | default(true) | bool
+
+- import_tasks: verify_scenario_routing.yml
+  tags: [verify, scenarios, soc_selftest]
+  when: soc_selftest_enable_verify_scenarios | default(true) | bool
+
 - import_tasks: report.yml
   tags: [report, soc_selftest]
   when: soc_selftest_enable_report | bool

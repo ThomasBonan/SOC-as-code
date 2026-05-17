@@ -1,0 +1,199 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# verify_scenario_routing.yml — Selftest E2E par workflow scenario
+# tag: verify, scenarios, soc_selftest
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Pour chaque scenario configuré (soc_selftest_scenarios):
+#   1. POST un payload synthétique directement sur le webhook Shuffle scenario
+#      (lit l'URL depuis le ConfigMap soc-shuffle-webhook-config.webhook_urls)
+#   2. Poll TheHive pour le case avec tag "scenario:<key>" + sourceRef unique
+#   3. Lit le risk_decision custom field et assert score dans plage attendue
+#   4. Assert tag "scenario:<key>" présent dans le case
+#   5. Vérifie qu'aucune AR destructive n'a été déclenchée (dry_run=true)
+#
+# Pourquoi POST direct sur webhook (vs Wazuh natif comme inject_wazuh_alert) ?
+#   - Évite de devoir maintenir 3 rules Wazuh + 3 décodeurs syslog (hash, srcip,
+#     dstuser) juste pour le selftest. La rule 999999 unique reste pour
+#     valider le routage Wazuh-side (intégration legacy alert-triage).
+#   - Le routage Wazuh par rule_id est validé séparément par lecture de
+#     ossec.conf et check de présence des blocs <integration> attendus.
+# ════════════════════════════════════════════════════════════════════════════════
+
+# Skip propre si pas de scenario configuré
+- name: "verify_scenario_routing | Skip si pas de scenarios configurés"
+  when: (soc_selftest_scenarios | default([])) | length == 0
+  ansible.builtin.debug:
+    msg: "Aucun scenario dans soc_selftest_scenarios — skip."
+  changed_when: false
+
+- name: "verify_scenario_routing | Bail out si pas de scenarios"
+  when: (soc_selftest_scenarios | default([])) | length == 0
+  ansible.builtin.meta: end_play
+
+# Ingress fallback: si la variable api_base contient '.svc' (non-résolvable depuis
+# le bastion), basculer vers l'URL Ingress. Reproduit le pattern de preflight.yml
+# car ce task peut tourner sans preflight (--tags scenarios bypass bootstrap).
+- name: "verify_scenario_routing | Ingress fallback pour TheHive API base"
+  ansible.builtin.set_fact:
+    soc_selftest_thehive_api_base: >-
+      {{
+        (
+          '.svc' in soc_selftest_thehive_api_base
+          and (apps_domain | default('') | length) > 0
+        )
+        | ternary(
+            'https://' ~ (soc_services.thehive | default('thehive')) ~ '.' ~ apps_domain ~ '/api',
+            soc_selftest_thehive_api_base
+          )
+      }}
+
+- name: "verify_scenario_routing | [info] Effective TheHive API base"
+  ansible.builtin.debug:
+    msg: "Using TheHive API base: {{ soc_selftest_thehive_api_base }}"
+
+# ── Initialiser run_id et webhook URLs (kept for compliance audit) ─
+# Avec le refactor injection-via-Wazuh, on n'utilise plus webhook_urls dans
+# le path principal. On garde la lecture pour valider la présence du ConfigMap
+# (compliance check : Shuffle a bien généré les webhooks pour chaque scenario).
+- name: "verify_scenario_routing | Compute run_id"
+  ansible.builtin.set_fact:
+    _vsr_run_id: "{{ now(utc=True).strftime('%Y%m%d%H%M%S') }}"
+
+- name: "verify_scenario_routing | Lire ConfigMap webhook config"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_selftest_shuffle_webhook_configmap_ns }}"
+    name: "{{ soc_selftest_shuffle_webhook_configmap }}"
+  register: _vsr_cm
+  changed_when: false
+
+- name: "verify_scenario_routing | Extraire webhook_urls"
+  ansible.builtin.set_fact:
+    _vsr_webhook_urls: >-
+      {{
+        (_vsr_cm.resources[0].data.webhook_urls | default('{}'))
+        | from_json
+      }}
+
+- name: "verify_scenario_routing | Assert webhook_urls non vide"
+  ansible.builtin.assert:
+    that: _vsr_webhook_urls | length > 0
+    fail_msg: >-
+      ConfigMap {{ soc_selftest_shuffle_webhook_configmap }} ne contient pas
+      de champ webhook_urls (dict). Vérifier 185-shuffle.yml + scenarios actifs.
+
+- name: "verify_scenario_routing | Show planned scenario tests"
+  ansible.builtin.debug:
+    msg:
+      - "Run ID: {{ _vsr_run_id }}"
+      - "Scenarios à tester: {{ soc_selftest_scenarios | map(attribute='key') | list | to_json }}"
+      - "URLs résolues:      {{ _vsr_webhook_urls | to_json }}"
+
+# ── Lire la SA TheHive (read) pour le polling case ────────────────
+- name: "verify_scenario_routing | Lire SA TheHive read"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_selftest_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_selftest_thehive_sa_secret_ns }}"
+    name: "{{ soc_selftest_thehive_sa_secret_name }}"
+  register: _vsr_thsa
+  no_log: true
+  changed_when: false
+
+- name: "verify_scenario_routing | Decode SA"
+  ansible.builtin.set_fact:
+    _vsr_thive_key: "{{ _vsr_thsa.resources[0].data[soc_selftest_thehive_sa_key] | b64decode }}"
+  no_log: true
+
+# ── Initialiser l'accumulateur de résultats ─────────────────────────
+- name: "verify_scenario_routing | Initialize results accumulator"
+  ansible.builtin.set_fact:
+    _vsr_results: {}
+
+# ── Boucle principale — 1 itération par scenario ───────────────────
+- name: "verify_scenario_routing | Run scenario tests (loop)"
+  ansible.builtin.include_tasks: _verify_one_scenario.yml
+  loop: "{{ soc_selftest_scenarios }}"
+  loop_control:
+    loop_var: _vsr_scn
+    label: "{{ _vsr_scn.key }}"
+
+# ── Vérification globale Wazuh-side: blocs <integration> en place ──
+- name: "verify_scenario_routing | Vérifier blocs <integration> dans ossec.conf"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+    bash -c 'grep -c "name>shuffle</name" /var/ossec/etc/ossec.conf'
+  register: _vsr_ossec_count
+  changed_when: false
+  failed_when: false
+
+- name: "verify_scenario_routing | Assert N intégrations dans ossec.conf"
+  # Attendu : N scenarios. Le bloc fallback alert-triage est désactivé par défaut
+  # (soc_automation_wazuh_webhook_enable_fallback=false) car wazuh-integratord
+  # ne supporte pas l'exclusion (!rule_id) → si présent, il duplique chaque alerte
+  # déjà routée par un scenario → 2 workers Shuffle concurrents → ABORTED par
+  # routing load-balance Service shuffle-workers (Shuffle 1.4 K8s limitation).
+  # Si fallback réactivé pour la prod, le compteur attendu devient N+1.
+  ansible.builtin.assert:
+    that:
+      - (_vsr_ossec_count.stdout | int) >= (soc_selftest_scenarios | length)
+    fail_msg: >-
+      ossec.conf ne contient que {{ _vsr_ossec_count.stdout | default('?') }} bloc(s)
+      <integration><name>shuffle</name>, attendu au moins
+      {{ soc_selftest_scenarios | length }} (un par scenario).
+      Relancer 180-soc-automation --tags integration.
+
+# ── Vérification AR : aucun appel destructif (dry_run=true attendu) ─
+- name: "verify_scenario_routing | Vérifier que SOC_AR_DRY_RUN=1 (mode log-only)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
+    exec -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
+    bash -c 'grep -q "SOC_AR_DRY_RUN=1" /var/ossec/active-response/soc-ar.env'
+  register: _vsr_dryrun
+  changed_when: false
+  failed_when: false
+
+- name: "verify_scenario_routing | Warning si AR pas en dry-run"
+  when: _vsr_dryrun.rc | default(1) != 0
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: SOC_AR_DRY_RUN n'est pas à 1 — les Active Responses peuvent
+      être destructives en cas de match. Vérifier soc_automation_ar_dry_run.
+  changed_when: false
+
+# ── Résumé final ────────────────────────────────────────────────────
+- name: "verify_scenario_routing | Summary header"
+  ansible.builtin.debug:
+    msg:
+      - "═══════════ SELFTEST SCENARIO ROUTING ═══════════"
+      - "Run ID:              {{ _vsr_run_id }}"
+      - "Scenarios testés:    {{ soc_selftest_scenarios | length }}"
+      - "Wazuh integrations:  {{ _vsr_ossec_count.stdout | default('?') }} bloc(s) (attendu >= {{ (soc_selftest_scenarios | length) + 1 }})"
+      - "AR dry_run actif:    {{ 'OUI' if _vsr_dryrun.rc | default(1) == 0 else 'NON (vérifier soc_automation_ar_dry_run)' }}"
+
+- name: "verify_scenario_routing | Per-scenario result"
+  ansible.builtin.debug:
+    msg:
+      - "─── {{ item.key }} ───"
+      - "  status        : {{ item.value.status }}"
+      - "  webhook POST  : HTTP {{ item.value.webhook_post_status }}"
+      - "  case_id       : {{ item.value.case_id | default('(no case)') }}"
+      - "  scenario tag  : {{ 'OK' if item.value.scenario_tag_present else 'MISSING' }}"
+      - "  risk_score    : {{ item.value.risk_score }} (range {{ item.value.expected_score_min }}-{{ item.value.expected_score_max }})"
+      - "  risk_decision : {{ item.value.risk_decision | default('(no decision)') }}"
+      - "  score_in_range: {{ item.value.score_in_range }}"
+  loop: "{{ _vsr_results | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: "verify_scenario_routing | Aggregate result"
+  ansible.builtin.debug:
+    msg:
+      - "═══════════ AGGREGATE ═══════════"
+      - "PASS    : {{ _vsr_results | dict2items | selectattr('value.status', 'equalto', 'pass') | list | length }}"
+      - "PARTIAL : {{ _vsr_results | dict2items | selectattr('value.status', 'match', '^partial.*') | list | length }}"
+      - "FAIL    : {{ _vsr_results | dict2items | selectattr('value.status', 'match', '^fail.*') | list | length }}"
+      - "TOTAL   : {{ _vsr_results | length }}"

@@ -1,0 +1,171 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_selftest_scenarios.yml — Rules + décodeur pour selftest E2E multi-scenarios
+# tag: integration, selftest
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Étend l'infra ossec selftest (rule 999999 + décodeur soc-syslog-net déjà gérés
+# par wazuh_webhook.yml) avec :
+#   - rules 999901/999902/999903 (malware/bruteforce/privesc)
+#   - décodeurs siblings qui extraient hash_sha256, dstuser (en plus de srcip
+#     déjà géré par soc-syslog-net-fields)
+#
+# Le routage vers le bon webhook Shuffle (wf-malware / wf-bruteforce / wf-privesc)
+# est ensuite assuré par les blocs <integration><rule_id>NNN</rule_id></integration>
+# déjà injectés dans ossec.conf par wazuh_webhook.yml + workflows.yml.
+#
+# Idempotence : signature sha256(content) dans un commentaire HTML du fichier
+# rules + check de présence des décodeurs additionnels.
+# Pod filesystem éphémère → repair on every run (no-op si déjà à jour).
+
+# ── 1. Rules scenarios ─────────────────────────────────────────────
+
+- name: "wazuh_selftest_scenarios | Lire le fichier rules scenarios"
+  ansible.builtin.set_fact:
+    _wss_rules_content: "{{ lookup('file', role_path + '/files/soc-selftest-scenario-rules.xml') }}"
+
+- name: "wazuh_selftest_scenarios | Calculer la signature des rules"
+  ansible.builtin.set_fact:
+    _wss_rules_sig: "{{ _wss_rules_content | hash('sha256') }}"
+
+- name: "wazuh_selftest_scenarios | Vérifier la signature des rules déjà présente"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-selftest-scenarios-sig:{{ _wss_rules_sig }}" /var/ossec/etc/rules/soc_selftest_rules.xml
+  register: _wss_rules_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_selftest_scenarios | Déployer les rules scenarios (999901-999903 + 999999)"
+  when: _wss_rules_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'cat > /var/ossec/etc/rules/soc_selftest_rules.xml'
+    stdin: |
+      <!-- soc-selftest-scenarios-sig:{{ _wss_rules_sig }} (managed by 180-soc-automation/wazuh_selftest_scenarios) -->
+      {{ _wss_rules_content }}
+  register: _wss_rules_deploy
+  changed_when: _wss_rules_deploy.rc == 0
+  failed_when: _wss_rules_deploy.rc != 0
+
+# ── 2. Décodeur fields étendu (hash_sha256, dstuser) ───────────────
+# wazuh_webhook.yml déploie un décodeur minimal soc-syslog-net (program_name=
+# soc-selftest) + soc-syslog-net-fields (extract srcip). On le remplace ici
+# par une version multi-IOC qui extrait aussi hash_sha256 + dstuser. Chaque
+# décodeur enfant a un <prematch> pour être éligible UNIQUEMENT quand son
+# IOC est présent dans le log (sans prematch, un seul des 3 décodeurs serait
+# sélectionné, et l'analyzer Sysmon hash ne pourrait jamais extraire le SHA256).
+
+- name: "wazuh_selftest_scenarios | Vérifier les décodeurs hash/dstuser AVEC prematch"
+  # On cherche la présence de TOUS les décodeurs + leur prematch. Sans le prematch,
+  # le décodeur est inopérant (cas observé : Wazuh ne sélectionne qu'un décodeur
+  # enfant par event → seul soc-syslog-net-fields était choisi → hash_sha256
+  # jamais extrait sur les events malware).
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'grep -q "soc-syslog-net-hash" /var/ossec/etc/decoders/soc-syslog.xml
+             && grep -q "<prematch.*hash_sha256=" /var/ossec/etc/decoders/soc-syslog.xml
+             && grep -q "soc-syslog-net-dstuser" /var/ossec/etc/decoders/soc-syslog.xml
+             && grep -q "<prematch.*dstuser=" /var/ossec/etc/decoders/soc-syslog.xml'
+  register: _wss_dec_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_selftest_scenarios | Étendre soc-syslog.xml avec hash_sha256 + dstuser"
+  when: _wss_dec_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      python3 -
+    stdin: |
+      import os, re
+
+      decoder_file = '/var/ossec/etc/decoders/soc-syslog.xml'
+      os.makedirs(os.path.dirname(decoder_file), exist_ok=True)
+
+      # IMPORTANT: chaque décodeur enfant DOIT avoir un <prematch> qui le filtre
+      # de manière unique. Sans prematch, wazuh-analysisd ne choisit qu'UN seul
+      # décodeur enfant (le premier qui matche), donc seul `srcip` était extrait
+      # quand on logguait un event malware (no srcip, mais le décodeur srcip était
+      # tenté en premier et "matchait" via parent uniquement) → hash_sha256
+      # jamais extrait. Avec prematch, le décodeur n'est éligible que si la
+      # clé attendue est présente dans le log — l'algorithme de sélection passe
+      # alors au bon décodeur.
+      content = (
+          '<!-- soc-syslog.xml — managed by 180-soc-automation/wazuh_selftest_scenarios -->\n'
+          '<decoder name="soc-syslog-net">\n'
+          '  <program_name>soc-selftest</program_name>\n'
+          '</decoder>\n'
+          '<decoder name="soc-syslog-net-hash">\n'
+          '  <parent>soc-syslog-net</parent>\n'
+          '  <prematch type="pcre2">hash_sha256=[A-Fa-f0-9]{64}</prematch>\n'
+          '  <regex type="pcre2">hash_sha256=([A-Fa-f0-9]{64})</regex>\n'
+          '  <order>hash_sha256</order>\n'
+          '</decoder>\n'
+          '<decoder name="soc-syslog-net-srcip">\n'
+          '  <parent>soc-syslog-net</parent>\n'
+          '  <prematch type="pcre2">srcip=\\d+\\.\\d+\\.\\d+\\.\\d+</prematch>\n'
+          '  <regex type="pcre2">srcip=(\\d+\\.\\d+\\.\\d+\\.\\d+)</regex>\n'
+          '  <order>srcip</order>\n'
+          '</decoder>\n'
+          '<decoder name="soc-syslog-net-dstuser">\n'
+          '  <parent>soc-syslog-net</parent>\n'
+          '  <prematch type="pcre2">dstuser=\\S+</prematch>\n'
+          '  <regex type="pcre2">dstuser=(\\S+)</regex>\n'
+          '  <order>dstuser</order>\n'
+          '</decoder>\n'
+      )
+      with open(decoder_file, 'w') as f:
+          f.write(content)
+      print('Décodeur soc-syslog.xml étendu (+hash_sha256, +dstuser) dans ' + decoder_file)
+  register: _wss_dec_deploy
+  changed_when: _wss_dec_deploy.rc == 0
+  failed_when: _wss_dec_deploy.rc != 0
+
+# ── 3. wazuh-analysisd reload si rules/decoder ont changé ──────────
+
+- name: "wazuh_selftest_scenarios | Restart wazuh-manager si rules/decoders ont changé"
+  when: >-
+    (_wss_rules_deploy is defined and _wss_rules_deploy.changed | default(false))
+    or (_wss_dec_deploy is defined and _wss_dec_deploy.changed | default(false))
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - /var/ossec/bin/wazuh-control
+      - restart
+  register: _wss_restart
+  changed_when: true
+  failed_when: false
+
+- name: "wazuh_selftest_scenarios | Attendre que wazuh-analysisd écoute à nouveau"
+  when: _wss_restart is defined and _wss_restart.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-control status
+  register: _wss_status
+  changed_when: false
+  retries: 30
+  delay: 4
+  until:
+    - _wss_status.rc == 0
+    - "'wazuh-analysisd is running' in _wss_status.stdout"
+
+- name: "wazuh_selftest_scenarios | [info] Récap"
+  ansible.builtin.debug:
+    msg:
+      - "Rules scenarios déployées : 999901 (malware), 999902 (bruteforce), 999903 (privesc), 999999 (legacy)"
+      - "Décodeurs : soc-syslog-net-fields (srcip), -hash (hash_sha256), -dstuser (dstuser)"
+      - "Sig rules: {{ _wss_rules_sig[:12] }}…"

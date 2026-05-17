@@ -38,6 +38,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -71,6 +75,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -100,6 +108,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -133,6 +145,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -161,11 +177,15 @@
         },
         {
           "name": "body",
-          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"bruteforce\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"cortex_taxonomy_level\": \"$action_get_cortex_geoip_result.body.report.summary.taxonomies.0.level\", \"misp_attributes\": \"$action_search_misp_ip.body.response.Attribute\"}"
+          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"bruteforce\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"cortex_taxonomies\": $action_get_cortex_geoip_result.body.report.summary.taxonomies, \"misp_attributes\": $action_search_misp_ip.body.response.Attribute}"
         },
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -199,6 +219,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -232,6 +256,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -265,6 +293,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -298,6 +330,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -327,6 +363,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -360,6 +400,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {
@@ -393,6 +437,10 @@
         {
           "name": "verify",
           "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "60"
         }
       ],
       "position": {

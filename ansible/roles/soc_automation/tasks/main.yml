@@ -27,9 +27,33 @@
     - integration
     - soc_automation
 
+- name: "soc_automation | Wazuh manager labels — injecter asset_type / environment"
+  import_tasks: wazuh_manager_labels.yml
+  when: soc_automation_enable_wazuh_manager_labels | default(true) | bool
+  tags:
+    - integration
+    - labels
+    - soc_automation
+
 - name: "soc_automation | Wazuh webhook — injecter l'intégration Shuffle dans ossec.conf"
   import_tasks: wazuh_webhook.yml
   when: soc_automation_enable_wazuh_webhook | bool
   tags:
     - integration
+    - soc_automation
+
+- name: "soc_automation | Wazuh selftest scenarios — rules 999901-999903 + décodeurs IOC"
+  import_tasks: wazuh_selftest_scenarios.yml
+  when: soc_automation_enable_wazuh_selftest_scenarios | default(true) | bool
+  tags:
+    - integration
+    - selftest
+    - soc_automation
+
+- name: "soc_automation | Wazuh AR scripts — déployer isolate-agent + disable-account + whitelists"
+  import_tasks: wazuh_ar_scripts.yml
+  when: soc_automation_enable_ar_scripts | bool
+  tags:
+    - integration
+    - ar
     - soc_automation

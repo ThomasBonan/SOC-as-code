@@ -242,6 +242,10 @@
       loop: "{{ soc_foundations_cortex_analyzers }}"
       loop_control:
         label: "{{ item.name }}"
+      # enabled_when : skip si la clé API manque (cf ansible/.secrets/cortex_analyzers.yml).
+      # Sans la clé, Cortex retourne 500 InvalidFormat / Missing param. Le skip permet
+      # à un déploiement lab sans clés API de continuer sans casser les autres analyzers.
+      when: item.enabled_when | default(true) | bool
       register: _sf_cx_anlz_enable_results
       failed_when: false
 

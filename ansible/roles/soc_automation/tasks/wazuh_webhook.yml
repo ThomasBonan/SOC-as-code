@@ -51,12 +51,91 @@
 
 # ── Extract webhook URL (needed by both first-run block and repair tasks) ──
 
-- name: "wazuh_webhook | Extraire l'URL du webhook"
+- name: "wazuh_webhook | Extraire l'URL du webhook (legacy alert-triage)"
   when:
     - _ww_shuffle_config.resources | default([]) | length > 0
     - _ww_shuffle_config.resources[0].data.webhook_url is defined
   ansible.builtin.set_fact:
     _ww_hook_url: "{{ _ww_shuffle_config.resources[0].data.webhook_url }}"
+
+# Multi-scenario: parse webhook_urls (dict scenario_key -> URL) et scenarios_meta
+# (dict scenario_key -> {workflow_id, rule_ids, ar_command, ...}) écrits par
+# roles/shuffle/tasks/workflows.yml. Si les champs sont absents (ancien marker
+# pré-multi-scenario), on retombe sur le seul alert-triage legacy.
+- name: "wazuh_webhook | Extraire webhook_urls + scenarios_meta (multi-scenario)"
+  when:
+    - _ww_shuffle_config.resources | default([]) | length > 0
+  ansible.builtin.set_fact:
+    _ww_webhook_urls: >-
+      {{
+        (_ww_shuffle_config.resources[0].data.webhook_urls | default('{}'))
+        | from_json
+      }}
+    _ww_scenarios_meta: >-
+      {{
+        (_ww_shuffle_config.resources[0].data.scenarios_meta | default('{}'))
+        | from_json
+      }}
+
+# Construire la liste finale d'intégrations Wazuh à injecter:
+#   - 1 entrée par scenario (avec rule_ids filtré)
+#   - 1 fallback alert-triage en queue (sans rule_id => attrape tout le reste
+#     au-dessus du min_level configuré) — OPTIONNEL via toggle
+#
+# Pourquoi le fallback est désactivé par défaut :
+# wazuh-integratord n'a pas de syntaxe d'exclusion ; un fallback sans rule_id
+# attrape AUSSI les alertes qui matchent déjà un scenario, ce qui crée DEUX
+# integrations <integration> pour la même alerte → deux workers Shuffle
+# concurrents → service shuffle-workers load-balance les callbacks http app sur
+# le mauvais worker → workflow ABORTED (cas vécu lab K8s Shuffle 1.4 où l'IP
+# du worker n'est pas isolée). Activer uniquement si :
+#   - les scenarios couvrent suffisamment de cas pour ne pas nécessiter
+#     un catchall (alerts hors-scenario non workflow-traitées sont OK)
+#   - OU Shuffle 1.5+ avec K8s native worker routing
+- name: "wazuh_webhook | Construire la liste des intégrations Wazuh"
+  when: _ww_hook_url is defined
+  ansible.builtin.set_fact:
+    _ww_integrations: >-
+      {{
+        (
+          _ww_scenarios_meta | default({}) | dict2items
+          | map('combine', {'kind': 'scenario'})
+          | list
+        )
+        +
+        (
+          (soc_automation_wazuh_webhook_enable_fallback | default(false) | bool)
+          | ternary(
+              [{
+                'key': 'fallback',
+                'kind': 'fallback',
+                'value': {
+                  'workflow_id': (_ww_shuffle_config.resources[0].data.triage_workflow_id | default('')),
+                  'webhook_url': _ww_hook_url,
+                  'rule_ids':    [],
+                  'description': 'Generic alert-triage fallback (no rule_id filter)',
+                  'ar_command':  ''
+                }
+              }],
+              []
+            )
+        )
+      }}
+
+# Logging: visibilité sur les intégrations qui vont être écrites
+- name: "wazuh_webhook | [info] intégrations Wazuh prévues"
+  when: _ww_hook_url is defined
+  ansible.builtin.debug:
+    msg: >-
+      Integration #{{ idx }}:
+      kind={{ item.kind }},
+      key={{ item.key }},
+      rule_ids={{ item.value.rule_ids | default([]) | to_json }},
+      url={{ item.value.webhook_url }}
+  loop: "{{ _ww_integrations | default([]) }}"
+  loop_control:
+    index_var: idx
+    label: "{{ item.key }}"
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 1 — In-pod file repairs (ALWAYS run, self-idempotent)
@@ -260,10 +339,13 @@
 # This decoder splits the field into data.hash_sha256/sha1/md5 so the Shuffle
 # alert-triage workflow can pass the SHA256 alone to the hash analyzers.
 
-# Le décodeur Sysmon hashes nécessite un parent `windows_eventchannel`. Ce
-# parent n'est matérialisé que si un agent Windows envoie des events
-# EventChannel ; sinon wazuh-analysisd refuse de charger et l'integrator reste
-# mort (cas vécu 2026-05-14 → selftest cassé). Gated par toggle, default false.
+# Le décodeur Sysmon hashes s'attache au décodeur natif `json` (qui parse les
+# events Windows EventChannel envoyés en JSON par l'agent). NE PAS utiliser
+# `<parent>windows_eventchannel</parent>` — c'est un alias virtuel utilisable
+# uniquement dans `<decoded_as>` côté rules, pas un nom de décodeur réel
+# (analysisd refuse de charger, code 2101 — cas vécu 2026-05-14).
+# Le prematch SHA256= filtre pour ne s'exécuter que sur les events qui portent
+# réellement le bloc Hashes Sysmon. Gated par toggle, default false.
 - name: "wazuh_webhook | Déployer le décodeur Sysmon hashes (split Hashes field)"
   when:
     - _ww_hook_url is defined
@@ -286,19 +368,19 @@
         decoder_xml = (
             '<!-- soc-sysmon-hashes.xml — managed by 180-soc-automation -->\n'
             '<decoder name="soc-sysmon-hash-sha256">\n'
-            '  <parent>windows_eventchannel</parent>\n'
+            '  <parent>json</parent>\n'
             '  <prematch type="pcre2">SHA256=[A-Fa-f0-9]{64}</prematch>\n'
             '  <regex type="pcre2">SHA256=([A-Fa-f0-9]{64})</regex>\n'
             '  <order>hash_sha256</order>\n'
             '</decoder>\n'
             '<decoder name="soc-sysmon-hash-sha1">\n'
-            '  <parent>windows_eventchannel</parent>\n'
+            '  <parent>json</parent>\n'
             '  <prematch type="pcre2">SHA1=[A-Fa-f0-9]{40}</prematch>\n'
             '  <regex type="pcre2">SHA1=([A-Fa-f0-9]{40})</regex>\n'
             '  <order>hash_sha1</order>\n'
             '</decoder>\n'
             '<decoder name="soc-sysmon-hash-md5">\n'
-            '  <parent>windows_eventchannel</parent>\n'
+            '  <parent>json</parent>\n'
             '  <prematch type="pcre2">MD5=[A-Fa-f0-9]{32}</prematch>\n'
             '  <regex type="pcre2">MD5=([A-Fa-f0-9]{32})</regex>\n'
             '  <order>hash_md5</order>\n'
@@ -331,6 +413,87 @@
       - rm
       - -f
       - /var/ossec/etc/decoders/soc-sysmon-hashes.xml
+  changed_when: false
+
+# ── Rule Sysmon hacktools (level 12 — passe le filtre webhook_min_level) ──────
+# Le ruleset Wazuh natif ne fait pas matcher Mimikatz à level >= 9 sur un simple
+# ProcessCreate (sigma 92052 a des conditions trop spécifiques). Sans cette rule
+# custom, l'event Sysmon ProcessCreate avec Image=mimikatz.exe matche seulement
+# la rule générique 60106 (level 1) qui ne déclenche pas le webhook Shuffle.
+# Gated par le même toggle que le décodeur — les deux n'ont de sens qu'avec
+# Sysmon dans le scope.
+- name: "wazuh_webhook | Déployer la rule Sysmon hacktools (level 12)"
+  when:
+    - _ww_hook_url is defined
+    - soc_automation_deploy_sysmon_decoder | default(false) | bool
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - python3
+      - -c
+      - |
+        import os
+        os.makedirs('/var/ossec/etc/rules', exist_ok=True)
+        rule_xml = (
+            '<!-- soc_sysmon_hacktools.xml - managed by 180-soc-automation -->\n'
+            '<group name="sysmon,hacktool,credential_dump,">\n'
+            '  <rule id="100200" level="12">\n'
+            '    <decoded_as>windows_eventchannel</decoded_as>\n'
+            '    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>\n'
+            '    <field name="win.system.eventID">^1$</field>\n'
+            '    <field name="win.eventdata.image" type="pcre2">(?i)(mimikatz|lazagne|gsecdump|wce\\.exe|fgdump|pwdump|procdump.*lsass)</field>\n'
+            '    <description>Sysmon - Hacktool credential-dump detected: $(win.eventdata.image)</description>\n'
+            '    <mitre><id>T1003.001</id></mitre>\n'
+            '  </rule>\n'
+            '  <rule id="100201" level="12">\n'
+            '    <decoded_as>windows_eventchannel</decoded_as>\n'
+            '    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>\n'
+            '    <field name="win.system.eventID">^1$</field>\n'
+            '    <field name="win.eventdata.originalFileName" type="pcre2">(?i)(mimikatz|lazagne)</field>\n'
+            '    <description>Sysmon - Hacktool via OriginalFileName: $(win.eventdata.originalFileName)</description>\n'
+            '    <mitre><id>T1003.001</id></mitre>\n'
+            '  </rule>\n'
+            '  <rule id="100202" level="12">\n'
+            '    <decoded_as>windows_eventchannel</decoded_as>\n'
+            '    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>\n'
+            '    <field name="win.system.eventID">^1$</field>\n'
+            '    <field name="win.eventdata.description" type="pcre2">(?i)mimikatz</field>\n'
+            '    <description>Sysmon - Hacktool via PE Description: $(win.eventdata.description)</description>\n'
+            '    <mitre><id>T1003.001</id></mitre>\n'
+            '  </rule>\n'
+            '</group>\n'
+        )
+        rule_file = '/var/ossec/etc/rules/soc_sysmon_hacktools.xml'
+        with open(rule_file, 'w') as f:
+            f.write(rule_xml)
+        print('Rule soc_sysmon_hacktools.xml ecrite dans ' + rule_file)
+  register: _ww_sysmon_hacktools_deploy
+  changed_when: _ww_sysmon_hacktools_deploy.rc | default(1) == 0
+
+- name: "wazuh_webhook | Nettoyer la rule hacktools si toggle désactivé"
+  when:
+    - _ww_hook_url is defined
+    - not (soc_automation_deploy_sysmon_decoder | default(false) | bool)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - rm
+      - -f
+      - /var/ossec/etc/rules/soc_sysmon_hacktools.xml
   changed_when: false
 
 # ── Ruleset: s'assurer que etc/rules ET etc/decoders sont inclus (ephemeral) ──
@@ -386,34 +549,38 @@
   register: _ww_ruledir_inject
   changed_when: _ww_ruledir_inject.rc | default(1) == 0
 
-# ── Shuffle integration block in ossec.conf (ephemeral — repair on every run) ──
+# ── Shuffle multi-integration block in ossec.conf (ephemeral — repair every run) ──
+# Génère N blocs <integration> dans ossec.conf:
+#   - 1 par scenario (filtré par <rule_id>list,...)
+#   - 1 fallback alert-triage (pas de filtre rule_id)
+# Le marker court-circuite l'écriture si la signature SHA-1 des integrations
+# correspond déjà à celle présente dans ossec.conf.
 
-- name: "wazuh_webhook | Vérifier si l'intégration Shuffle existe dans ossec.conf"
+# Calcule une signature stable des intégrations (utilisée pour skip rapide)
+- name: "wazuh_webhook | Calculer la signature des intégrations"
+  when: _ww_hook_url is defined
+  ansible.builtin.set_fact:
+    _ww_integrations_sig: >-
+      {{
+        (_ww_integrations | default([]) | to_json) | hash('sha1')
+      }}
+
+# Vérifie si la signature présente in-pod (comment) matche le calcul actuel
+- name: "wazuh_webhook | Vérifier si la signature des intégrations est à jour"
   when: _ww_hook_url is defined
   ansible.builtin.command: >
     kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
     exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
-    grep -q "name>shuffle</name" /var/ossec/etc/ossec.conf
-  register: _ww_grep_existing
+    grep -q "soc-shuffle-integrations-sig:{{ _ww_integrations_sig }}" /var/ossec/etc/ossec.conf
+  register: _ww_sig_check
   changed_when: false
   failed_when: false
 
-- name: "wazuh_webhook | Vérifier si l'URL du webhook est à jour dans ossec.conf"
+# Backup horodaté pour rollback en cas de configcheck KO
+- name: "wazuh_webhook | Backup ossec.conf avant écriture"
   when:
     - _ww_hook_url is defined
-    - _ww_grep_existing.rc | default(1) == 0
-  ansible.builtin.command: >
-    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
-    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
-    grep -q "{{ _ww_hook_url }}" /var/ossec/etc/ossec.conf
-  register: _ww_url_check
-  changed_when: false
-  failed_when: false
-
-- name: "wazuh_webhook | Injecter ou mettre à jour le bloc integration Shuffle dans ossec.conf"
-  when:
-    - _ww_hook_url is defined
-    - (_ww_grep_existing.rc | default(1) != 0) or (_ww_url_check.rc | default(1) != 0)
+    - _ww_sig_check.rc | default(1) != 0
   ansible.builtin.command:
     argv:
       - kubectl
@@ -424,41 +591,176 @@
       - "{{ soc_automation_wazuh_ns }}"
       - "{{ soc_automation_wazuh_manager_pod }}"
       - --
-      - python3
+      - bash
       - -c
-      - |
-        import re
-        hook_url = '{{ _ww_hook_url }}'
-        new_block = (
-            '\n  <integration>\n'
-            '    <name>shuffle</name>\n'
-            '    <hook_url>' + hook_url + '</hook_url>\n'
-            '    <level>{{ soc_automation_wazuh_webhook_min_level | default(3) }}</level>\n'
-            '    <alert_format>json</alert_format>\n'
-            '  </integration>'
-        )
-        with open('/var/ossec/etc/ossec.conf', 'r') as f:
-            content = f.read()
-        # Remove existing integration block if present (URL mismatch)
-        content = re.sub(
-            r'\s*<integration>\s*<name>shuffle</name>.*?</integration>',
-            '', content, flags=re.DOTALL
-        )
-        closing = '</ossec_config>'
-        if closing not in content:
-            raise ValueError('Tag </ossec_config> non trouve dans ossec.conf')
-        new_content = content.replace(closing, new_block + '\n' + closing)
-        with open('/var/ossec/etc/ossec.conf', 'w') as f:
-            f.write(new_content)
-        print('Bloc Shuffle mis a jour avec URL: ' + hook_url)
-  register: _ww_inject_result
-  changed_when: _ww_inject_result.rc | default(1) == 0
+      - 'cp -a /var/ossec/etc/ossec.conf /var/ossec/etc/ossec.conf.bak-$(date +%Y%m%d%H%M%S) && ls -t /var/ossec/etc/ossec.conf.bak-* | tail -n +6 | xargs -r rm -f'
+  register: _ww_backup
+  changed_when: _ww_backup.rc == 0
+  failed_when: _ww_backup.rc != 0
 
-- name: "wazuh_webhook | Confirmer l'injection"
-  when: _ww_hook_url is defined
-  ansible.builtin.debug:
-    msg: "{{ _ww_inject_result.stdout | default('Intégration Shuffle déjà présente — aucune modification') }}"
+# Sérialise les intégrations en JSON et les passe à un Python in-pod via stdin.
+# Le script remplace TOUS les blocs <integration><name>shuffle...</name></integration>
+# existants (même multiples) par les nouveaux, puis ajoute la signature en commentaire.
+- name: "wazuh_webhook | Injecter N blocs <integration> Shuffle dans ossec.conf"
+  when:
+    - _ww_hook_url is defined
+    - _ww_sig_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      python3 -
+    stdin: |
+      import json, re, sys
+      integrations = json.loads({{ _ww_integrations | to_json | to_json }})
+      sig = '{{ _ww_integrations_sig }}'
+      min_level = {{ soc_automation_wazuh_webhook_min_level | default(3) | int }}
+
+      blocks = ['<!-- soc-shuffle-integrations-sig:' + sig + ' (managed by 180-soc-automation) -->']
+      for entry in integrations:
+          kind = entry.get('kind', 'scenario')
+          v = entry.get('value', {})
+          rule_ids = v.get('rule_ids') or []
+          url = v.get('webhook_url', '')
+          if not url:
+              continue
+          lines = [
+              '  <integration>',
+              '    <name>shuffle</name>',
+              '    <hook_url>' + url + '</hook_url>',
+              '    <level>' + str(min_level) + '</level>',
+          ]
+          if rule_ids:
+              lines.append('    <rule_id>' + ','.join(str(r) for r in rule_ids) + '</rule_id>')
+          lines.append('    <alert_format>json</alert_format>')
+          lines.append('  </integration>')
+          blocks.append('\n'.join(lines))
+
+      new_section = '\n  ' + '\n  '.join(blocks) + '\n'
+
+      with open('/var/ossec/etc/ossec.conf', 'r') as f:
+          content = f.read()
+
+      # Strip ALL existing shuffle integration blocks + previous signature comment
+      content = re.sub(
+          r'\s*<!--\s*soc-shuffle-integrations-sig:[^-]*-->\s*', '\n  ', content
+      )
+      content = re.sub(
+          r'\s*<integration>\s*<name>shuffle</name>.*?</integration>',
+          '', content, flags=re.DOTALL
+      )
+      closing = '</ossec_config>'
+      if closing not in content:
+          raise SystemExit('Tag </ossec_config> non trouve dans ossec.conf')
+      new_content = content.replace(closing, new_section + closing)
+      with open('/var/ossec/etc/ossec.conf', 'w') as f:
+          f.write(new_content)
+      print('Wrote {} integration block(s) (sig={})'.format(len(integrations), sig))
+  register: _ww_multi_inject
+  changed_when: _ww_multi_inject.rc | default(1) == 0
+  failed_when: _ww_multi_inject.rc | default(1) != 0
+
+- name: "wazuh_webhook | Configcheck Wazuh post-écriture (valider syntaxe XML)"
+  # NOTE: `wazuh-control` ne supporte PAS de sous-commande configcheck (vérifié 2026-05-16
+  # sur Wazuh 4.7+). Le test syntaxique de ossec.conf+rules+decoders se fait via
+  # `wazuh-analysisd -t` qui parse tout et exit 0 si OK, !=0 si erreur.
+  when:
+    - _ww_hook_url is defined
+    - _ww_multi_inject is changed
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-analysisd -t
+  register: _ww_configcheck
   changed_when: false
+  failed_when: false
+
+# Si configcheck KO: dumper sortie configcheck + extraits du ossec.conf foiré
+# AVANT le rollback (qui détruit la version cassée). Aide critique au debug.
+- name: "wazuh_webhook | [diag] Configcheck output (toujours visible)"
+  when:
+    - _ww_hook_url is defined
+    - _ww_multi_inject is changed
+  ansible.builtin.debug:
+    msg:
+      - "configcheck rc: {{ _ww_configcheck.rc | default('?') }}"
+      - "configcheck stdout:"
+      - "{{ _ww_configcheck.stdout_lines | default(['(empty)']) }}"
+      - "configcheck stderr:"
+      - "{{ _ww_configcheck.stderr_lines | default(['(empty)']) }}"
+  changed_when: false
+
+- name: "wazuh_webhook | [diag] Dump <integration> blocs du ossec.conf actuel (avant rollback)"
+  when:
+    - _ww_hook_url is defined
+    - _ww_multi_inject is changed
+    - _ww_configcheck.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - bash
+      - -c
+      - 'awk "/<integration>/,/<\/integration>/" /var/ossec/etc/ossec.conf'
+  register: _ww_dump_integrations
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_webhook | [diag] Show dumped integrations"
+  when:
+    - _ww_hook_url is defined
+    - _ww_multi_inject is changed
+    - _ww_configcheck.rc | default(1) != 0
+  ansible.builtin.debug:
+    msg: "{{ _ww_dump_integrations.stdout_lines | default(['(no integration block in ossec.conf)']) }}"
+  changed_when: false
+
+# Rollback si configcheck KO
+- name: "wazuh_webhook | Rollback ossec.conf si configcheck KO"
+  when:
+    - _ww_hook_url is defined
+    - _ww_multi_inject is changed
+    - _ww_configcheck.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - bash
+      - -c
+      - 'LAST=$(ls -t /var/ossec/etc/ossec.conf.bak-* 2>/dev/null | head -1); if [ -n "$LAST" ]; then cp -a "$LAST" /var/ossec/etc/ossec.conf && echo "Rolled back to $LAST" && exit 1; else echo "no backup available" >&2; exit 1; fi'
+  register: _ww_rollback
+  failed_when: true   # toujours fail pour signaler clairement le rollback à l'opérateur
+
+- name: "wazuh_webhook | Confirmer l'injection multi-integration"
+  when:
+    - _ww_hook_url is defined
+    - _ww_multi_inject is changed
+    - _ww_configcheck.rc | default(0) == 0
+  ansible.builtin.debug:
+    msg:
+      - "{{ _ww_multi_inject.stdout | default('') }}"
+      - "Integrations: {{ _ww_integrations | length }} (incluant fallback)"
+      - "Signature   : {{ _ww_integrations_sig }}"
+  changed_when: false
+
+# Maintien des variables legacy pour rétro-compat des tâches qui suivent
+# (reload, diagnostics) — _ww_inject_result remplace l'ancienne variable.
+- name: "wazuh_webhook | Alias _ww_inject_result pour rétro-compat reload"
+  when: _ww_hook_url is defined
+  ansible.builtin.set_fact:
+    _ww_inject_result: "{{ _ww_multi_inject | default({}) }}"
 
 # ── /var/log/syslog localfile monitoring (ephemeral — repair on every run) ──
 # The selftest (210) injects via: echo "...soc-selftest-test-event..." >> /var/log/syslog

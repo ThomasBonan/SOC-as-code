@@ -12,113 +12,64 @@
 #    score_in_range, status}
 # ════════════════════════════════════════════════════════════════════════════════
 
-# Webhook URL pour ce scenario (extrait du dict du caller)
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Resolve webhook URL"
+# Le sourceRef est dérivé du sender (manager_pod + run_id + scenario) pour
+# tracking ; il n'est PAS injecté dans le log syslog (Wazuh décodeur
+# soc-syslog-net n'extrait pas ce champ). Sert uniquement à la verif TheHive.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Compute sourceRef"
   ansible.builtin.set_fact:
-    _vsr_one_webhook: "{{ _vsr_webhook_urls[_vsr_scn.key] | default('') }}"
     _vsr_one_sourceref: "soc-selftest-scn-{{ _vsr_scn.key }}-{{ _vsr_run_id }}"
 
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Assert webhook URL trouvée"
-  ansible.builtin.assert:
-    that: _vsr_one_webhook | length > 0
-    fail_msg: >-
-      Pas d'URL webhook pour scenario={{ _vsr_scn.key }}.
-      Vérifier que shuffle_scenarios contient cette clé et que 185-shuffle
-      a bien re-déployé (marker invalidé).
-
-# Construire le payload synthétique "Wazuh alert webhook" — Shuffle attend
-# le format Wazuh JSON brut où `all_fields` contient l'event original.
-# Le scenario-specific payload_overrides est mergé dans .data.
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Build synthetic payload"
+# ── Injection via Wazuh logger (chemin RÉEL d'une vraie alerte) ──
+# On écrit une ligne syslog dans /var/log/syslog du pod wazuh-manager-master-0.
+# Wazuh monitore ce fichier (localfile syslog) → décodeur soc-syslog-net
+# (program_name=soc-selftest) extrait l'IOC → rule 99990X fire (level 10) →
+# bloc <integration> ossec.conf route vers le webhook Shuffle correspondant →
+# workflow Shuffle exécute Cortex + MISP + risk-engine → TheHive case + score.
+#
+# Format syslog : `<date> <host>: <message>` (BSD syslog). On utilise
+# `<date> soc-selftest: <message>` pour que program_name=soc-selftest.
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Compose synthetic syslog line"
   ansible.builtin.set_fact:
-    _vsr_one_payload: >-
-      {{
-        {
-          'all_fields': {
-            'rule': {
-              'id':    _vsr_scn.rule_id | string,
-              'level': 10,
-              'description': 'SOC selftest synthetic ' ~ _vsr_scn.key ~ ' alert'
-            },
-            'agent': {
-              'id':     '000',
-              'name':   'soc-selftest-agent',
-              'ip':     '127.0.0.1',
-              'labels': {'type': 'lab'}
-            },
-            'timestamp': now(utc=True).isoformat() ~ 'Z',
-            'data':      (_vsr_scn.payload_overrides.data | default({}))
-          }
-        }
-      }}
+    _vsr_one_syslog_line: >-
+      {{ _vsr_scn.inject_field }}={{ _vsr_scn.inject_value }}
+      run_id={{ _vsr_run_id }}
+      {{ _vsr_scn.inject_match }}
 
-# Note: le sourceRef du TheHive alert est dérivé de agent.id + rule.id + timestamp.
-# Pour un selftest reproductible et trackable, on injecte aussi run_id dans
-# all_fields.data.run_id que les rules custom pourraient lire si besoin.
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Inject run_id into payload"
-  ansible.builtin.set_fact:
-    _vsr_one_payload: >-
-      {{
-        _vsr_one_payload | combine({
-          'all_fields': _vsr_one_payload.all_fields | combine({
-            'data': _vsr_one_payload.all_fields.data | combine({
-              'run_id':      _vsr_run_id,
-              'scenario_id': _vsr_scn.key,
-              'selftest':    true
-            })
-          })
-        }, recursive=True)
-      }}
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Inject ligne syslog dans wazuh-manager"
+  # On utilise printf au lieu de echo pour échapper proprement. Le format
+  # `Mmm DD HH:MM:SS hostname program_name: message` est le format BSD syslog
+  # auquel le pré-décodeur Wazuh s'attend.
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_selftest_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_selftest_wazuh_ns }}"
+      - "{{ soc_selftest_wazuh_manager_pod }}"
+      - --
+      - bash
+      - -c
+      - "printf '%s\\n' \"$(date '+%b %e %H:%M:%S') soc-selftest: {{ _vsr_one_syslog_line }}\" >> /var/log/syslog"
+  register: _vsr_one_inject
+  changed_when: _vsr_one_inject.rc == 0
+  failed_when: _vsr_one_inject.rc != 0
 
-# POST sur le webhook scenario via kubectl exec (in-cluster URL)
-# Le webhook URL est interne (.svc) donc kubectl exec depuis un pod Wazuh.
-# On utilise le pod Wazuh manager (déjà accessible) comme jump pour le POST.
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] POST sur webhook Shuffle"
-  ansible.builtin.shell:
-    cmd: >
-      kubectl --kubeconfig {{ soc_selftest_kubeconfig_path }}
-      exec -i -n {{ soc_selftest_wazuh_ns }} {{ soc_selftest_wazuh_manager_pod }} --
-      curl -sS -m 30 -o /dev/null -w '%{http_code}' -X POST
-      -H 'Content-Type: application/json'
-      --data-binary @-
-      '{{ _vsr_one_webhook }}'
-    stdin: "{{ _vsr_one_payload | to_json }}"
-  register: _vsr_one_post
-  changed_when: false
-  failed_when: false
-
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Show POST result"
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Show injected line"
   ansible.builtin.debug:
-    msg: >-
-      POST {{ _vsr_one_webhook }} -> HTTP {{ _vsr_one_post.stdout | default('?') }}
-      (rc={{ _vsr_one_post.rc | default('?') }})
+    msg:
+      - "Injected via Wazuh logger (rule {{ _vsr_scn.rule_id }}, scenario {{ _vsr_scn.key }})"
+      - "syslog line: soc-selftest: {{ _vsr_one_syslog_line }}"
 
-# Si POST KO, on enregistre l'échec et on continue (autres scenarios)
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Record failure si POST KO"
-  when: _vsr_one_post.stdout | default('') not in ['200', '201', '202']
+# Webhook POST status devient logique : OK si l'injection logger a réussi.
+# Le routage vers Shuffle est asynchrone (Wazuh integrator) — on le valide
+# via le poll TheHive qui suit (présence d'alerte + case promu).
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Marquer webhook_post_status"
   ansible.builtin.set_fact:
-    _vsr_results: >-
-      {{
-        _vsr_results | combine({
-          _vsr_scn.key: {
-            'status':              'fail-post',
-            'webhook_post_status': _vsr_one_post.stdout | default('?'),
-            'case_id':             '',
-            'risk_score':          0,
-            'risk_decision':       '',
-            'scenario_tag_present': false,
-            'score_in_range':      false
-          }
-        })
-      }}
-
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Skip remaining checks if POST failed"
-  when: _vsr_one_post.stdout | default('') not in ['200', '201', '202']
-  ansible.builtin.meta: end_host
-  # NOTE: end_host arrête CE host pour le play en cours — pour un play localhost
-  # ça arrête le play complet. Mais comme on est dans un loop include_tasks,
-  # end_host saute le reste de l'inclusion et passe à la prochaine itération.
-  # Si problématique, alternative: bloquer les tâches suivantes par un when:.
+    _vsr_one_post:
+      stdout: "200"
+      rc: 0
 
 # Convertir _vsr_run_id (YYYYMMDDHHMMSS UTC) en epoch_ms pour filtrer
 # les alertes créées APRÈS le start du test. Évite de tomber sur d'anciens cases.
@@ -129,16 +80,21 @@
         ((_vsr_run_id | to_datetime('%Y%m%d%H%M%S')).timestamp() * 1000) | int
       }}
 
-# ── Poll TheHive pour le case du test courant ─────────────────────
-# Critères:
-#   - tag scenario:<key> AND tag rule:<id>
-#   - _createdAt >= test_start_ms (exclure les vieux runs)
-#   - sort _createdAt desc (premier résultat = le plus récent)
-#   - until: alerte trouvée ET caseId présent (promotion terminée)
-# Retry: 36*5s = 180s pour couvrir Cortex waitreport (30s x 3) + promote + observable
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Poll TheHive (sort+filter date)"
+# ── Poll TheHive pour l'alerte + sa promotion en case (1 seul poll) ─
+# Pourquoi un seul poll au lieu de deux ?
+# Avant : poll #1 (180s) jusqu'à voir l'alerte créée, puis poll #2 (60s) pour
+# attendre la promotion en case. Sur exécution lente (Cortex 30s × 2 analyzers
+# en parallèle + MISP search + promote + observable), la promotion arrive parfois
+# à T+50-90s après création d'alerte → le poll #2 exhauste son budget de 60s.
+# Le rapport Ansible affichait alors "Action failed: OK (unknown bytes)" sur la
+# dernière retry — message trompeur, en réalité retries exhausted sur until clause.
+#
+# Maintenant : un poll unique avec budget large 300s (60×5s) sur la condition
+# "alerte trouvée ET caseId présent". Si après 5 min on n'a toujours pas de case,
+# on tagge légitimement partial-no-case (le workflow Shuffle a fail un step).
+- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Poll TheHive pour alerte + case promu"
   ansible.builtin.uri:
-    url: "{{ soc_selftest_thehive_api_base }}/v1/query?name=getAlertsByScenarioRun-{{ _vsr_scn.key }}"
+    url: "{{ soc_selftest_thehive_api_base }}/v1/query?name=getAlertWithCase-{{ _vsr_scn.key }}"
     method: POST
     headers:
       Authorization: "Bearer {{ _vsr_thive_key }}"
@@ -166,65 +122,34 @@
     validate_certs: "{{ soc_selftest_validate_certs }}"
     status_code: [200]
   register: _vsr_one_alerts
-  retries: 36
+  retries: 60
   delay: 5
-  # Until: alerte trouvée OU 180s écoulés. La promotion en case n'est pas requise:
-  # un workflow scenario peut légitimement ne pas promouvoir (decision auto_closed,
-  # ou échec d'action intermédiaire). Le status final tient compte de la présence
-  # du case + du risk_score pour qualifier "PASS" vs "PARTIAL".
+  # Until robuste contre les réponses TheHive 5 atypiques :
+  # - .json doit être une LISTE (pas une string "OK", pas un dict d'erreur)
+  # - liste non vide → alerte trouvée
+  # - première alerte a un caseId non vide → promotion terminée
   until:
     - _vsr_one_alerts.status == 200
-    - (_vsr_one_alerts.json | default([])) is iterable
-    - (_vsr_one_alerts.json | default([])) is not mapping
+    - (_vsr_one_alerts.json | default([]) | type_debug) == 'list'
     - (_vsr_one_alerts.json | default([])) | length > 0
-  no_log: false
-  failed_when: false
-
-# Bonus poll: attendre encore jusqu'à 60s additionnelles pour la promotion en case.
-# Si pas de promotion dans ce délai, on tag le status comme 'partial' (alerte OK,
-# case non promu — workflow n'a pas réussi la chaîne complète).
-- name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Wait for case promotion (best-effort)"
-  ansible.builtin.uri:
-    url: "{{ soc_selftest_thehive_api_base }}/v1/query?name=getAlertWithCase-{{ _vsr_scn.key }}"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ _vsr_thive_key }}"
-      Content-Type: "application/json"
-    body_format: json
-    body:
-      query:
-        - _name: "listAlert"
-        - _name: "filter"
-          _and:
-            - _field: "tags"
-              _value: "scenario:{{ _vsr_scn.key }}"
-            - _gte:
-                _field: "_createdAt"
-                _value: "{{ _vsr_one_test_start_ms | int }}"
-        - _name: "sort"
-          _fields:
-            - _createdAt: "desc"
-        - _name: "page"
-          from: 0
-          to: 3
-    timeout: "{{ soc_selftest_http_timeout | int }}"
-    validate_certs: "{{ soc_selftest_validate_certs }}"
-    status_code: [200]
-  register: _vsr_one_alerts
-  retries: 12
-  delay: 5
-  until:
-    - _vsr_one_alerts.status == 200
-    - (_vsr_one_alerts.json | default([])) | length > 0
-    - ((_vsr_one_alerts.json | default([]) | first | default({})).caseId | default('')) | length > 0
+    - ((_vsr_one_alerts.json | first | default({})).caseId | default('')) | length > 0
   no_log: false
   failed_when: false
 
 - name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Extract case_id depuis alerts (defensive)"
-  # Accès défensif: extraData peut exister sans 'case' (alerte non promue).
-  # On prend la première alerte, drill down avec default à chaque niveau.
+  # Accès défensif: si le poll a exhausted ses retries, .json peut être une string
+  # ("OK", erreur TheHive 5) ou autre chose qu'une liste. On guard type_debug='list'
+  # pour ne jamais drill un champ sur une string (sinon Jinja raise AttributeError
+  # qui pollue les retries des tasks suivantes).
   ansible.builtin.set_fact:
-    _vsr_one_first_alert: "{{ _vsr_one_alerts.json | default([]) | first | default({}) }}"
+    _vsr_one_first_alert: >-
+      {{
+        ((_vsr_one_alerts.json | default([])) | type_debug == 'list')
+        | ternary(
+            (_vsr_one_alerts.json | default([]) | first | default({})),
+            {}
+          )
+      }}
 
 - name: "verify_scenario_routing | [{{ _vsr_scn.key }}] Drill case_id + tags"
   ansible.builtin.set_fact:

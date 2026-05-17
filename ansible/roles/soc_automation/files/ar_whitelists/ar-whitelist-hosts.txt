@@ -1,0 +1,16 @@
+# SOC AR whitelist - hosts protégés contre isolate-agent
+# Format: 1 valeur par ligne (hostname OU IP). Commentaires avec '#'.
+# Le script isolate-agent.sh fait grep exact-match insensible à la casse.
+#
+# AJOUTER ICI les hosts critiques qui NE DOIVENT JAMAIS être isolés:
+#   - serveurs DNS
+#   - controllers (k8s master, AD DC, ...)
+#   - hôtes Wazuh manager eux-mêmes
+#   - bastions / jump hosts
+#
+# Exemples (à décommenter selon l'environnement):
+# mgmt-soc
+# 10.0.10.10
+# k8s-master
+# 10.0.20.10
+# wazuh-manager-master-0
