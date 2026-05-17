@@ -141,7 +141,7 @@ preflight: ## Vérifier les prérequis avant deploy
 
 # ── Blocs de déploiement ──────────────────────────────────────────────────────
 .PHONY: k8s-bootstrap vault-deploy argocd-full argocd-update-password soc-day1 soc-security-layer \
-        soc-automation-layer soc-validate
+        soc-automation-layer soc-validate _argocd-vault-seq _argocd-parallel-tail
 
 k8s-bootstrap: prereqs bins cp cni join post post-master workers-pre ## K8s from scratch (00→70)
 
@@ -161,10 +161,25 @@ argocd-update-password: ## Mettre à jour le mot de passe ArgoCD depuis Vault (p
 #      déployé par ArgoCD. Un mot de passe statique bootstrap est utilisé.
 #   2. wait-app-of-apps : soc-app-of-apps déploie les Applications enfants.
 #   3. wait-infra-synced : MetalLB/Longhorn/cert-manager/ingress-nginx Ready.
-#   4. vault-deploy seede les secrets + active l'ESO.
-#   5. argocd-update-password remplace le mot de passe statique par celui de Vault.
-#   6. wait-eso-synced : soc-eso-externalsecrets Synced → K8s Secrets hydratés.
-argocd-full: argocd wait-argocd longhorn-prereqs wait-app-of-apps wait-infra-synced cert-manager-issuer vault-deploy argocd-update-password monitoring ## ArgoCD+infra GitOps+Vault+Monitoring (ordre bootstrap sans dépendance circulaire)
+#   4. PARALLÈLE (-j2) — V1 :
+#        a. vault-deploy → argocd-update-password (séquence sur le chemin critique)
+#        b. monitoring (76) — aucune dépendance sur Vault
+#      monitoring sort du chemin critique → gain estimé 3-5 min.
+#   5. wait-eso-synced : soc-eso-externalsecrets Synced → K8s Secrets hydratés.
+argocd-full: argocd wait-argocd longhorn-prereqs wait-app-of-apps wait-infra-synced cert-manager-issuer _argocd-parallel-tail ## ArgoCD+infra GitOps+Vault ‖ Monitoring (V1 — monitoring hors chemin critique)
+
+# Séquence vault-deploy → argocd-update-password : argocd-update-password lit le
+# mot de passe Vault, doit donc s'exécuter APRÈS vault-deploy. On force la
+# séquence via deux invocations $(MAKE) (les prerequisites simples seraient
+# parallélisées par -j2, ce qui casserait l'ordre).
+_argocd-vault-seq: ## (interne) vault-deploy puis argocd-update-password (séquentiel)
+	@$(MAKE) --no-print-directory vault-deploy
+	@$(MAKE) --no-print-directory argocd-update-password
+
+# V1 — parallélisation : _argocd-vault-seq ‖ monitoring
+# --output-sync=target groupe la sortie par cible (évite l'entrelacement).
+_argocd-parallel-tail: ## (interne) vault-deploy+update-password ‖ monitoring (-j2)
+	$(MAKE) --output-sync=target -j2 _argocd-vault-seq monitoring
 
 soc-day1: databases _soc-services soc-config soc-smoke ## Stack SOC day-1 (80→140)
 
@@ -186,7 +201,7 @@ soc-automation-layer: foundations automation shuffle automation-rerun risk-engin
 soc-validate: compliance selftest ## Conformité + selftest E2E (200→210)
 
 # ── Deploy principal ──────────────────────────────────────────────────────────
-.PHONY: deploy
+.PHONY: deploy deploy-raw
 
 ifeq ($(DEPLOY_IAC),1)
 _iac_step := iac-apply wait-vms k8s-bootstrap
@@ -194,7 +209,13 @@ else
 _iac_step :=
 endif
 
-deploy: preflight $(_iac_step) wait-nodes argocd-full wait-eso-synced soc-day1 wait-soc-apps-synced soc-security-layer soc-automation-layer soc-validate ## Déploiement SOC complet from-scratch (IaC → K8s → ArgoCD → ESO → SOC → selftest)
+# I1 — `make deploy` est désormais l'alias de `deploy-phased` :
+#   progress live + ETA depuis l'historique + récap tabulé + banner coloré final.
+# Pour retomber sur l'ancien comportement (enchaînement direct, banner ASCII de
+# base à la fin) : `make deploy-raw`.
+deploy: deploy-phased ## Déploiement SOC complet from-scratch (alias de deploy-phased — progress live + ETA + banner)
+
+deploy-raw: preflight $(_iac_step) wait-nodes argocd-full wait-eso-synced soc-day1 wait-soc-apps-synced soc-security-layer soc-automation-layer soc-validate ## Déploiement SOC complet from-scratch (ancien comportement — sans progress live)
 	@echo ""
 	@echo "╔══════════════════════════════════════════════════════════════╗"
 	@echo "║  SOC-as-code deploye avec succes                             ║"
@@ -289,7 +310,8 @@ _phased_summary:
 	    printf '%-25s %10s %10s   %s\n' "PHASE" "SECONDS" "HH:MM:SS" "RC"; \
 	    awk -F'\t' '{ printf "%-25s %10s %10s   %s\n", $$1, $$4, $$5, $$6 }' "$(LOG)"; \
 	  fi; \
-	  printf '══════════════════════════════════════════════════════════════════════════════════\n'
+	  printf '══════════════════════════════════════════════════════════════════════════════════\n'; \
+	  bash $(SCRIPTS)/deploy-banner.sh "$(GLOBAL_RC)" "$$dur" "$(HIST)" "$(LOG)"
 
 deploy-timed: ## Lance `make deploy` en chronométrant la durée totale (log dans .timings/deploy.log)
 	@mkdir -p .timings
