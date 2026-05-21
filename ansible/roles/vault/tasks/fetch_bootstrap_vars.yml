@@ -14,6 +14,115 @@
 #     ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/vault/tasks/fetch_bootstrap_vars.yml"
 #     when: soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
 
+# --- Preflight : API K8s joignable ? ---
+# Cause connue : la VM master Proxmox tombe en I/O error de manière sporadique.
+# Sans ce preflight, l'échec se manifeste plus loin (souvent dans une task no_log)
+# sous forme de "non-zero return code" "censored" — impossible à diagnostiquer.
+# Ici on retente 6×10s (≈1 min) avant de fail avec un message actionable.
+
+- name: Vault fetch | Preflight - K8s API reachability
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ kubeconfig_path }}"
+      - --request-timeout=5s
+      - get
+      - --raw=/readyz
+  register: _vfb_k8s_preflight
+  changed_when: false
+  failed_when: false
+  retries: 6
+  delay: 10
+  until: _vfb_k8s_preflight.rc == 0
+  tags: always
+
+- name: Vault fetch | Fail si API K8s injoignable après retries (probable VM master Proxmox down)
+  ansible.builtin.fail:
+    msg: |-
+      L'API K8s reste injoignable après 6×10s (kubeconfig: {{ kubeconfig_path }}).
+      Dernière erreur : {{ _vfb_k8s_preflight.stderr | default(_vfb_k8s_preflight.stdout) | default('(vide)') | truncate(300) }}
+
+      Cause récurrente sur ce lab : la VM master k8s (10.0.20.10) tombe en I/O error côté Proxmox.
+
+      ACTIONS À EXÉCUTER MANUELLEMENT SUR PROXMOX :
+        1. qm list                         # Identifier le vmid du master
+        2. qm status <vmid>                # Voir l'état (running/stopped/io-error)
+        3. qm stop <vmid> && qm start <vmid>   # Stop dur puis restart
+        4. Attendre 60-90s que kubelet + kube-apiserver + etcd remontent
+        5. kubectl --kubeconfig={{ kubeconfig_path }} get nodes   # Doit lister 4 nodes Ready
+        6. make deploy (ou reprendre la cible Makefile qui a échoué)
+
+      DIAGNOSTIC ROOT-CAUSE (à investiguer si récurrent) :
+        - dmesg | grep -i "I/O error"       (sur le host Proxmox)
+        - zpool status (si ZFS) ou lvs (si LVM thin) → erreurs disque ?
+        - qm config <vmid> → cache disque "writeback" → passer à "none" ou "directsync"
+        - qm set <vmid> --scsi0 <storage>:...,iothread=1,discard=on
+        - smartctl -a /dev/<disk-physique-pve>   → Reallocated_Sector_Ct, Pending ?
+  when: _vfb_k8s_preflight.rc != 0
+  tags: always
+
+# --- Wait sur vault-unseal-keys ---
+# Race-condition connue : argocd-full parallélise _argocd-vault-seq (75-vault.yml)
+# avec monitoring (76-monitoring.yml). Si 76 appelle fetch_bootstrap_vars.yml avant
+# que vault-init ait seedé le Secret, la task k8s_info ci-dessous échoue avec
+# failed_when matché + no_log → "Action failed: Unknown error" indéchiffrable.
+# Ce preflight attend explicitement (120×10s = 20 min) que le Secret apparaisse.
+# Test d'existence uniquement (pas de lecture du contenu) → pas de no_log,
+# message d'erreur lisible si timeout.
+#
+# Budget : 20 min. Cold-boot observé : ~29 min entre démarrage de vault-deploy
+# et création du Secret (Longhorn CSI cold-start ~13 min + pull image Vault +
+# init Job). En pratique, monitoring est parallèle à vault-deploy via
+# _argocd-parallel-tail, donc vault-deploy démarre à T0 et le Secret apparaît
+# souvent vers T+14-18 min depuis monitoring. 20 min couvre les cold-boots
+# avec un peu de marge. Le run du 2026-05-21 a échoué à 5 min de budget.
+# Réf : project_vault_cold_boot_retries (deploy.yml retries=90 pour la même raison).
+
+- name: Vault fetch | Preflight - Wait for vault-unseal-keys Secret to appear
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ kubeconfig_path }}"
+      - --request-timeout=10s
+      - -n
+      - "{{ soc_vault_namespace | default('soc-vault') }}"
+      - get
+      - secret
+      - vault-unseal-keys
+      - -o
+      - name
+  register: _vfb_secret_wait
+  changed_when: false
+  failed_when: false
+  retries: 120
+  delay: 10
+  until: _vfb_secret_wait.rc == 0
+  tags: always
+
+- name: Vault fetch | Fail si vault-unseal-keys absent après 20 min
+  ansible.builtin.fail:
+    msg: |-
+      Le K8s Secret 'vault-unseal-keys' (ns: {{ soc_vault_namespace | default('soc-vault') }})
+      n'est pas apparu après 120×10s (20 min).
+
+      Causes possibles :
+        - 75-vault.yml n'a pas été exécuté
+        - vault-init Job en échec
+        - Vault toujours en cours de bootstrap (cold-boot Longhorn ~13 min)
+
+      Vérifications :
+        kubectl --kubeconfig={{ kubeconfig_path }} -n {{ soc_vault_namespace | default('soc-vault') }} get pod vault-0
+        kubectl --kubeconfig={{ kubeconfig_path }} -n {{ soc_vault_namespace | default('soc-vault') }} get jobs
+        kubectl --kubeconfig={{ kubeconfig_path }} -n {{ soc_vault_namespace | default('soc-vault') }} get secret
+        kubectl --kubeconfig={{ kubeconfig_path }} -n {{ soc_vault_namespace | default('soc-vault') }} logs job/vault-init
+
+      Action : relancer 75-vault.yml, ou attendre la fin de _argocd-vault-seq
+      si vous tournez depuis argocd-full en parallèle.
+  when: _vfb_secret_wait.rc != 0
+  tags: always
+
 # --- Root token ---
 - name: Vault fetch | Lire le root token depuis K8s Secret
   kubernetes.core.k8s_info:
