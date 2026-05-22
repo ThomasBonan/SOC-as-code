@@ -150,6 +150,10 @@
   failed_when: false
 
 - name: "wazuh_selftest_scenarios | Attendre que wazuh-analysisd écoute à nouveau"
+  # wazuh-control status retourne rc=1 si des daemons optionnels (maild,
+  # agentlessd, integratord, dbd, csyslogd) sont "not running" — ce qui est
+  # le cas par défaut. On se base donc uniquement sur la présence du daemon
+  # analysisd dans stdout, pas sur le rc.
   when: _wss_restart is defined and _wss_restart.changed | default(false)
   ansible.builtin.command: >
     kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
@@ -157,11 +161,11 @@
     /var/ossec/bin/wazuh-control status
   register: _wss_status
   changed_when: false
+  failed_when: false
   retries: 30
   delay: 4
   until:
-    - _wss_status.rc == 0
-    - "'wazuh-analysisd is running' in _wss_status.stdout"
+    - "'wazuh-analysisd is running' in (_wss_status.stdout | default(''))"
 
 - name: "wazuh_selftest_scenarios | [info] Récap"
   ansible.builtin.debug:

@@ -129,17 +129,21 @@
       failed_when: false
 
     - name: "wazuh_manager_labels | Attendre que wazuh-analysisd écoute à nouveau"
+      # wazuh-control status retourne rc=1 si des daemons optionnels (maild,
+      # agentlessd, integratord, dbd, csyslogd) sont "not running" — ce qui est
+      # le cas par défaut. On se base donc uniquement sur la présence du daemon
+      # analysisd dans stdout, pas sur le rc.
       ansible.builtin.command: >
         kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
         exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
         /var/ossec/bin/wazuh-control status
       register: _wml_status
       changed_when: false
+      failed_when: false
       retries: 30
       delay: 4
       until:
-        - _wml_status.rc == 0
-        - "'wazuh-analysisd is running' in _wml_status.stdout"
+        - "'wazuh-analysisd is running' in (_wml_status.stdout | default(''))"
 
     - name: "wazuh_manager_labels | [info] Labels injectés"
       ansible.builtin.debug:
