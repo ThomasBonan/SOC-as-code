@@ -130,21 +130,16 @@
 # ── 3. wazuh-analysisd reload si rules/decoder ont changé ──────────
 
 - name: "wazuh_selftest_scenarios | Restart wazuh-manager si rules/decoders ont changé"
+  # nohup + redirect FDs + & : sans ça kubectl exec reste pendu après le restart
+  # (FDs hérités des daemons forkés) — observé 12+ min de hang en prod.
+  # Pattern aligné sur wazuh_webhook.yml. Le poll suivant attend analysisd.
   when: >-
     (_wss_rules_deploy is defined and _wss_rules_deploy.changed | default(false))
     or (_wss_dec_deploy is defined and _wss_dec_deploy.changed | default(false))
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - "{{ soc_automation_kubeconfig_path }}"
-      - exec
-      - -n
-      - "{{ soc_automation_wazuh_ns }}"
-      - "{{ soc_automation_wazuh_manager_pod }}"
-      - --
-      - /var/ossec/bin/wazuh-control
-      - restart
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'nohup /var/ossec/bin/wazuh-control restart > /dev/null 2>&1 &'
   register: _wss_restart
   changed_when: true
   failed_when: false

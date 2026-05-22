@@ -112,18 +112,14 @@
       # pas (testé). On utilise wazuh-control restart qui orchestre tous les
       # processus du manager. Pas de risque pod-restart car ça ne fait que
       # restart les daemons à l'intérieur du conteneur.
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - "{{ soc_automation_kubeconfig_path }}"
-          - exec
-          - -n
-          - "{{ soc_automation_wazuh_ns }}"
-          - "{{ soc_automation_wazuh_manager_pod }}"
-          - --
-          - /var/ossec/bin/wazuh-control
-          - restart
+      #
+      # nohup + redirect FDs + & : sans ça kubectl exec reste pendu après le
+      # restart (FDs hérités des daemons forkés) — observé 12+ min de hang.
+      # Pattern aligné sur wazuh_webhook.yml. Le poll suivant attend analysisd.
+      ansible.builtin.shell: >
+        kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+        exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+        bash -c 'nohup /var/ossec/bin/wazuh-control restart > /dev/null 2>&1 &'
       register: _wml_restart
       changed_when: true
       failed_when: false
