@@ -414,6 +414,14 @@ Scopes courants : `iac`, `wazuh`, `shuffle`, `cortex`, `thehive`, `misp`, `risk-
 **Date de soutenance** — juin 2026
 **Encadrement** — voir le mémoire
 
+### Licence
+
+Ce projet est distribué sous licence Apache-2.0.
+
+Le code, les playbooks Ansible, les manifests Kubernetes, les configurations OpenTofu, les scripts et la documentation propres à ce dépôt sont couverts par cette licence.
+
+Les composants tiers déployés ou référencés par ce projet conservent leurs licences respectives.
+
 **Outils et projets open source utilisés** : Kubernetes, OpenTofu, Ansible, ArgoCD, HashiCorp Vault, External Secrets Operator, Wazuh, MISP, TheHive, Cortex, Shuffle, MetalLB, Cilium, Longhorn, cert-manager, ingress-nginx, kube-prometheus-stack.
 
 Voir les LICENSE individuelles de chaque composant.
