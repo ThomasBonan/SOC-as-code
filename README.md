@@ -381,7 +381,6 @@ Voir [SECURITY.md](./SECURITY.md) pour le modèle de menace complet, la rotation
 
 ### Pour aller plus loin
 
-- `.claude/CLAUDE.md` — anti-patterns détaillés et conventions
 - `docs/redeploy-procedure.md` — procédure de re-déploiement
 - `.timings/deploy-phased-*.log` — historique des runs (durée par phase)
 
