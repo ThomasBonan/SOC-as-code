@@ -50,7 +50,7 @@ data:
     # calcul 5-dim, AVANT la décision. Multiplicateur 1.0 si scenario inconnu/absent.
     # Clamp final à [0, 100] pour préserver la grille de décision.
     SCENARIO_MULTIPLIERS = {
-        "malware": 1.3,
+        "malware": 1.4,
         "bruteforce": 0.9,
         "privesc": 1.5,
     }
