@@ -12,7 +12,7 @@
 #   <integration>
 #     <name>shuffle</name>
 #     <hook_url>http://shuffle-backend.soc-shuffle.svc:5001/api/v1/hooks/webhook_XXX</hook_url>
-#     <level>3</level>
+#     <level>9</level>
 #     <alert_format>json</alert_format>
 #   </integration>
 #
