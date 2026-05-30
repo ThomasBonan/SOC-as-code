@@ -16,6 +16,8 @@ resources:
   # Credentials Wazuh
   - external-secret-wazuh-credentials.yaml
   - external-secret-wazuh-api-cred.yaml
+  # Datasource Grafana Wazuh OpenSearch (Secret provisioning, password injecté depuis Vault)
+  - external-secret-grafana-wazuh-opensearch.yaml
   # Service accounts
   - external-secret-thehive-sa-foundations.yaml
   - external-secret-cortex-sa-foundations.yaml
