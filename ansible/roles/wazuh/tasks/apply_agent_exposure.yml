@@ -111,6 +111,73 @@
   delegate_to: localhost
   run_once: true
 
+# Pré-check BGP : sans session établie avec OPNsense, MetalLB annonce l'IP en
+# interne mais aucune route ne sort → bastion ne peut pas joindre la LB IP et
+# le wait_for ci-dessous timeout sans explication. On interroge FRR directement
+# pour donner un message d'erreur actionnable (et différencier ce cas d'un
+# problème Wazuh/NetPol).
+# vtysh "show bgp ipv4 unicast summary" col10 = State/PfxRcd :
+# nombre = Established, sinon état (Active, NoNeg, Connect, Idle, OpenSent,
+# OpenConfirm). On scope IPv4 uniquement car OPNsense ne négocie pas IPv6
+# dans ce lab (section IPv6 toujours en "NoNeg" — faux positif).
+# On itère sur TOUS les speakers (un par node) pour détecter une session HS
+# sur un node particulier.
+- name: Wazuh agent | BGP pre-check | iterate over all MetalLB speakers
+  ansible.builtin.shell: |
+    set -e
+    speakers=$(kubectl --kubeconfig {{ kubeconfig_path | quote }} -n metallb-system \
+      get pod -l app.kubernetes.io/component=speaker \
+      -o jsonpath='{.items[*].metadata.name}')
+    bad=""
+    for sp in $speakers; do
+      node=$(kubectl --kubeconfig {{ kubeconfig_path | quote }} -n metallb-system \
+        get pod "$sp" -o jsonpath='{.spec.nodeName}')
+      out=$(kubectl --kubeconfig {{ kubeconfig_path | quote }} -n metallb-system \
+        exec "$sp" -c frr -- vtysh -c "show bgp ipv4 unicast summary" 2>/dev/null \
+        | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/ { if ($10 !~ /^[0-9]+$/) print $1":"$10 }')
+      if [ -n "$out" ]; then
+        bad="${bad}${node} -> ${out}"$'\n'
+      fi
+    done
+    printf '%s' "$bad"
+  args:
+    executable: /bin/bash
+  register: _wazuh_bgp_check
+  changed_when: false
+  failed_when: false
+  delegate_to: localhost
+  run_once: true
+
+- name: Wazuh agent | Fail si session BGP non-Established (probable OPNsense FRR KO)
+  ansible.builtin.fail:
+    msg: |-
+      Une ou plusieurs sessions BGP MetalLB sont en état non-Established :
+        {{ _wazuh_bgp_check.stdout_lines | join(', ') }}
+
+      Conséquence : MetalLB annonce {{ wazuh_agent_loadbalancer_ip }} en interne mais
+      les routes ne sortent pas vers OPNsense → le bastion ne peut pas joindre la LB IP
+      et le TCP smoke test va timeout.
+
+      VÉRIFIER CÔTÉ OPNSENSE :
+        1. Services → Quagga ou FRR (plugin BGP) → daemon Running
+        2. Neighbors configurés pour 10.0.20.10/.11/.12/.13 avec remote-as 65010
+        3. Logs FRR : clog -f /var/log/frr.log → chercher "notification" rcvd
+        4. Test depuis OPNsense (shell) :
+             vtysh -c "show bgp summary"
+             vtysh -c "show bgp neighbor 10.0.20.10"
+        5. État "NoNeg" : vérifier capability 4-byte AS (RFC 6793) côté OPNsense.
+           État "Active" : OPNsense n'écoute pas / firewall bloque port 179.
+
+      VÉRIFIER CÔTÉ METALLB (informatif) :
+        kubectl -n metallb-system get pod -l app.kubernetes.io/component=speaker
+        kubectl -n metallb-system exec <speaker> -c frr -- vtysh -c "show bgp summary"
+
+      Une fois toutes les sessions Established (un nombre dans State/PfxRcd),
+      relancer ce playbook.
+  when: (_wazuh_bgp_check.stdout | trim) | length > 0
+  delegate_to: localhost
+  run_once: true
+
 - name: Wazuh agent | TCP smoke test on enrollment port (1515)
   ansible.builtin.wait_for:
     host: "{{ wazuh_agent_loadbalancer_ip }}"
@@ -119,6 +186,91 @@
     state: started
   delegate_to: localhost
   run_once: true
+
+# --- Agents IN-CLUSTER (DaemonSet) : remontée d'événements vers le master ---
+# Le worker est volontairement à 0 (manager.values.yml: worker.replicas=0), mais le
+# DaemonSet d'agents du chart pointe ses events (1514) vers le service
+# `wazuh-manager-worker` (sans endpoint → "Transport endpoint is not connected").
+# On route donc les events vers le master, qui écoute déjà sur 1514 :
+#   1. Service ClusterIP wazuh-manager-events → pod master:1514
+#   2. NetworkPolicy agents → master:1514. Le netpol du chart (wazuh-manager-master)
+#      n'autorise depuis les agents que 1515/55000 ; et un ipBlock ne matche PAS les
+#      identités Cilium internes (policy-cidr-match-mode off) → il FAUT un podSelector.
+#   3. Repointer le DaemonSet (WAZUH_MANAGER_SERVER) + nom d'agent stable = nodeName
+#      (sinon ré-enrôlement sous un nom aléatoire à chaque restart → agents fantômes).
+- name: Wazuh agent | Service ClusterIP events → master:1514
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: wazuh-manager-events
+      namespace: {{ wazuh_namespace }}
+      labels:
+        app.kubernetes.io/managed-by: ansible-soc-as-code
+        soc-as-code/purpose: agent-events-to-master
+    spec:
+      type: ClusterIP
+      selector:
+        app: wazuh-manager
+        node-type: master
+      ports:
+        - name: events
+          port: 1514
+          targetPort: 1514
+          protocol: TCP
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Wazuh agent | NetworkPolicy agents → master:1514 (events in-cluster)
+  ansible.builtin.shell: |
+    set -e
+    cat <<'YAML' | kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" apply --validate=false -f -
+    apiVersion: networking.k8s.io/v1
+    kind: NetworkPolicy
+    metadata:
+      name: ingress-agent-events-to-master
+      namespace: {{ wazuh_namespace }}
+      labels:
+        app.kubernetes.io/managed-by: ansible-soc-as-code
+    spec:
+      podSelector:
+        matchLabels:
+          app: wazuh-manager
+          node-type: master
+      policyTypes:
+        - Ingress
+      ingress:
+        - from:
+            - podSelector:
+                matchLabels:
+                  app: wazuh-agent
+          ports:
+            - { port: 1514, protocol: TCP }
+    YAML
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
+
+- name: Wazuh agent | Repointer le DaemonSet (events → master, nom = nodeName)
+  ansible.builtin.shell: |
+    set -e
+    kubectl --kubeconfig "{{ kubeconfig_path }}" -n "{{ wazuh_namespace }}" set env ds/wazuh-agent \
+      WAZUH_MANAGER_SERVER=wazuh-manager-events.{{ wazuh_namespace }}.svc.cluster.local \
+      JOIN_MANAGER_WORKER_HOST=wazuh-manager-events.{{ wazuh_namespace }}.svc.cluster.local \
+      'WAZUH_AGENT_NAME=$(NODE_NAME)'
+  args:
+    executable: /bin/bash
+  delegate_to: localhost
+  run_once: true
+  changed_when: false
 
 - name: Wazuh agent | Récap exposition
   ansible.builtin.debug:
