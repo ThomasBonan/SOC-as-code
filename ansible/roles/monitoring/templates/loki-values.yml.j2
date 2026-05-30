@@ -26,6 +26,18 @@ loki:
       retention_period: 168h   # 7 jours
       ingestion_rate_mb: 16
       ingestion_burst_size_mb: 32
+      # Évite "too many outstanding requests" : pas de découpage des requêtes en
+      # centaines de sous-requêtes qui saturent la file du query-frontend
+      # (single-binary, faible volume).
+      split_queries_by_interval: 0
+      max_query_parallelism: 16
+    query_range:
+      parallelise_shardable_queries: false
+    frontend:
+      max_outstanding_per_tenant: 4096
+      compress_responses: true
+    querier:
+      max_concurrent: 8
     schema_config:
       configs:
         - from: 2020-10-24
