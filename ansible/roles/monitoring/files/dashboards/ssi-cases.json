@@ -12,36 +12,40 @@
   "panels": [
     {
       "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Nombre d'analyzers Cortex lancés (POST /api/analyzer/<id>/run) sur la fenêtre de temps sélectionnée.",
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}]}}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
       "id": 1,
-      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
-      "title": "Analyses Cortex lancées (dernière heure)",
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "title": "Analyses Cortex lancées (fenêtre)",
       "type": "stat",
-      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-cortex\"} |= \"analyzer\" |= \"started\" [1h]))", "legendFormat": "Jobs Cortex"}]
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-cortex\"} |= \"/api/analyzer/\" |= \"/run\" [$__range]))", "queryType": "instant", "instant": true, "legendFormat": "Jobs Cortex"}]
     },
     {
       "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Nombre de lignes de log contenant la chaîne 'ERROR' dans tous les namespaces soc-* sur la fenêtre sélectionnée. Indicateur large (inclut traces d'exception).",
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
       "id": 2,
-      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["sum"]}},
-      "title": "Erreurs pipeline (dernière heure)",
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "title": "Erreurs pipeline (fenêtre)",
       "type": "stat",
-      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=~\"soc-.*\"} |= \"ERROR\" [1h]))", "legendFormat": "Erreurs"}]
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=~\"soc-.*\"} |= \"ERROR\" [$__range]))", "queryType": "instant", "instant": true, "legendFormat": "Erreurs"}]
     },
     {
       "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Nombre de décisions du Risk Engine (lignes 'decision=') sur la fenêtre sélectionnée.",
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}}, "overrides": []},
       "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
       "id": 3,
-      "options": {"colorMode": "background", "graphMode": "area", "reduceOptions": {"calcs": ["sum"]}},
-      "title": "Décisions Risk Engine (dernière heure)",
+      "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "title": "Décisions Risk Engine (fenêtre)",
       "type": "stat",
-      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\" [1h]))", "legendFormat": "Décisions"}]
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\" [$__range]))", "queryType": "instant", "instant": true, "legendFormat": "Décisions"}]
     },
     {
       "datasource": {"type": "loki", "uid": "loki"},
+      "description": "Débit par intervalle d'affichage ($__auto) : erreurs soc-* et décisions Risk Engine.",
       "fieldConfig": {"defaults": {"custom": {"lineWidth": 2}}, "overrides": []},
       "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
       "id": 4,
@@ -49,8 +53,8 @@
       "title": "Activité pipeline SOC (erreurs + décisions)",
       "type": "timeseries",
       "targets": [
-        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=~\"soc-.*\"} |= \"ERROR\" [5m]))", "legendFormat": "Erreurs"},
-        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\" [5m]))", "legendFormat": "Décisions Risk Engine"}
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=~\"soc-.*\"} |= \"ERROR\" [$__auto]))", "queryType": "range", "legendFormat": "Erreurs"},
+        {"datasource": {"type": "loki", "uid": "loki"}, "expr": "sum(count_over_time({namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\" [$__auto]))", "queryType": "range", "legendFormat": "Décisions Risk Engine"}
       ]
     },
     {
@@ -60,7 +64,7 @@
       "options": {"dedupStrategy": "none", "enableLogDetails": true, "prettifyLogMessage": true, "showCommonLabels": false, "showLabels": false, "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true},
       "title": "Logs Risk Engine (décisions)",
       "type": "logs",
-      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "{namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\"", "legendFormat": ""}]
+      "targets": [{"datasource": {"type": "loki", "uid": "loki"}, "expr": "{namespace=\"soc-thehive\", app=\"risk-engine\"} |= \"decision=\"", "queryType": "range", "legendFormat": ""}]
     }
   ],
   "refresh": "30s",
@@ -71,5 +75,5 @@
   "timezone": "Europe/Paris",
   "title": "SSI — Cases TheHive + Cortex",
   "uid": "ssi-cases",
-  "version": 1
+  "version": 2
 }
