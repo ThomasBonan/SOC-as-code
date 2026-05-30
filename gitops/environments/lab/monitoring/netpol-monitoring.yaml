@@ -16,6 +16,29 @@ spec:
   policyTypes:
     - Egress
   egress:
+    # Scrape la stack monitoring elle-même (intra-namespace) :
+    # kube-state-metrics, alertmanager, grafana, prometheus-operator,
+    # blackbox-exporter, prometheus self. Sans ça, la majorité des
+    # dashboards (Compute Resources, Networking Cluster/NS/Workload) sont vides.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-monitoring
+      ports:
+        - protocol: TCP
+          port: 3000   # grafana
+        - protocol: TCP
+          port: 8080   # kube-state-metrics http-metrics / alertmanager reloader
+        - protocol: TCP
+          port: 8081   # kube-state-metrics telemetry
+        - protocol: TCP
+          port: 9090   # prometheus self
+        - protocol: TCP
+          port: 9093   # alertmanager
+        - protocol: TCP
+          port: 9115   # blackbox-exporter (probe relay)
+        - protocol: TCP
+          port: 10250  # prometheus-operator https metrics
     # Scrape exporters DB dans les namespaces SOC
     - to:
         - namespaceSelector:
@@ -37,7 +60,7 @@ spec:
           port: 9104   # mysqld_exporter
         - protocol: TCP
           port: 9121   # redis_exporter
-    # Scrape Cilium agents (kube-system)
+    # Scrape Cilium agents + CoreDNS (kube-system)
     - to:
         - namespaceSelector:
             matchLabels:
@@ -47,12 +70,16 @@ spec:
           port: 9090   # cilium-agent
         - protocol: TCP
           port: 8888   # cilium-operator
+        - protocol: TCP
+          port: 9153   # coredns
     # Scrape ArgoCD metrics
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: argocd
       ports:
+        - protocol: TCP
+          port: 8080   # argocd-applicationset-controller metrics
         - protocol: TCP
           port: 8082   # argocd-server metrics
         - protocol: TCP
@@ -233,3 +260,39 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
+---
+# Règle 7 : Prometheus scrape des cibles host-network (kubelet, node-exporter,
+# kube-proxy, control-plane) sur les IP de nœuds 10.0.20.0/24.
+# Les IP de nœuds portent l'identité Cilium `host`/`remote-node` : un ipBlock
+# standard ne les matche PAS (policy-cidr-match-mode non activé). Il faut une
+# CiliumNetworkPolicy avec toEntities. Sans ça : kubelet/cadvisor, node-exporter
+# et kube-proxy sont tous DOWN → dashboards Node / Networking Cluster vides.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: egress-prometheus-nodes
+  namespace: soc-monitoring
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  egress:
+    - toEntities:
+        - host
+        - remote-node
+      toPorts:
+        - ports:
+            - port: "10250"   # kubelet (/metrics, /metrics/cadvisor, /metrics/probes)
+              protocol: TCP
+            - port: "9100"    # node-exporter
+              protocol: TCP
+            - port: "10249"   # kube-proxy
+              protocol: TCP
+            - port: "10257"   # kube-controller-manager
+              protocol: TCP
+            - port: "10259"   # kube-scheduler
+              protocol: TCP
+            - port: "2381"    # etcd metrics
+              protocol: TCP
