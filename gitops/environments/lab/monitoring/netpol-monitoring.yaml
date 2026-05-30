@@ -220,7 +220,10 @@ spec:
               kubernetes.io/metadata.name: argocd
       ports:
         - protocol: TCP
-          port: 443    # argocd-server (svc 443 -> pod 8080, probe /healthz)
+          # argocd-server : svc 80/443 -> pod 8080. La NetworkPolicy egress est
+          # appliquée par Cilium sur le port BACKEND (8080) après DNAT du service,
+          # PAS sur le port du service. Le probe vise donc le pod 8080 (HTTP clair).
+          port: 8080   # argocd-server (--insecure, HTTP en clair sur le pod)
 ---
 # Règle 5 : DNS egress pour soc-monitoring
 apiVersion: networking.k8s.io/v1

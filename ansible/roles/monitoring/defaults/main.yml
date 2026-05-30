@@ -85,9 +85,12 @@ monitoring_blackbox_targets:
     url: "http://risk-engine-svc.{{ soc_namespaces.thehive }}.svc:8080/health"
     module: http_2xx
   - name: argocd
-    # Le service argocd-server expose 80/443 → pod 8080 (TLS). On vise 443.
-    url: "https://argocd-server.{{ soc_namespaces.argocd | default('argocd') }}.svc:443/healthz"
-    module: http_2xx_tls_skip
+    # argocd-server tourne en --insecure : HTTP en clair sur le pod (8080).
+    # Le service expose 80→8080 et 443→8080, mais 443 n'a PAS de terminaison TLS
+    # (un probe https échoue le handshake). On sonde donc en HTTP via le port 80.
+    # NB NetworkPolicy : l'egress doit autoriser le port backend 8080 (cf netpol GitOps).
+    url: "http://argocd-server.{{ soc_namespaces.argocd | default('argocd') }}.svc:80/healthz"
+    module: http_2xx
 
 # ============================================================
 # Cilium metrics scrape

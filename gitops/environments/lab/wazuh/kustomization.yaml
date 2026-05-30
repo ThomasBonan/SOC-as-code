@@ -1,10 +1,11 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-# Phase 6 GitOps — Wazuh config (ConfigMaps + ServiceMonitor)
+# Phase 6 GitOps — Wazuh config (ConfigMaps + Ingress)
 # Helm release, Secrets, StatefulSet patch et bootstrap restent Ansible (Day 1)
 # Les ressources K8s Day 2 sont gérées ici ; Ansible les saute via _managed_by=gitops
+# NB: wazuh-blackbox-probes supprimé — doublon cassé (mauvais DNS wazuh-core-cluster)
+# du probe Helm wazuh.soc-wazuh.svc:55000 qui fonctionne (cf monitoring_blackbox_targets).
 resources:
   - configmap-wazuh-thehive-integration.yaml
   - configmap-siem-connector-stub.yaml
-  - servicemonitor-wazuh.yaml
   - ingress-wazuh.yaml
