@@ -56,7 +56,7 @@ monitoring_grafana_clusterissuer: "{{ cert_manager_clusterissuer_name }}"
 # ============================================================
 # Wazuh OpenSearch datasource
 # ============================================================
-monitoring_wazuh_opensearch_url: "https://wazuh-core-indexer-rest.{{ soc_namespaces.wazuh }}.svc:9200"
+monitoring_wazuh_opensearch_url: "https://wazuh-indexer.{{ soc_namespaces.wazuh }}.svc:9200"
 monitoring_wazuh_opensearch_user: "admin"
 monitoring_wazuh_opensearch_password: ""  # Résolu depuis Vault (soc/credentials/wazuh-credentials → dashboard_password)
 
@@ -65,7 +65,8 @@ monitoring_wazuh_opensearch_password: ""  # Résolu depuis Vault (soc/credential
 # ============================================================
 monitoring_blackbox_targets:
   - name: thehive
-    url: "http://thehive.{{ soc_namespaces.thehive }}.svc:9000/api/v1/status"
+    # /api/status est public (200) ; /api/v1/status exige une auth (401)
+    url: "http://thehive.{{ soc_namespaces.thehive }}.svc:9000/api/status"
     module: http_2xx
   - name: cortex
     url: "http://cortex.{{ soc_namespaces.cortex }}.svc:9001/api/status"
@@ -74,7 +75,8 @@ monitoring_blackbox_targets:
     url: "https://misp.{{ soc_namespaces.misp }}.svc:443/users/login"
     module: http_2xx_tls_skip
   - name: wazuh-api
-    url: "https://wazuh-manager-master-0.wazuh-core-cluster.{{ soc_namespaces.wazuh }}.svc:55000/"
+    # Service 'wazuh' (ports 1515/55000) → pods app=wazuh-manager
+    url: "https://wazuh.{{ soc_namespaces.wazuh }}.svc:55000/"
     module: http_401_tls_skip
   - name: shuffle
     url: "http://shuffle-backend.soc-shuffle.svc:5001/api/v1/health"
@@ -83,8 +85,9 @@ monitoring_blackbox_targets:
     url: "http://risk-engine-svc.{{ soc_namespaces.thehive }}.svc:8080/health"
     module: http_2xx
   - name: argocd
-    url: "http://argocd-server.{{ soc_namespaces.argocd | default('argocd') }}.svc:8080/healthz"
-    module: http_2xx
+    # Le service argocd-server expose 80/443 → pod 8080 (TLS). On vise 443.
+    url: "https://argocd-server.{{ soc_namespaces.argocd | default('argocd') }}.svc:443/healthz"
+    module: http_2xx_tls_skip
 
 # ============================================================
 # Cilium metrics scrape

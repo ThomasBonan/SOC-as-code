@@ -44,10 +44,12 @@
 
     - name: Monitoring | Appliquer le mot de passe OpenSearch Wazuh résolu
       ansible.builtin.set_fact:
-        monitoring_wazuh_opensearch_password: "{{ wazuh_dashboard_password }}"
+        # L'utilisateur 'admin' de l'indexer s'authentifie avec indexer_password
+        # (dashboard_password → 401). Voir aussi la datasource gitops ESO.
+        monitoring_wazuh_opensearch_password: "{{ wazuh_indexer_password }}"
       when:
         - soc_vault_backend | default('kubernetes-secrets') != 'kubernetes-secrets'
-        - wazuh_dashboard_password is defined
+        - wazuh_indexer_password is defined
       no_log: true
       tags: always
   roles:

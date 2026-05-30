@@ -280,6 +280,28 @@
   when: _vfb_wazuh_dashboard_pass.rc == 0
   tags: always
 
+# --- Wazuh OpenSearch indexer password ---
+# Datasource Grafana : l'utilisateur 'admin' de l'indexer s'authentifie avec
+# indexer_password (et NON dashboard_password → 401).
+- name: Vault fetch | Lire wazuh_indexer_password depuis Vault
+  ansible.builtin.shell: >
+    {{ _vfb_exec }} vault kv get -field=indexer_password
+    {{ _vfb_kv_mount }}/credentials/wazuh-credentials
+  environment:
+    KUBECONFIG: "{{ kubeconfig_path }}"
+  register: _vfb_wazuh_indexer_pass
+  changed_when: false
+  no_log: true
+  failed_when: false
+  tags: always
+
+- name: Vault fetch | Définir wazuh_indexer_password comme fact
+  ansible.builtin.set_fact:
+    wazuh_indexer_password: "{{ _vfb_wazuh_indexer_pass.stdout | default('') }}"
+  no_log: true
+  when: _vfb_wazuh_indexer_pass.rc == 0
+  tags: always
+
 # --- ArgoCD admin password ---
 - name: Vault fetch | Lire argocd_admin_password depuis Vault
   ansible.builtin.shell: >
