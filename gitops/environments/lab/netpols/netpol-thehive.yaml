@@ -375,3 +375,27 @@ spec:
       ports:
         - protocol: TCP
           port: 9000
+---
+# Ingress : monitoring (blackbox probe SSI) -> TheHive API :9000
+# Additif aux netpol soc-foundations (ingress-api-thehive ne couvre pas monitoring)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ingress-monitoring-thehive
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: thehive
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: soc-monitoring
+      ports:
+        - protocol: TCP
+          port: 9000

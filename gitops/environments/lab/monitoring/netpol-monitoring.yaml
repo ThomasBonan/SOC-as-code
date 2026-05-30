@@ -204,7 +204,9 @@ spec:
               kubernetes.io/metadata.name: soc-wazuh
       ports:
         - protocol: TCP
-          port: 55000
+          port: 55000   # wazuh-manager API
+        - protocol: TCP
+          port: 5601    # wazuh-dashboard
     - to:
         - namespaceSelector:
             matchLabels:
