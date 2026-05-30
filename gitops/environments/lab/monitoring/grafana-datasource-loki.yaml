@@ -15,6 +15,7 @@ data:
     datasources:
       - name: Loki
         type: loki
+        uid: loki
         access: proxy
         url: http://loki-stack.soc-monitoring.svc:3100
         isDefault: false
