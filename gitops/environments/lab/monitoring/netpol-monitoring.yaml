@@ -301,3 +301,30 @@ spec:
               protocol: TCP
             - port: "2381"    # etcd metrics
               protocol: TCP
+---
+# Règle 8 : Promtail -> Loki (push des logs).
+# egress-dns (podSelector {}) capture TOUS les pods soc-monitoring et ne laisse
+# que le DNS. Sans cette règle, promtail ne peut pas POST /loki/api/v1/push
+# (context deadline exceeded) -> Loki reste vide -> dashboard
+# "SSI — Cases TheHive + Cortex" (uid ssi-cases) sans aucune donnée.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: egress-promtail-loki
+  namespace: soc-monitoring
+  labels:
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: promtail
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: loki
+      ports:
+        - protocol: TCP
+          port: 3100
