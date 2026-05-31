@@ -783,6 +783,14 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         }
     })
 
+    # LINEAR SPINE (deadlock-proof). Lesson learned live (2026-05-31): Shuffle 1.4
+    # DEADLOCKS a join node whose parents include conditionally-skipped 2-hop chains
+    # (risk_engine stayed EXECUTING forever). So risk_engine here has EXACTLY ONE
+    # parent (normalize). Deep Cortex/MISP enrichment is the SCENARIO workflows' job
+    # (they work — all parents always run). The generic fallback does fast triage:
+    # wazuh severity + behavioral floor (command_line decode + YARA) + asset. The
+    # multi-conditional fan-out into promote_to_case is the PROVEN single-source
+    # pattern. Observables are conditional terminal leaves (no join).
     actions: list[dict[str, Any]] = [
         make_create_alert("triage", severity=2),
 
@@ -790,33 +798,11 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                      url="$ENV_RISK_ENGINE_URL/normalize",
                      headers="Content-Type: application/json", body=norm_body),
 
-        # ── Hash enrichment (gated has_sha256) — uses the normalized clean value ──
-        _http_action("action_run_cortex_hash_mb", "POST", 100, -250, url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_MB/run",
-                     headers=cx_hdr, body=json.dumps({"data": "$action_normalize.body.sha256", "dataType": "hash", "tlp": 2, "message": "triage-mb"})),
-        _http_action("action_get_cortex_hash_mb_result", "GET", 300, -250, url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=60seconds", headers=cx_hdr),
-        _http_action("action_run_cortex_hash_circl", "POST", 100, -120, url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_CIRCL/run",
-                     headers=cx_hdr, body=json.dumps({"data": "$action_normalize.body.sha256", "dataType": "hash", "tlp": 2, "message": "triage-circl"})),
-        _http_action("action_get_cortex_hash_circl_result", "GET", 300, -120, url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=60seconds", headers=cx_hdr),
-        _http_action("action_search_misp_hash", "POST", 300, 0, url="$ENV_MISP_URL/attributes/restSearch",
-                     headers=misp_hdr, body=json.dumps({"value": "$action_normalize.body.sha256", "returnFormat": "json"})),
-
-        # ── IP enrichment (gated has_srcip) ──
-        _http_action("action_run_cortex_ip", "POST", 100, 150, url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_ANALYZER/run",
-                     headers=cx_hdr, body=json.dumps({"data": "$action_normalize.body.srcip", "dataType": "ip", "tlp": 2, "message": "triage-ip"})),
-        _http_action("action_get_cortex_ip_result", "GET", 300, 150, url="$ENV_CORTEX_URL/api/job/$action_run_cortex_ip.body._id/waitreport?atMost=60seconds", headers=cx_hdr),
-        _http_action("action_search_misp_ip", "POST", 300, 280, url="$ENV_MISP_URL/attributes/restSearch",
-                     headers=misp_hdr, body=json.dumps({"value": "$action_normalize.body.srcip", "returnFormat": "json"})),
-
-        # ── Risk engine: command_line (behavioral floor) + all enrichment (wrapped) ──
+        # Single parent → risk_engine. command_line drives the behavioral floor.
+        # No cortex/misp bare-values: those dims default to 0 (scenarios do deep enrichment).
         make_risk_engine_call("triage",
                               extra_fields={"command_line": "$action_normalize.body.command_line"},
-                              bare_value_fields={
-                                  "cortex_hash_mb_taxonomies":    "$action_get_cortex_hash_mb_result.body.report.summary.taxonomies",
-                                  "cortex_hash_circl_taxonomies": "$action_get_cortex_hash_circl_result.body.report.summary.taxonomies",
-                                  "cortex_ip_taxonomies":         "$action_get_cortex_ip_result.body.report.summary.taxonomies",
-                                  "misp_hash_attributes":         "$action_search_misp_hash.body.response.Attribute",
-                                  "misp_ip_attributes":           "$action_search_misp_ip.body.response.Attribute",
-                              }, x=700, y=0),
+                              x=400, y=0),
 
         make_ignore_alert(),
         make_promote_to_case(),
@@ -831,34 +817,17 @@ def build_alert_triage_workflow() -> dict[str, Any]:
     branches = [
         _branch("trigger_wazuh_webhook", "action_create_thehive_alert"),
         _branch("action_create_thehive_alert", "action_normalize"),
+        # risk_engine: SINGLE unconditional parent → no join, never deadlocks.
+        _branch("action_normalize", "action_call_risk_engine"),
 
-        # conditional enrichment dispatch (clean IOC, never empty)
-        _branch("action_normalize", "action_run_cortex_hash_mb",   condition_value="$action_normalize.body.has_sha256", expected="true"),
-        _branch("action_run_cortex_hash_mb", "action_get_cortex_hash_mb_result"),
-        _branch("action_normalize", "action_run_cortex_hash_circl", condition_value="$action_normalize.body.has_sha256", expected="true"),
-        _branch("action_run_cortex_hash_circl", "action_get_cortex_hash_circl_result"),
-        _branch("action_normalize", "action_search_misp_hash",      condition_value="$action_normalize.body.has_sha256", expected="true"),
-        _branch("action_normalize", "action_run_cortex_ip",         condition_value="$action_normalize.body.has_srcip", expected="true"),
-        _branch("action_run_cortex_ip", "action_get_cortex_ip_result"),
-        _branch("action_normalize", "action_search_misp_ip",        condition_value="$action_normalize.body.has_srcip", expected="true"),
-
-        # converge to risk engine (triggered branches only; non-run resolve to [])
-        _branch("action_get_cortex_hash_mb_result",    "action_call_risk_engine"),
-        _branch("action_get_cortex_hash_circl_result", "action_call_risk_engine"),
-        _branch("action_search_misp_hash",             "action_call_risk_engine"),
-        _branch("action_get_cortex_ip_result",         "action_call_risk_engine"),
-        _branch("action_search_misp_ip",               "action_call_risk_engine"),
-        # behavioral / no-IOC path — single condition, guarantees risk_engine fires
-        _branch("action_normalize", "action_call_risk_engine", condition_value="$action_normalize.body.has_ioc", expected="false"),
-
-        # decision branches (proven multi-conditional join into promote_to_case)
+        # decision branches — PROVEN single-source multi-conditional fan-out
         _branch("action_call_risk_engine", "action_ignore_alert",    condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_closed"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="reviewed"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_promoted"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="contained"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
 
-        # post-promote: persist risk (always) + guarded observables (terminal leaves)
+        # post-promote: persist risk (single parent) + guarded observables (terminal leaves)
         _branch("action_promote_to_case", "action_update_case_risk"),
         _branch("action_promote_to_case", "action_add_obs_hash", condition_value="$action_normalize.body.has_sha256", expected="true"),
         _branch("action_promote_to_case", "action_add_obs_ip",   condition_value="$action_normalize.body.has_srcip", expected="true"),
@@ -867,9 +836,9 @@ def build_alert_triage_workflow() -> dict[str, Any]:
 
     return {
         "name": "SOC Alert Triage",
-        "description": "Generic fallback: Wazuh -> normalize -> conditional Cortex/MISP -> risk engine (behavioral floor) -> TheHive",
+        "description": "Generic fallback: Wazuh -> normalize -> risk engine (behavioral floor) -> TheHive (linear, deadlock-proof)",
         "start": "action_create_thehive_alert",
-        "tags": ["soc", "triage", "fallback", "wazuh", "thehive", "cortex", "misp"],
+        "tags": ["soc", "triage", "fallback", "wazuh", "thehive"],
         "actions": actions,
         "triggers": [trigger],
         "branches": branches,
