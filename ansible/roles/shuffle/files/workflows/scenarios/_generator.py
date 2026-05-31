@@ -809,9 +809,20 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         make_ignore_alert(),
         make_promote_to_case(),
         make_add_case_observable("$action_normalize.body.sha256", dtype="hash",
-                                 action_id="action_add_obs_hash", x=1300, y=-150),
+                                 action_id="action_add_obs_hash", x=1300, y=-200),
         make_add_case_observable("$action_normalize.body.srcip", dtype="ip",
-                                 action_id="action_add_obs_ip", x=1300, y=150),
+                                 action_id="action_add_obs_ip", x=1300, y=0),
+        # PowerShell / process command — base64 (quote/$-safe for the JSON body).
+        # The analyst base64-decodes; behavioral verdict is in the case tags (yara).
+        _http_action("action_add_obs_cmd", "POST", 1300, 200,
+                     url="$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id/observable",
+                     headers="Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json",
+                     body=json.dumps({
+                         "dataType": "other",
+                         "data":     "$action_normalize.body.command_b64",
+                         "message":  "Process command line (base64-encoded — decode to read)",
+                         "tags":     ["source:wazuh", "powershell-command", "encoding:base64"],
+                     })),
         make_update_case_risk(x=1100, y=0),
         make_escalate(severity=4, tlp=3),
     ]
@@ -822,9 +833,11 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         # risk_engine: SINGLE unconditional parent → no join, never deadlocks.
         _branch("action_normalize", "action_call_risk_engine"),
 
-        # decision branches — PROVEN single-source multi-conditional fan-out
+        # decision branches — PROVEN single-source multi-conditional fan-out.
+        # NB: "reviewed" (score 15-50) does NOT create a case — the alert stays an
+        # alert for human triage. Only auto_promoted/contained/escalated promote.
+        # (Fixes low-score events like file-drops being promoted with no justification.)
         _branch("action_call_risk_engine", "action_ignore_alert",    condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_closed"),
-        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="reviewed"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_promoted"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="contained"),
         _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
@@ -833,6 +846,7 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         _branch("action_promote_to_case", "action_update_case_risk"),
         _branch("action_promote_to_case", "action_add_obs_hash", condition_value="$action_normalize.body.has_sha256", expected="true"),
         _branch("action_promote_to_case", "action_add_obs_ip",   condition_value="$action_normalize.body.has_srcip", expected="true"),
+        _branch("action_promote_to_case", "action_add_obs_cmd",  condition_value="$action_normalize.body.has_command", expected="true"),
         _branch("action_update_case_risk", "action_escalate", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
     ]
 

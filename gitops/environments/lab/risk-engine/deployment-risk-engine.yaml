@@ -42,7 +42,7 @@ spec:
       # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
-        checksum/script: "b29736973c7fd1bebfb448582867ca48f2e9da17c1c555204cf5698a29438f78"
+        checksum/script: "722b50e9303585950088a4b367f6133eb1d1e716b701f8fdf00d328232360ddd"
     spec:
       securityContext:
         runAsNonRoot: true

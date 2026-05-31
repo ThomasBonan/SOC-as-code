@@ -601,22 +601,29 @@ def normalize():
     # body Shuffle builds (cause of a workflow hang observed 2026-05-31).
     beh = compute_behavior(cl) if BEHAVIOR_ENABLED else {"behavior_score": 0, "yara_matches": [], "techniques": []}
 
+    # IMPORTANT: do NOT return the raw command_line / decoded in the response.
+    # Their quotes/backslashes/`$` (PowerShell vars) corrupt Shuffle's handling of
+    # the NEXT action and ABORT the workflow (observed live 2026-05-31: events WITH
+    # a commandLine aborted before risk_engine; events without it succeeded). We
+    # return only Shuffle-safe scalars, plus the command base64-encoded (quote/$-free)
+    # so the SOAR can attach it as an observable without corrupting any JSON body.
+    command_b64 = base64.b64encode(cl.encode("utf-8", "replace")).decode() if cl else ""
+    decoded_b64 = base64.b64encode(decoded.encode("utf-8", "replace")).decode() if decoded else ""
+
     return jsonify({
         "sha256":         sha256,
         "srcip":          srcip if isinstance(srcip, str) else "",
         "dstuser":        dstuser if isinstance(dstuser, str) else "",
-        "command_line":   cl,
-        "decoded":        decoded[:512],
-        "urls":           urls,
         "behavior_score": beh["behavior_score"],
         "yara_matches":   beh.get("yara_matches", []),
         "techniques":     beh.get("techniques", []),
-        "has_sha256":   bool(sha256),
-        "has_srcip":    bool(srcip),
-        # has_ioc lets the SOAR route a single-condition "no enrichable IOC"
-        # branch straight to /score (behavioral-only events, e.g. encoded PS with
-        # no file/network IOC) — avoids an impossible AND in a Shuffle condition.
-        "has_ioc":      bool(sha256 or srcip),
+        "command_b64":    command_b64,   # base64(raw command line) — decode to read
+        "decoded_b64":    decoded_b64,   # base64(decoded PowerShell payload)
+        "has_command":    bool(cl),
+        "url_count":      len(urls),
+        "has_sha256":     bool(sha256),
+        "has_srcip":      bool(srcip),
+        "has_ioc":        bool(sha256 or srcip),
     }), 200
 
 
