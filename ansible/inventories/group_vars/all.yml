@@ -258,6 +258,77 @@ soc_risk_asset_weights:
   lab:             1
   default:         1
 
+# ── Scenario multipliers (Phase 5 multi-scenario) ─────────────
+# Boost/soften le risk_score (post-calcul 5-dim, pre-decision) en fonction
+# du type d'attaque détecté par le workflow Shuffle qui appelle l'engine.
+# Le multiplicateur est passé en clair dans le payload (champ "scenario").
+# Multiplicateur 1.0 par défaut si scenario absent/inconnu = no-op
+# (rétro-compat avec workflows pré-multi-scenario qui n'envoient pas le champ).
+# Clamp final à [0, 100]: un multiplicateur trop élevé ne dépasse pas
+# le plafond et un seuil "escalate" reste atteignable normalement.
+soc_risk_scenario_multipliers:
+  malware:    1.4   # boost — exécution = haute confiance (1.3→1.4 le 2026-05-28 pour atteindre escalate sur selftest Mimikatz 86.67→93.33)
+  bruteforce: 0.9   # softener — fréquence souvent du bruit
+  privesc:    1.5   # boost max — toujours critique
+
+# ── Analyse comportementale PowerShell/commandes (Phase 9 — 2026-05-31) ─────────
+# Le risk-engine décode les commandes obfusquées (PowerShell -EncodedCommand) et
+# matche un ruleset YARA curé (ansible/roles/soc_risk_engine/files/yara/). Le score
+# comportemental (0-100) est appliqué comme PLANCHER : final = max(score_pondéré,
+# plancher). Il ne RELÈVE jamais que le score — les scores tunés du selftest restent
+# intacts (behavior=0 quand command_line absent / aucun match). Validé par
+# roles/soc_risk_engine/tests/test_behavior.py (15/15).
+soc_risk_behavior:
+  enabled: true
+  encoded_present_score: 50      # "commande encodée présente" (obfuscation seule) → tier auto_promote
+  floors:                        # [seuil_score_comportemental, score_final_minimum] — top-down
+    - [90, 90]                   # critique (AMSI bypass, cred dumping)        → escalate
+    - [70, 75]                   # élevé (download cradle, IEX distant, inject) → contained
+    - [50, 50]                   # moyen (commande encodée)                    → auto_promoted
+                                 # NB: flags suspects seuls (40) restent sous 50 → aucun plancher
+
+# ============================================================
+# SOC Slack — notifications escalated (risk_score >= 90)
+# Phase 8 (2026-05-28). Source de vérité = ansible/.secrets/slack.env :
+#   SOC_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/.../.../...
+# Fichier gitignored (pattern .secrets/* déjà présent). À chaque déploiement,
+# le rôle vault parse le .env et écrit dans soc/integrations/slack (KV v2).
+# ESO synchronise vers le Secret K8s soc-slack-webhook (ns soc-shuffle).
+# Le rôle shuffle injecte la valeur comme workflow_variable ENV_SLACK_WEBHOOK_URL
+# à l'import des 3 workflows scenarios. Le générateur émet un nœud HTTP POST
+# gated sur risk_decision == "escalated" (= score >= soc_risk_thresholds.escalate = 90).
+# ============================================================
+soc_slack:
+  enabled:       true                          # kill-switch global du nœud Slack
+  dry_run:       false                         # false = vraie URL injectée → POST Slack actif (basculer à true pour muter sans toucher au reste)
+  min_score:     90                            # doit rester aligné avec soc_risk_thresholds.escalate
+  channel:       "alertes-soc"                 # cosmétique (affiché dans le message Block Kit)
+  vault_subpath: "integrations/slack"          # chemin DANS le mount KV "soc" → soc/integrations/slack
+  k8s_secret_name: "soc-slack-webhook"
+  k8s_namespace: "soc-shuffle"
+  timeout_seconds: 5                           # court : Slack down ne doit pas bloquer le workflow (branche terminale)
+  env_file:      ".secrets/slack.env"          # relatif à ansible/ — gitignored
+  env_var:       "SOC_SLACK_WEBHOOK_URL"       # nom de la variable lue depuis .secrets/slack.env
+
+# ============================================================
+# SOC Automation — Sysmon hash extraction
+# Active le décodeur soc-sysmon-hashes.xml (split du champ Hashes
+# combiné Sysmon ProcessCreate event 1) + la rule custom level 12
+# qui matche les hacktools (mimikatz, lazagne, gsecdump...).
+# Prérequis: au moins un agent Windows envoie Sysmon EventChannel,
+# sinon analysisd lèvera (2101) "Parent decoder name invalid".
+# ============================================================
+soc_automation_deploy_sysmon_decoder: true
+
+# Fallback alert-triage catchall : route TOUTE alerte level >= min_level (9)
+# vers le workflow legacy alert-triage, en plus des scénarios filtrés par rule_id.
+# Indispensable pour orchestrer les détections génériques (ex. PowerShell encodé
+# rule 92057) qui ne matchent pas les rule_id des 3 scénarios.
+# ⚠️ Limite Shuffle 1.4 : une alerte qui matche DÉJÀ un scénario (ex. brute force
+# 60122, mimikatz 100200) fire alors 2 intégrations → 2 workers concurrents →
+# risque d'exécution ABORTED. Acceptable en lab ; correctif propre = Shuffle 1.5+.
+soc_automation_wazuh_webhook_enable_fallback: true
+
 # ============================================================
 # SOC Compliance — variables globales (rôle soc_compliance)
 # Playbook 200 | Drift detection & compliance validation.

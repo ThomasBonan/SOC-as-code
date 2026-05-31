@@ -50,16 +50,33 @@ data:
     # calcul 5-dim, AVANT la décision. Multiplicateur 1.0 si scenario inconnu/absent.
     # Clamp final à [0, 100] pour préserver la grille de décision.
     SCENARIO_MULTIPLIERS = {
+
         "malware": 1.4,
+
         "bruteforce": 0.9,
+
         "privesc": 1.5,
+
     }
-    POLICY_VERSION       = "2.4"
+    # ── Behavioral analysis (Phase 9 — PowerShell decode + YARA) ────────────────────
+    # The behavior score (0-100) is derived from decoding obfuscated command lines and
+    # matching a curated YARA ruleset. It is applied as a SCORE FLOOR (max with the
+    # weighted 5-dim score), never as a weighted dimension — so existing tuned scores
+    # stay intact and behavior can only RAISE the final risk.
+    BEHAVIOR_ENABLED      = True
+    ENCODED_PRESENT_SCORE = 50
+    # [behavior_score_threshold, min_final_score] — top-down, first match wins.
+    BEHAVIOR_FLOORS       = [[90, 90], [70, 75], [50, 50]]
+    YARA_RULES_PATH       = "/config/yara"
+    POLICY_VERSION       = "2.6"
     ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
     LISTEN_PORT          = 8080
 
+
+    import base64
     import json
     import logging
+    import os
     import re
     import sys
     from flask import Flask, request, jsonify
@@ -110,10 +127,20 @@ data:
 
 
     def _coerce_list(val):
-        """Accept None, list, dict, or JSON-encoded string. Always return a list."""
+        """Accept None, list, dict, or JSON-encoded string. Always return a list.
+
+        Defensive flatten: when the Shuffle workflow body wraps a bare-value
+        expression in `[$expr]` to absorb empty-result cases (e.g. Cortex
+        InProgress / Failure → '' substitution), a Success case produces a
+        single-level nested array [[{...}, {...}]]. Detect and flatten one level
+        so the rest of the resolver code (which expects a flat list of dicts)
+        keeps working unchanged. v2.5+ (POLICY_VERSION).
+        """
         if val is None or val == "":
             return []
         if isinstance(val, list):
+            if len(val) == 1 and isinstance(val[0], list):
+                return val[0]
             return val
         if isinstance(val, dict):
             # MISP restSearch may return {"Attribute": [...]} when caller passes body.response
@@ -246,6 +273,153 @@ data:
         return "workstation" if "workstation" in ASSET_WEIGHTS else "default"
 
 
+    # ── Behavioral analysis: PowerShell decode + YARA (Phase 9) ─────────────────────
+    # Validated by ansible/roles/soc_risk_engine/tests/test_behavior.py (15/15).
+    _ENC_RE    = re.compile(r"-e(?:nc|ncodedcommand|ncoded)?\s+([A-Za-z0-9+/=]{16,})", re.I)
+    _SHA256_RE = re.compile(r"SHA256=([A-Fa-f0-9]{64})")
+    _URL_RE    = re.compile(r"https?://[^\s'\"<>|]+", re.I)
+
+    _YARA = None
+    _YARA_TRIED = False
+
+
+    def _load_yara():
+        """Lazily compile the mounted YARA ruleset. Returns None if yara is
+        unavailable or no rules are mounted — behavior then degrades to 0 (the
+        engine never breaks because YARA is missing)."""
+        global _YARA, _YARA_TRIED
+        if _YARA_TRIED:
+            return _YARA
+        _YARA_TRIED = True
+        try:
+            import yara
+            files = {}
+            if os.path.isdir(YARA_RULES_PATH):
+                for fn in sorted(os.listdir(YARA_RULES_PATH)):
+                    if fn.endswith((".yar", ".yara")):
+                        files[fn] = os.path.join(YARA_RULES_PATH, fn)
+            if files:
+                _YARA = yara.compile(filepaths=files)
+                logger.info("YARA ruleset compiled from %s (%d file(s))", YARA_RULES_PATH, len(files))
+            else:
+                logger.warning("No YARA rules found under %s — behavior scoring disabled", YARA_RULES_PATH)
+        except Exception as exc:
+            logger.warning("YARA unavailable (%s) — behavior scoring disabled", exc)
+            _YARA = None
+        return _YARA
+
+
+    def _deep_get(obj, *paths):
+        """First non-empty scalar found at any dotted path in a nested dict.
+        Ignores unsubstituted Shuffle variables (leading '$')."""
+        for path in paths:
+            cur = obj
+            ok = True
+            for part in path.split("."):
+                if isinstance(cur, dict) and part in cur:
+                    cur = cur[part]
+                else:
+                    ok = False
+                    break
+            if ok and isinstance(cur, str) and cur.strip() and not cur.strip().startswith("$"):
+                return cur.strip()
+            if ok and isinstance(cur, (int, float)) and not isinstance(cur, bool):
+                return cur
+        return ""
+
+
+    def _extract_sha256(fields):
+        """SHA256 from data.hash_sha256 (syslog decoder) OR the raw Sysmon
+        eventchannel combined 'Hashes' string (MD5=..,SHA256=..,IMPHASH=..)."""
+        v = _deep_get(fields, "data.hash_sha256")
+        if isinstance(v, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", v or ""):
+            return v.lower()
+        raw = _deep_get(fields, "data.win.eventdata.hashes", "data.win.eventdata.Hashes")
+        if isinstance(raw, str):
+            m = _SHA256_RE.search(raw)
+            if m:
+                return m.group(1).lower()
+        return ""
+
+
+    def _extract_urls(text):
+        if not isinstance(text, str) or not text:
+            return []
+        return sorted(set(_URL_RE.findall(text)))[:10]
+
+
+    def _decode_powershell(command_line):
+        """UTF-16LE-decoded payload of a PowerShell -EncodedCommand, or ''."""
+        if not isinstance(command_line, str) or not command_line:
+            return ""
+        m = _ENC_RE.search(command_line)
+        if not m:
+            return ""
+        blob = m.group(1)
+        for pad in ("", "=", "==", "==="):
+            try:
+                raw = base64.b64decode(blob + pad)
+            except Exception:
+                continue
+            for enc in ("utf-16-le", "utf-8"):
+                try:
+                    txt = raw.decode(enc)
+                except UnicodeDecodeError:
+                    continue
+                if txt.isprintable() or "\n" in txt:
+                    return txt
+        return ""
+
+
+    def _run_yara(text):
+        rules = _load_yara()
+        if not rules or not text:
+            return []
+        try:
+            out = []
+            for m in rules.match(data=text):
+                meta = m.meta or {}
+                out.append({
+                    "rule":      m.rule,
+                    "score":     int(meta.get("score", 0) or 0),
+                    "severity":  str(meta.get("severity", "")),
+                    "technique": str(meta.get("technique", "")),
+                })
+            return out
+        except Exception as exc:
+            logger.warning("YARA match error: %s", exc)
+            return []
+
+
+    def compute_behavior(command_line):
+        """Decode + analyze a process command line.
+        Returns {behavior_score 0-100, encoded, yara_matches, techniques, decoded_preview}.
+        behavior_score only ever RAISES the final risk via behavior_floor()."""
+        cl = command_line if isinstance(command_line, str) else ""
+        decoded = _decode_powershell(cl)
+        encoded = bool(decoded) or bool(_ENC_RE.search(cl))
+        buf = (cl + "\n" + decoded) if decoded else cl
+        matches = _run_yara(buf)
+        score = max([m["score"] for m in matches], default=0)
+        if encoded:
+            score = max(score, ENCODED_PRESENT_SCORE)
+        techniques = sorted({m["technique"] for m in matches if m["technique"]})
+        return {
+            "behavior_score":  int(max(0, min(100, score))),
+            "encoded":         encoded,
+            "yara_matches":    [m["rule"] for m in matches],
+            "techniques":      techniques,
+            "decoded_preview": decoded[:160],
+        }
+
+
+    def behavior_floor(behavior_score):
+        for thresh, floor in BEHAVIOR_FLOORS:
+            if behavior_score >= thresh:
+                return floor
+        return 0
+
+
     # ── Scoring formula ───────────────────────────────────────────────────────────
     def _compute(wazuh_severity: int, cortex_max_level: int, misp_hit: bool,
                  asset_type: str, frequency: int) -> dict:
@@ -321,6 +495,12 @@ data:
             "thresholds":           THRESHOLDS,
             "asset_weights":        ASSET_WEIGHTS,
             "scenario_multipliers": SCENARIO_MULTIPLIERS,
+            "behavior": {
+                "enabled":               BEHAVIOR_ENABLED,
+                "encoded_present_score": ENCODED_PRESENT_SCORE,
+                "floors":                BEHAVIOR_FLOORS,
+                "yara_loaded":           bool(_load_yara()),
+            },
         }), 200
 
 
@@ -359,21 +539,37 @@ data:
         asset_type       = _resolve_asset_type(body)
         frequency        = max(1, _safe_int(body.get("frequency"), default=1))
         scenario         = body.get("scenario") or ""
+        command_line     = body.get("command_line", "")
 
         result   = _compute(wazuh_severity, cortex_max_level, misp_hit, asset_type, frequency)
         base_score = result["score"]
         adj_score, multiplier = _apply_scenario_multiplier(base_score, scenario)
-        decision = _decide(adj_score)
+
+        # Behavioral floor (Phase 9): decode/analyze the command line and raise the
+        # final score to a minimum if a high-confidence TTP is detected. Pure floor —
+        # never lowers the weighted score, so existing scenario tuning is preserved.
+        if BEHAVIOR_ENABLED:
+            behavior = compute_behavior(command_line)
+            floor = behavior_floor(behavior["behavior_score"])
+        else:
+            behavior = {"behavior_score": 0, "encoded": False, "yara_matches": [],
+                        "techniques": [], "decoded_preview": ""}
+            floor = 0
+        final_score = round(max(adj_score, float(floor)), 2)
+        decision = _decide(final_score)
 
         resp = {
-            "case_id":         body.get("case_id", ""),
-            "risk_score":      adj_score,
-            "risk_score_base": base_score,
-            "scenario":        scenario if isinstance(scenario, str) else "",
-            "scenario_mult":   multiplier,
-            "risk_decision":   decision,
-            "dimensions":      result["dimensions"],
-            "policy_version":  POLICY_VERSION,
+            "case_id":             body.get("case_id", ""),
+            "risk_score":          final_score,
+            "risk_score_prefloor": adj_score,
+            "risk_score_base":     base_score,
+            "behavior_floor":      floor,
+            "behavior":            behavior,
+            "scenario":            scenario if isinstance(scenario, str) else "",
+            "scenario_mult":       multiplier,
+            "risk_decision":       decision,
+            "dimensions":          result["dimensions"],
+            "policy_version":      POLICY_VERSION,
             "inputs": {
                 "wazuh_severity":   max(1, min(4, wazuh_severity)),
                 "cortex_max_level": cortex_max_level,
@@ -384,11 +580,48 @@ data:
             },
         }
         logger.info(
-            "case=%s score=%.1f (base=%.1f mult=%.2f scenario=%s) decision=%s wazuh_sev=%d cortex=%d misp_hit=%s asset=%s freq=%d",
-            resp["case_id"], adj_score, base_score, multiplier, scenario, decision,
-            max(1, min(4, wazuh_severity)), cortex_max_level, misp_hit, asset_type, frequency,
+            "case=%s score=%.1f (base=%.1f mult=%.2f floor=%d behavior=%d%s scenario=%s) decision=%s "
+            "wazuh_sev=%d cortex=%d misp_hit=%s asset=%s freq=%d",
+            resp["case_id"], final_score, base_score, multiplier, floor,
+            behavior["behavior_score"], (" yara=%s" % ",".join(behavior["yara_matches"]) if behavior["yara_matches"] else ""),
+            scenario, decision, max(1, min(4, wazuh_severity)), cortex_max_level, misp_hit, asset_type, frequency,
         )
         return jsonify(resp), 200
+
+
+    @app.route("/normalize", methods=["POST"])
+    def normalize():
+        """
+        Extract clean, single-value IOCs from a raw Wazuh alert so the SOAR can
+        dispatch analyzers conditionally (and skip empty inputs — the root cause of
+        the alert-triage deadlock). Accepts {"all_fields": {...}} or the raw alert.
+        Returns: sha256, srcip, dstuser, command_line, decoded (PS), urls[].
+        Works for both Windows Sysmon eventchannel and Linux/syslog events.
+        """
+        body = request.get_json(silent=True) or {}
+        fields = body.get("all_fields") if isinstance(body.get("all_fields"), dict) else body
+
+        sha256  = _extract_sha256(fields)
+        cl      = _deep_get(fields, "data.win.eventdata.commandLine",
+                            "data.win.eventdata.CommandLine", "data.command")
+        srcip   = _deep_get(fields, "data.srcip", "data.win.eventdata.SourceIp",
+                            "data.win.eventdata.IpAddress")
+        dstuser = _deep_get(fields, "data.dstuser", "data.win.eventdata.targetUserName",
+                            "data.win.eventdata.User", "data.win.eventdata.user")
+        cl = cl if isinstance(cl, str) else ""
+        decoded = _decode_powershell(cl)
+        urls = _extract_urls((cl + " " + decoded) if decoded else cl)
+
+        return jsonify({
+            "sha256":       sha256,
+            "srcip":        srcip if isinstance(srcip, str) else "",
+            "dstuser":      dstuser if isinstance(dstuser, str) else "",
+            "command_line": cl,
+            "decoded":      decoded[:512],
+            "urls":         urls,
+            "has_sha256":   bool(sha256),
+            "has_srcip":    bool(srcip),
+        }), 200
 
 
     if __name__ == "__main__":

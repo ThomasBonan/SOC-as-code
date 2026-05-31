@@ -42,7 +42,7 @@ spec:
       # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
-        checksum/script: "82e9b0d6f51f2cbdbabcadb160c0b90ba9958af2d2b9454d88b5073086b29189"
+        checksum/script: "f58808feb9311624d736084756eb87f15fa4e8e63064b5d465f6f5b7e2a30cdf"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -57,6 +57,7 @@ spec:
             - pip
             - install
             - "flask==3.1.0"
+            - "yara-python==4.5.4"
             - "--target=/app/libs"
             - "--no-cache-dir"
             - "--quiet"
@@ -117,6 +118,10 @@ spec:
               mountPath: /config/asset-criticality.json
               subPath:   asset-criticality.json
               readOnly:  true
+            # Règles YARA comportementales (lecture seule depuis ConfigMap)
+            - name: yara-rules
+              mountPath: /config/yara
+              readOnly:  true
             # Volumes emptyDir accessibles en écriture
             - name: libs
               mountPath: /app/libs
@@ -130,6 +135,9 @@ spec:
         - name: asset-config
           configMap:
             name: soc-asset-criticality
+        - name: yara-rules
+          configMap:
+            name: soc-risk-engine-yara-rules
         - name: libs
           emptyDir: {}
         - name: tmp

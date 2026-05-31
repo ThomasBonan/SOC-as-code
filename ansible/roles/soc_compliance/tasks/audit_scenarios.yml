@@ -1,0 +1,342 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# audit_scenarios.yml — Audit multi-scenario chain (Phase 7)
+# tag: audit, scenarios
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Verifies:
+#   1. soc-shuffle-marker-workflows présent + scenarios_composite_hash non vide
+#   2. soc-shuffle-webhook-config.webhook_urls dict non vide
+#   3. ossec.conf contient N+1 blocs <integration><name>shuffle</name>
+#   4. AR scripts custom présents dans le pod Wazuh manager:
+#        /var/ossec/active-response/bin/isolate-agent.sh
+#        /var/ossec/active-response/bin/disable-account.sh
+#   5. soc-ar.env présent + lisible (toggle dry_run visible)
+#   6. Risk engine /health expose policy_version=2.6 + scenario_multipliers
+#
+# All read-only (changed_when: false).
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "audit_scenarios | Initialize audit state"
+  ansible.builtin.set_fact:
+    _scn_findings: []
+    _scn_status: "ok"
+  changed_when: false
+
+# ── 1. Marker workflows multi-scenario ────────────────────────────
+- name: "audit_scenarios | Check soc-shuffle-marker-workflows"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.shuffle | default('soc-shuffle') }}"
+    name: "soc-shuffle-marker-workflows"
+  register: _scn_marker
+  changed_when: false
+
+- name: "audit_scenarios | DRIFT — marker workflows missing or stale"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'missing_or_stale_marker',
+          'component': 'shuffle_workflows',
+          'severity': 'high',
+          'resource': 'soc-shuffle-marker-workflows',
+          'message': 'Workflows marker missing or scenarios_composite_hash empty — run 185-shuffle --tags workflows'
+        }
+      ] }}
+  when: >-
+    _scn_marker.resources | length == 0
+    or (_scn_marker.resources[0].data.scenarios_composite_hash | default('')) | length == 0
+  changed_when: false
+
+# ── 2. Webhook config webhook_urls ────────────────────────────────
+- name: "audit_scenarios | Check soc-shuffle-webhook-config.webhook_urls"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: ConfigMap
+    namespace: "{{ soc_namespaces.thehive }}"
+    name: "soc-shuffle-webhook-config"
+  register: _scn_webhook_cm
+  changed_when: false
+
+- name: "audit_scenarios | Parse webhook_urls dict"
+  ansible.builtin.set_fact:
+    _scn_webhook_urls: >-
+      {{
+        (_scn_webhook_cm.resources[0].data.webhook_urls | default('{}'))
+        | from_json
+      }}
+  when: _scn_webhook_cm.resources | length > 0
+
+- name: "audit_scenarios | DRIFT — webhook_urls vide alors que scenarios attendus"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'empty_webhook_urls',
+          'component': 'shuffle_webhook_config',
+          'severity': 'high',
+          'resource': 'soc-shuffle-webhook-config',
+          'message': 'webhook_urls dict vide — pas de scenario routing actif (vérifier shuffle_scenarios)'
+        }
+      ] }}
+  when:
+    - _scn_webhook_cm.resources | length > 0
+    - (_scn_webhook_urls | default({}) | length) == 0
+    - (shuffle_scenarios | default([])) | length > 0
+  changed_when: false
+
+# ── 3. ossec.conf integrations count ───────────────────────────────
+- name: "audit_scenarios | Count <integration><name>shuffle</name> blocs in ossec.conf"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_compliance_kubeconfig_path }}
+    exec -n {{ soc_namespaces.wazuh }} wazuh-manager-master-0 --
+    bash -c 'grep -c "name>shuffle</name" /var/ossec/etc/ossec.conf'
+  register: _scn_ossec_count
+  changed_when: false
+  failed_when: false
+
+- name: "audit_scenarios | DRIFT — pas assez d'intégrations dans ossec.conf"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'ossec_integrations_count_mismatch',
+          'component': 'wazuh_ossec_conf',
+          'severity': 'high',
+          'resource': '/var/ossec/etc/ossec.conf',
+          'expected': (shuffle_scenarios | default([]) | length) + 1,
+          'observed': _scn_ossec_count.stdout | default('?'),
+          'message': 'ossec.conf integration blocs < N scenarios + fallback (run 180-soc-automation --tags integration)'
+        }
+      ] }}
+  when:
+    - (shuffle_scenarios | default([])) | length > 0
+    - (_scn_ossec_count.stdout | default('0') | int) < ((shuffle_scenarios | length) + 1)
+  changed_when: false
+
+# ── 4. AR scripts présents in-pod ─────────────────────────────────
+- name: "audit_scenarios | Check AR scripts in-pod"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_compliance_kubeconfig_path }}
+    exec -n {{ soc_namespaces.wazuh }} wazuh-manager-master-0 --
+    bash -c 'test -x /var/ossec/active-response/bin/isolate-agent.sh
+             && test -x /var/ossec/active-response/bin/disable-account.sh
+             && echo OK'
+  register: _scn_ar_scripts
+  changed_when: false
+  failed_when: false
+
+- name: "audit_scenarios | DRIFT — AR scripts manquants"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'missing_ar_scripts',
+          'component': 'wazuh_ar_scripts',
+          'severity': 'medium',
+          'resource': '/var/ossec/active-response/bin/{isolate-agent,disable-account}.sh',
+          'message': 'AR custom scripts manquants in-pod (run 180-soc-automation --tags ar)'
+        }
+      ] }}
+  when: (_scn_ar_scripts.stdout | default('')) != 'OK'
+  changed_when: false
+
+# ── 5. soc-ar.env présent ─────────────────────────────────────────
+- name: "audit_scenarios | Check soc-ar.env"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_compliance_kubeconfig_path }}
+    exec -n {{ soc_namespaces.wazuh }} wazuh-manager-master-0 --
+    cat /var/ossec/active-response/soc-ar.env
+  register: _scn_ar_env
+  changed_when: false
+  failed_when: false
+
+- name: "audit_scenarios | INFO — soc-ar.env content"
+  ansible.builtin.debug:
+    msg: "soc-ar.env: {{ _scn_ar_env.stdout_lines | default(['(absent)']) }}"
+  changed_when: false
+
+- name: "audit_scenarios | WARN — AR dry_run désactivé (mode destructif)"
+  ansible.builtin.set_fact:
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'ar_dry_run_disabled',
+          'component': 'wazuh_ar_scripts',
+          'severity': 'info',
+          'resource': '/var/ossec/active-response/soc-ar.env',
+          'message': 'SOC_AR_DRY_RUN=0 -- AR scripts en mode destructif (iptables drop / passwd -l). Vérifier whitelist.'
+        }
+      ] }}
+  when:
+    - _scn_ar_env.rc | default(1) == 0
+    - "'SOC_AR_DRY_RUN=0' in (_scn_ar_env.stdout | default(''))"
+  changed_when: false
+
+# ── 6. Risk engine /health expose v2.6 + multipliers ──────────────
+- name: "audit_scenarios | Curl risk engine /health (in-cluster via Wazuh pod)"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_compliance_kubeconfig_path }}
+    exec -n {{ soc_namespaces.wazuh }} wazuh-manager-master-0 --
+    curl -sk -m 5
+    http://risk-engine-svc.{{ soc_namespaces.thehive }}.svc:8080/health
+  register: _scn_risk_health
+  changed_when: false
+  failed_when: false
+
+- name: "audit_scenarios | Parse /health response"
+  ansible.builtin.set_fact:
+    _scn_risk_health_json: "{{ _scn_risk_health.stdout | from_json }}"
+  when:
+    - _scn_risk_health.rc | default(1) == 0
+    - (_scn_risk_health.stdout | default('')) | length > 0
+  failed_when: false
+
+- name: "audit_scenarios | DRIFT — risk engine policy_version != 2.6"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'risk_engine_outdated',
+          'component': 'risk_engine',
+          'severity': 'medium',
+          'resource': 'risk-engine-svc:8080/health',
+          'expected': '2.6',
+          'observed': _scn_risk_health_json.policy_version | default('?'),
+          'message': 'Risk engine policy_version != 2.6 (re-run 190-soc-risk-engine)'
+        }
+      ] }}
+  when:
+    - _scn_risk_health_json is defined
+    - (_scn_risk_health_json.policy_version | default('')) != '2.6'
+  changed_when: false
+
+- name: "audit_scenarios | DRIFT — risk engine sans scenario_multipliers"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'risk_engine_no_scenario_multipliers',
+          'component': 'risk_engine',
+          'severity': 'medium',
+          'resource': 'risk-engine-svc:8080/health',
+          'message': 'Risk engine ne déclare aucun scenario_multipliers (vérifier soc_risk_scenario_multipliers)'
+        }
+      ] }}
+  when:
+    - _scn_risk_health_json is defined
+    - (_scn_risk_health_json.scenario_multipliers | default({}) | length) == 0
+  changed_when: false
+
+# ── 7. Slack integration (Phase 8) ────────────────────────────────
+- name: "audit_scenarios | Check K8s Secret soc-slack-webhook"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    kind: Secret
+    namespace: "{{ soc_slack.k8s_namespace | default('soc-shuffle') }}"
+    name: "{{ soc_slack.k8s_secret_name | default('soc-slack-webhook') }}"
+  register: _scn_slack_secret
+  changed_when: false
+  when: soc_slack.enabled | default(false) | bool
+
+- name: "audit_scenarios | Check ExternalSecret soc-slack-webhook (status)"
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ soc_compliance_kubeconfig_path }}"
+    api_version: "external-secrets.io/v1beta1"
+    kind: ExternalSecret
+    namespace: "{{ soc_slack.k8s_namespace | default('soc-shuffle') }}"
+    name: "{{ soc_slack.k8s_secret_name | default('soc-slack-webhook') }}"
+  register: _scn_slack_es
+  changed_when: false
+  failed_when: false
+  when: soc_slack.enabled | default(false) | bool
+
+- name: "audit_scenarios | DRIFT — Slack K8s Secret manquant"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'missing_slack_secret',
+          'component': 'slack_notifications',
+          'severity': 'high',
+          'resource': (soc_slack.k8s_namespace | default('soc-shuffle')) ~ '/' ~ (soc_slack.k8s_secret_name | default('soc-slack-webhook')),
+          'message': 'Slack K8s Secret manquant — vérifier 75-vault.yml --tags slack + ESO sync (.secrets/slack.env présent?)'
+        }
+      ] }}
+  when:
+    - soc_slack.enabled | default(false) | bool
+    - (_scn_slack_secret.resources | default([])) | length == 0
+  changed_when: false
+
+- name: "audit_scenarios | DRIFT — Slack ExternalSecret pas SecretSynced"
+  ansible.builtin.set_fact:
+    _scn_status: "drift"
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'slack_externalsecret_not_synced',
+          'component': 'slack_notifications',
+          'severity': 'medium',
+          'resource': (soc_slack.k8s_namespace | default('soc-shuffle')) ~ '/' ~ (soc_slack.k8s_secret_name | default('soc-slack-webhook')),
+          'message': 'ExternalSecret Slack pas SecretSynced — vérifier ClusterSecretStore vault-backend + chemin soc/integrations/slack'
+        }
+      ] }}
+  when:
+    - soc_slack.enabled | default(false) | bool
+    - (_scn_slack_es.resources | default([])) | length > 0
+    - ((_scn_slack_es.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | list | first | default({})).status | default('False')) != 'True'
+  changed_when: false
+
+- name: "audit_scenarios | WARN — Slack dry_run actif (notifications muted)"
+  ansible.builtin.set_fact:
+    _scn_findings: >-
+      {{ _scn_findings + [
+        {
+          'type': 'slack_dry_run_active',
+          'component': 'slack_notifications',
+          'severity': 'info',
+          'resource': 'group_vars/all.yml: soc_slack.dry_run',
+          'message': 'soc_slack.dry_run=true — workflow_variable ENV_SLACK_WEBHOOK_URL injecté vide, aucun message Slack posté. Basculer à false pour activer.'
+        }
+      ] }}
+  when:
+    - soc_slack.enabled | default(false) | bool
+    - soc_slack.dry_run | default(true) | bool
+  changed_when: false
+
+# ── Expose audit result for report.yml aggregation ───────────────
+- name: "audit_scenarios | Set audit result"
+  ansible.builtin.set_fact:
+    _comp_scenarios_result:
+      audit:    "scenarios"
+      status:   "{{ _scn_status }}"
+      findings: "{{ _scn_findings }}"
+      summary:
+        marker_present:    "{{ _scn_marker.resources | length > 0 }}"
+        webhook_urls_count: "{{ (_scn_webhook_urls | default({})) | length }}"
+        ossec_integrations: "{{ _scn_ossec_count.stdout | default('?') }}"
+        expected_integrations: "{{ (shuffle_scenarios | default([]) | length) + 1 }}"
+        ar_scripts_present: "{{ (_scn_ar_scripts.stdout | default('')) == 'OK' }}"
+        risk_engine_policy_version: "{{ _scn_risk_health_json.policy_version | default('?') if _scn_risk_health_json is defined else 'unreachable' }}"
+        scenarios_configured: "{{ (shuffle_scenarios | default([])) | map(attribute='key') | list }}"
+        slack_enabled:       "{{ soc_slack.enabled | default(false) | bool }}"
+        slack_dry_run:       "{{ soc_slack.dry_run | default(true) | bool }}"
+        slack_secret_present: "{{ (_scn_slack_secret.resources | default([])) | length > 0 if soc_slack.enabled | default(false) | bool else 'n/a' }}"
+  changed_when: false
+
+- name: "audit_scenarios | Summary"
+  ansible.builtin.debug:
+    msg:
+      - "Scenarios audit status: {{ _scn_status }}"
+      - "Findings: {{ _scn_findings | length }}"
+      - "{{ _comp_scenarios_result.summary | to_nice_yaml }}"
+  changed_when: false

@@ -23,12 +23,20 @@
 # Uses bootstrap admin credentials — the analyst SA profile lacks org-admin rights.
 
 - name: "asset_criticality | Ensure asset_criticality custom field exists in TheHive"
+  # POST /v1/customField requires permission `manageCustomField` which belongs
+  # to the `admin` profile (platform admin) — NOT to `org-admin` of the SOC org.
+  # `admin@thehive.local` is a member of both orgs (SOC=org-admin, admin=admin).
+  # Setting X-Organisation: admin switches the request context to the admin org
+  # where the user has the platform-admin profile. Without this header, TheHive
+  # uses the default org (SOC) and returns HTTP 403 "manageCustomField missing".
   ansible.builtin.uri:
     url:              "{{ soc_risk_engine_thehive_api_base }}/v1/customField"
     method:           POST
     url_username:     "{{ soc_risk_engine_thehive_bootstrap_user }}"
     url_password:     "{{ soc_risk_engine_thehive_bootstrap_password }}"
     force_basic_auth: true
+    headers:
+      X-Organisation: "admin"
     body_format:      json
     body:
       name:        "asset_criticality"
