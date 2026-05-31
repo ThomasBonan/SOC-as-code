@@ -56,7 +56,13 @@
       when: shuffle_managed_by | default('ansible') == 'gitops'
       tags: always
 
+    # NOTE: import_role (statique) et NON include_role (dynamique). Avec un
+    # include_role dynamique tagué `shuffle`, `--tags workflows` saute toute la
+    # tâche d'inclusion → le rôle n'est jamais chargé → les tâches internes
+    # taguées `workflows` ne tournent jamais (no-op silencieux). import_role
+    # inline les tâches : leurs tags propres (bootstrap/deploy/configure/workflows)
+    # redeviennent sélectionnables individuellement.
     - name: Shuffle SOAR — deploy + configure + workflows
-      ansible.builtin.include_role:
+      ansible.builtin.import_role:
         name: shuffle
       tags: shuffle
