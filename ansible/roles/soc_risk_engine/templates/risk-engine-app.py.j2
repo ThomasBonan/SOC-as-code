@@ -593,6 +593,10 @@ def normalize():
         "urls":         urls,
         "has_sha256":   bool(sha256),
         "has_srcip":    bool(srcip),
+        # has_ioc lets the SOAR route a single-condition "no enrichable IOC"
+        # branch straight to /score (behavioral-only events, e.g. encoded PS with
+        # no file/network IOC) — avoids an impossible AND in a Shuffle condition.
+        "has_ioc":      bool(sha256 or srcip),
     }), 200
 
 

@@ -79,14 +79,17 @@ def _branch(source_id: str, destination_id: str, condition_value: str | None = N
 
 def _http_action(action_id: str, method: str, x: int, y: int,
                  url: str, headers: str = "", body: str | None = None,
-                 ssl_verify: str = "false", timeout: int = 60) -> dict[str, Any]:
+                 ssl_verify: str = "false", timeout: int = 90) -> dict[str, Any]:
     """Build an HTTP action with the standard parameter set.
 
-    `timeout` (default 60s) override le default 5s du worker Shuffle http app.
-    Indispensable pour les Cortex waitreport (atMost=30s) qui peuvent prendre
-    jusqu'à 30s côté Cortex avant de retourner le report — sans bump à 60s côté
+    `timeout` (default 90s) override le default 5s du worker Shuffle http app.
+    Indispensable pour les Cortex waitreport (atMost=60s) qui peuvent prendre
+    jusqu'à 60s côté Cortex avant de retourner le report — sans bump à 90s côté
     worker, on tombe en ReadTimeout(5s) avant que Cortex ait répondu et le
     workflow part en ABORTED (cas vécu 2026-05-17 sur le pipeline E2E selftest).
+    En cold-cache, MalwareBazaar+CIRCL+GeoIP peuvent prendre 30-50s chacun;
+    atMost=60s laisse une marge pour les pics, le timeout=90s ajoute 30s de
+    buffer HTTP pour roundtrip + parsing avant ReadTimeout côté worker.
     """
     params = [
         _param("url", url),
@@ -161,6 +164,21 @@ def make_risk_engine_call(scenario_key: str, extra_fields: dict[str, str] | None
     `misp_*_attributes` que Shuffle ne sait pas escape correctement quand
     on les injecte dans une string ("[{...nested-quotes...}]" → SyntaxError
     côté worker http app, cas vécu 2026-05-17).
+
+    Defensive wrapping (Phase 6b, 2026-05-22) : chaque bare-value est encadrée
+    par `[...]` pour absorber une substitution vide quand l'analyzer Cortex
+    rend status=InProgress/Failure (cas vécu : MalwareBazaar n'a pas fini
+    avant atMost=60s → `body.report.summary.taxonomies` n'existe pas → Shuffle
+    substitue par '' → body devient `"x": ,` → SyntaxError côté worker Python
+    AVANT le POST risk-engine → action.success=false → toute la chaîne post-
+    enrichissement est SKIPPED, l'alerte reste New).
+
+    Avec le wrap `[$expr]` :
+      - $expr résout vide      → "x": []           (array vide, JSON valide)
+      - $expr résout en `null` → "x": [null]       (toléré)
+      - $expr résout en array  → "x": [[...]]      (single-nested, flatten
+                                                    côté risk-engine v2.5+
+                                                    via _coerce_list)
     """
     headers = "Content-Type: application/json"
     payload = {
@@ -176,14 +194,15 @@ def make_risk_engine_call(scenario_key: str, extra_fields: dict[str, str] | None
         payload.update(extra_fields)
 
     # Sérialisation : json.dumps pour les fields normaux puis on injecte les
-    # bare_value_fields à la main (sans guillemets autour de la valeur Shuffle).
+    # bare_value_fields à la main (sans guillemets autour de la valeur Shuffle),
+    # chacun wrappé dans `[...]` pour produire un JSON valide même quand
+    # l'expression $expr résout en chaîne vide (voir docstring above).
     body = json.dumps(payload)
     if bare_value_fields:
-        # Strip closing brace, append bare-value fields, re-close.
         body = body.rstrip("}")
         if not body.endswith("{"):
             body += ", "
-        bare_parts = [f'"{k}": {v}' for k, v in bare_value_fields.items()]
+        bare_parts = [f'"{k}": [{v}]' for k, v in bare_value_fields.items()]
         body += ", ".join(bare_parts) + "}"
     return _http_action("action_call_risk_engine", "POST", x, y,
                         url="$ENV_RISK_ENGINE_URL/score",
@@ -288,6 +307,82 @@ def make_active_response(ar_command: str, agent_id_template: str,
                         headers=headers, body=body)
 
 
+def make_slack_notify(scenario_key: str, x: int = 2000, y: int = 700) -> dict[str, Any]:
+    """Slack notification on escalated decision (risk_score >= 90).
+
+    Phase 8 (2026-05-28). Posts a Block Kit message to a Slack channel via incoming
+    webhook. The webhook URL is injected as a workflow_variable ENV_SLACK_WEBHOOK_URL
+    by _import_scenario_workflow.yml (read from K8s Secret soc-slack-webhook, itself
+    synced by ESO from Vault soc/integrations/slack, seeded from .secrets/slack.env).
+
+    Dry-run mechanism: when soc_slack.dry_run=true at Ansible time, the import task
+    INJECTS AN EMPTY URL — the HTTP action then fails with "invalid URL" but the
+    branch is terminal so the rest of the workflow is unaffected. No Slack post
+    happens. To enable real posts: set soc_slack.dry_run=false and re-run 185.
+
+    The action MUST be wired by the caller as a BRANCH from action_escalate (or
+    action_update_case_risk for privesc which always escalates) gated on
+    risk_decision == "escalated" — see build_*_workflow().
+
+    Block Kit fields included:
+      - Header (header block, :rotating_light:)
+      - Scenario, risk_score, decision (section/fields)
+      - Wazuh agent name + rule id/level
+      - IOC (truncated, single line, mrkdwn quoted)
+      - Action button → TheHive case URL (apps.soc.lab Ingress, public-facing)
+      - Channel mention (mrkdwn header field, cosmetic)
+
+    Excluded by design:
+      - Full IOC (truncated to first 32 chars + "…")
+      - API keys / tokens (never referenced)
+      - Stack traces (no error data forwarded)
+      - Raw Wazuh log content (may contain parsed credentials)
+    """
+    headers = "Content-Type: application/json"
+
+    # Per-scenario IOC field (single source: trim to 32 chars in Slack via mrkdwn).
+    # We pull the same field the workflow uses for the case observable so the
+    # operator sees the same value in Slack and in TheHive.
+    ioc_template = {
+        "malware":    "$exec.all_fields.data.hash_sha256",
+        "bruteforce": "$exec.all_fields.data.srcip",
+        "privesc":    "$exec.all_fields.data.dstuser",
+    }.get(scenario_key, "$exec.all_fields.rule.id")
+
+    # Build Block Kit message. Use plain concatenation (not json.dumps on the whole
+    # thing) because we need Shuffle $variable refs to remain UN-quoted inside the
+    # numeric `risk_score` slot — same trick as make_update_case_risk().
+    body = (
+        '{'
+        '"channel": "$ENV_SLACK_CHANNEL",'
+        '"text": "SOC ESCALATED — ' + scenario_key + ' on $exec.all_fields.agent.name '
+        '(score $action_call_risk_engine.body.risk_score)",'
+        '"blocks": ['
+        '{"type":"header","text":{"type":"plain_text","text":":rotating_light: SOC ESCALATED",'
+        '"emoji":true}},'
+        '{"type":"section","fields":['
+        '{"type":"mrkdwn","text":"*Scenario:*\\n' + scenario_key + '"},'
+        '{"type":"mrkdwn","text":"*Risk score:*\\n$action_call_risk_engine.body.risk_score / 100"},'
+        '{"type":"mrkdwn","text":"*Decision:*\\n$action_call_risk_engine.body.risk_decision"},'
+        '{"type":"mrkdwn","text":"*Agent:*\\n$exec.all_fields.agent.name"},'
+        '{"type":"mrkdwn","text":"*Rule:*\\n$exec.all_fields.rule.id (lvl $exec.all_fields.rule.level)"},'
+        '{"type":"mrkdwn","text":"*Environment:*\\n$ENV_SOC_ENVIRONMENT"}'
+        ']},'
+        '{"type":"section","text":{"type":"mrkdwn",'
+        '"text":"*IOC:* `' + ioc_template + '`"}},'
+        '{"type":"actions","elements":['
+        '{"type":"button","text":{"type":"plain_text","text":"Open TheHive case",'
+        '"emoji":true},'
+        '"url":"$ENV_THEHIVE_PUBLIC_URL/cases/$action_promote_to_case.body._id"}'
+        ']}'
+        ']'
+        '}'
+    )
+    return _http_action(f"action_notify_slack_{scenario_key}", "POST", x, y,
+                        url="$ENV_SLACK_WEBHOOK_URL",
+                        headers=headers, body=body, timeout=5)
+
+
 def make_misp_event(scenario_key: str, observable_type: str, observable_template: str,
                     x: int = 1700, y: int = 600) -> dict[str, Any]:
     headers = "Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json"
@@ -337,7 +432,7 @@ def build_malware_workflow() -> dict[str, Any]:
                          "message": "auto-malware-mb",
                      })),
         _http_action("action_get_cortex_hash_mb_result", "GET", 100, -150,
-                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=30seconds",
+                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=60seconds",
                      headers="Authorization: Bearer $ENV_CORTEX_APIKEY"),
 
         # Cortex CIRCL Hashlookup
@@ -351,7 +446,7 @@ def build_malware_workflow() -> dict[str, Any]:
                          "message": "auto-malware-circl",
                      })),
         _http_action("action_get_cortex_hash_circl_result", "GET", 100, 150,
-                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=30seconds",
+                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=60seconds",
                      headers="Authorization: Bearer $ENV_CORTEX_APIKEY"),
 
         # MISP hash search
@@ -383,6 +478,7 @@ def build_malware_workflow() -> dict[str, Any]:
                              extra_args=["isolate"]),
         make_misp_event("malware", "sha256", "$exec.all_fields.data.hash_sha256"),
         make_escalate(severity=4, tlp=3),
+        make_slack_notify("malware"),
     ]
 
     # Branches: trigger -> create_alert; create_alert -> 5 enrichments;
@@ -429,6 +525,11 @@ def build_malware_workflow() -> dict[str, Any]:
         _branch("action_get_wazuh_jwt",   "action_active_response"),
         _branch("action_active_response", "action_misp_create_event"),
         _branch("action_misp_create_event", "action_escalate"),
+
+        # Slack notify on escalated only (post-escalate, terminal leaf)
+        _branch("action_escalate", "action_notify_slack_malware",
+                condition_value="$action_call_risk_engine.body.risk_decision",
+                expected="escalated"),
     ]
 
     return {
@@ -465,7 +566,7 @@ def build_bruteforce_workflow() -> dict[str, Any]:
                          "message": "auto-bruteforce-geoip",
                      })),
         _http_action("action_get_cortex_geoip_result", "GET", 100, -150,
-                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_geoip.body._id/waitreport?atMost=30seconds",
+                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_geoip.body._id/waitreport?atMost=60seconds",
                      headers="Authorization: Bearer $ENV_CORTEX_APIKEY"),
 
         _http_action("action_search_misp_ip", "POST", 200, 150,
@@ -488,6 +589,7 @@ def build_bruteforce_workflow() -> dict[str, Any]:
         make_get_wazuh_jwt(),
         make_active_response("firewall-drop", "$exec.all_fields.agent.id"),
         make_escalate(severity=3, tlp=2),
+        make_slack_notify("bruteforce"),
     ]
 
     branches = [
@@ -524,6 +626,11 @@ def build_bruteforce_workflow() -> dict[str, Any]:
                 expected="escalated"),
         _branch("action_get_wazuh_jwt",   "action_active_response"),
         _branch("action_active_response", "action_escalate"),
+
+        # Slack notify on escalated only (post-escalate, terminal leaf)
+        _branch("action_escalate", "action_notify_slack_bruteforce",
+                condition_value="$action_call_risk_engine.body.risk_decision",
+                expected="escalated"),
     ]
 
     return {
@@ -572,6 +679,7 @@ def build_privesc_workflow() -> dict[str, Any]:
         make_active_response("disable-account", "$exec.all_fields.agent.id"),
         # privesc = always escalate at high severity even at "reviewed" decision
         make_escalate(severity=4, tlp=3),
+        make_slack_notify("privesc"),
     ]
 
     branches = [
@@ -608,6 +716,14 @@ def build_privesc_workflow() -> dict[str, Any]:
                 condition_value="$action_call_risk_engine.body.risk_decision",
                 expected="escalated"),
         _branch("action_get_wazuh_jwt",   "action_active_response"),
+
+        # Slack notify on escalated only (post-escalate, terminal leaf).
+        # privesc branches escalate unconditionally above (action_update_case_risk
+        # -> action_escalate), so the gate on risk_decision == "escalated" here
+        # is what guarantees Slack fires only when score >= 90.
+        _branch("action_escalate", "action_notify_slack_privesc",
+                condition_value="$action_call_risk_engine.body.risk_decision",
+                expected="escalated"),
     ]
 
     return {
@@ -615,6 +731,145 @@ def build_privesc_workflow() -> dict[str, Any]:
         "description": "Sudo/SeDebug abuse -> agent enrichment -> risk engine -> disable-account if score>=75 (always escalate)",
         "start": "action_create_thehive_alert",
         "tags": ["soc", "scenario", "privesc", "wazuh", "thehive"],
+        "actions": actions,
+        "triggers": [trigger],
+        "branches": branches,
+        "workflow_variables": [],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Generic fallback workflow (alert-triage) — ROBUST rebuild (Phase 9)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_alert_triage_workflow() -> dict[str, Any]:
+    """
+    Generic fallback triage workflow — replaces the hand-built alert-triage.json.
+
+    Robustness fixes vs the legacy workflow (which deadlocked when an analyzer
+    received an empty IOC):
+      1. First call risk-engine /normalize → clean single-value IOCs
+         (sha256 works for Windows Sysmon eventchannel AND Linux/syslog).
+      2. Dispatch Cortex/MISP CONDITIONALLY (only when the IOC is present) so an
+         empty value is NEVER sent to an analyzer → no failed action → no broken
+         join. Pattern mirrors the proven multi-conditional-branch join already
+         used for risk_decision → promote_to_case.
+      3. A single-condition "no enrichable IOC" branch (has_ioc==false) routes
+         behavioral-only events (e.g. encoded PowerShell with no file/net IOC)
+         straight to /score → the behavioral floor still applies.
+      4. command_line is forwarded to /score → PowerShell decode + YARA floor.
+      5. Observables are added CONDITIONALLY (guarded) → no empty observable.
+
+    No Active Response here: AR is scenario-specific; the generic fallback only
+    creates/promotes/escalates + adds observables. Enrichment bare-value fields
+    use the `[$expr]` wrapping so a non-executed branch resolves to [] safely.
+    """
+    trigger = _trigger_webhook("trigger_wazuh_webhook", "Wazuh Alert Webhook")
+
+    cx_hdr = "Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json"
+    misp_hdr = "Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json\nAccept: application/json"
+
+    # /normalize body — scalar substitutions only (no bare-dict injection). Missing
+    # fields resolve to literal "$..." strings which the engine ignores (startswith $).
+    norm_body = json.dumps({
+        "data": {
+            "hash_sha256": "$exec.all_fields.data.hash_sha256",
+            "srcip":       "$exec.all_fields.data.srcip",
+            "dstuser":     "$exec.all_fields.data.dstuser",
+            "win": {"eventdata": {
+                "hashes":      "$exec.all_fields.data.win.eventdata.hashes",
+                "commandLine": "$exec.all_fields.data.win.eventdata.commandLine",
+            }},
+        }
+    })
+
+    actions: list[dict[str, Any]] = [
+        make_create_alert("triage", severity=2),
+
+        _http_action("action_normalize", "POST", -200, 0,
+                     url="$ENV_RISK_ENGINE_URL/normalize",
+                     headers="Content-Type: application/json", body=norm_body),
+
+        # ── Hash enrichment (gated has_sha256) — uses the normalized clean value ──
+        _http_action("action_run_cortex_hash_mb", "POST", 100, -250, url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_MB/run",
+                     headers=cx_hdr, body=json.dumps({"data": "$action_normalize.body.sha256", "dataType": "hash", "tlp": 2, "message": "triage-mb"})),
+        _http_action("action_get_cortex_hash_mb_result", "GET", 300, -250, url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=60seconds", headers=cx_hdr),
+        _http_action("action_run_cortex_hash_circl", "POST", 100, -120, url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_CIRCL/run",
+                     headers=cx_hdr, body=json.dumps({"data": "$action_normalize.body.sha256", "dataType": "hash", "tlp": 2, "message": "triage-circl"})),
+        _http_action("action_get_cortex_hash_circl_result", "GET", 300, -120, url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=60seconds", headers=cx_hdr),
+        _http_action("action_search_misp_hash", "POST", 300, 0, url="$ENV_MISP_URL/attributes/restSearch",
+                     headers=misp_hdr, body=json.dumps({"value": "$action_normalize.body.sha256", "returnFormat": "json"})),
+
+        # ── IP enrichment (gated has_srcip) ──
+        _http_action("action_run_cortex_ip", "POST", 100, 150, url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_ANALYZER/run",
+                     headers=cx_hdr, body=json.dumps({"data": "$action_normalize.body.srcip", "dataType": "ip", "tlp": 2, "message": "triage-ip"})),
+        _http_action("action_get_cortex_ip_result", "GET", 300, 150, url="$ENV_CORTEX_URL/api/job/$action_run_cortex_ip.body._id/waitreport?atMost=60seconds", headers=cx_hdr),
+        _http_action("action_search_misp_ip", "POST", 300, 280, url="$ENV_MISP_URL/attributes/restSearch",
+                     headers=misp_hdr, body=json.dumps({"value": "$action_normalize.body.srcip", "returnFormat": "json"})),
+
+        # ── Risk engine: command_line (behavioral floor) + all enrichment (wrapped) ──
+        make_risk_engine_call("triage",
+                              extra_fields={"command_line": "$action_normalize.body.command_line"},
+                              bare_value_fields={
+                                  "cortex_hash_mb_taxonomies":    "$action_get_cortex_hash_mb_result.body.report.summary.taxonomies",
+                                  "cortex_hash_circl_taxonomies": "$action_get_cortex_hash_circl_result.body.report.summary.taxonomies",
+                                  "cortex_ip_taxonomies":         "$action_get_cortex_ip_result.body.report.summary.taxonomies",
+                                  "misp_hash_attributes":         "$action_search_misp_hash.body.response.Attribute",
+                                  "misp_ip_attributes":           "$action_search_misp_ip.body.response.Attribute",
+                              }, x=700, y=0),
+
+        make_ignore_alert(),
+        make_promote_to_case(),
+        make_add_case_observable("$action_normalize.body.sha256", dtype="hash",
+                                 action_id="action_add_obs_hash", x=1300, y=-150),
+        make_add_case_observable("$action_normalize.body.srcip", dtype="ip",
+                                 action_id="action_add_obs_ip", x=1300, y=150),
+        make_update_case_risk(x=1100, y=0),
+        make_escalate(severity=4, tlp=3),
+    ]
+
+    branches = [
+        _branch("trigger_wazuh_webhook", "action_create_thehive_alert"),
+        _branch("action_create_thehive_alert", "action_normalize"),
+
+        # conditional enrichment dispatch (clean IOC, never empty)
+        _branch("action_normalize", "action_run_cortex_hash_mb",   condition_value="$action_normalize.body.has_sha256", expected="true"),
+        _branch("action_run_cortex_hash_mb", "action_get_cortex_hash_mb_result"),
+        _branch("action_normalize", "action_run_cortex_hash_circl", condition_value="$action_normalize.body.has_sha256", expected="true"),
+        _branch("action_run_cortex_hash_circl", "action_get_cortex_hash_circl_result"),
+        _branch("action_normalize", "action_search_misp_hash",      condition_value="$action_normalize.body.has_sha256", expected="true"),
+        _branch("action_normalize", "action_run_cortex_ip",         condition_value="$action_normalize.body.has_srcip", expected="true"),
+        _branch("action_run_cortex_ip", "action_get_cortex_ip_result"),
+        _branch("action_normalize", "action_search_misp_ip",        condition_value="$action_normalize.body.has_srcip", expected="true"),
+
+        # converge to risk engine (triggered branches only; non-run resolve to [])
+        _branch("action_get_cortex_hash_mb_result",    "action_call_risk_engine"),
+        _branch("action_get_cortex_hash_circl_result", "action_call_risk_engine"),
+        _branch("action_search_misp_hash",             "action_call_risk_engine"),
+        _branch("action_get_cortex_ip_result",         "action_call_risk_engine"),
+        _branch("action_search_misp_ip",               "action_call_risk_engine"),
+        # behavioral / no-IOC path — single condition, guarantees risk_engine fires
+        _branch("action_normalize", "action_call_risk_engine", condition_value="$action_normalize.body.has_ioc", expected="false"),
+
+        # decision branches (proven multi-conditional join into promote_to_case)
+        _branch("action_call_risk_engine", "action_ignore_alert",    condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_closed"),
+        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="reviewed"),
+        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_promoted"),
+        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="contained"),
+        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+
+        # post-promote: persist risk (always) + guarded observables (terminal leaves)
+        _branch("action_promote_to_case", "action_update_case_risk"),
+        _branch("action_promote_to_case", "action_add_obs_hash", condition_value="$action_normalize.body.has_sha256", expected="true"),
+        _branch("action_promote_to_case", "action_add_obs_ip",   condition_value="$action_normalize.body.has_srcip", expected="true"),
+        _branch("action_update_case_risk", "action_escalate", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+    ]
+
+    return {
+        "name": "SOC Alert Triage",
+        "description": "Generic fallback: Wazuh -> normalize -> conditional Cortex/MISP -> risk engine (behavioral floor) -> TheHive",
+        "start": "action_create_thehive_alert",
+        "tags": ["soc", "triage", "fallback", "wazuh", "thehive", "cortex", "misp"],
         "actions": actions,
         "triggers": [trigger],
         "branches": branches,
@@ -639,6 +894,14 @@ def main() -> None:
             json.dump(wf, f, indent=2)
             f.write("\n")
         print(f"  wrote {filename} — actions={len(wf['actions'])} branches={len(wf['branches'])}")
+
+    # alert-triage (generic fallback) lives one level up, in files/workflows/.
+    triage = build_alert_triage_workflow()
+    triage_path = os.path.join(os.path.dirname(here), "alert-triage.json")
+    with open(triage_path, "w") as f:
+        json.dump(triage, f, indent=2)
+        f.write("\n")
+    print(f"  wrote ../alert-triage.json — actions={len(triage['actions'])} branches={len(triage['branches'])}")
 
 
 if __name__ == "__main__":
