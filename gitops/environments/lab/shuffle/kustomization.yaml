@@ -5,3 +5,4 @@ kind: Kustomization
 # Les ressources K8s Day 2 sont gérées ici ; Ansible les saute via _managed_by=gitops
 resources:
   - ingress-shuffle.yaml
+  - deployment-memcached.yaml   # cache partagé d'exécution (fix workflows ABORTED intermittents)

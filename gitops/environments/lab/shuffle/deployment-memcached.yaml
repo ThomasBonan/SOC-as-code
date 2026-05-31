@@ -1,0 +1,87 @@
+# deployment-memcached.yaml — Cache partagé Shuffle (coordination d'exécution)
+# Phase 9 (2026-05-31). Cause racine des workflows ABORTED/figés intermittents :
+# en K8s avec workers éphémères (SHUFFLE_SWARM_CONFIG=run, concurrency=5) et SANS
+# cache partagé, les résultats d'actions ne se synchronisent pas entre app-containers
+# / workers / backend → "ExecutionId doesn't exist in cache" → exécution bloquée à
+# N/M résultats. Shuffle utilise SHUFFLE_MEMCACHED pour partager l'état d'exécution.
+# Wiring : SHUFFLE_MEMCACHED sur backend + orborus (gitops/apps/infra-shuffle.yml) ;
+# orborus propage la var aux workers qu'il crée.
+#
+# Réseau : les netpols backend/orborus/workers ont egress=[{}] (tout autorisé) ;
+# memcached n'est sélectionné par aucune netpol → ingress ouvert par défaut. RAS.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shuffle-memcached
+  namespace: soc-shuffle
+  labels:
+    app: shuffle-memcached
+    app.kubernetes.io/managed-by: soc-gitops
+    soc.lab/component: shuffle-cache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shuffle-memcached
+  template:
+    metadata:
+      labels:
+        app: shuffle-memcached
+        soc.lab/component: shuffle-cache
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 11211
+        runAsGroup: 11211
+        fsGroup: 11211
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: memcached
+          image: memcached:1.6-alpine
+          args: ["-m", "128", "-c", "2048"]   # 128 MB cache, 2048 connexions max
+          ports:
+            - name: memcached
+              containerPort: 11211
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "192Mi"
+          livenessProbe:
+            tcpSocket:
+              port: 11211
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 11211
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shuffle-memcached
+  namespace: soc-shuffle
+  labels:
+    app: shuffle-memcached
+    app.kubernetes.io/managed-by: soc-gitops
+spec:
+  type: ClusterIP
+  selector:
+    app: shuffle-memcached
+  ports:
+    - name: memcached
+      port: 11211
+      targetPort: 11211
+      protocol: TCP

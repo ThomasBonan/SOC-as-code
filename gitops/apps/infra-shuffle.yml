@@ -44,6 +44,10 @@ spec:
                 secretKeyRef:
                   name: soc-shuffle-admin-creds
                   key: password
+            # Cache partagé d'exécution (coordination résultats worker/app/backend).
+            # Sans lui : "ExecutionId doesn't exist in cache" → workflows figés/ABORTED.
+            - name: SHUFFLE_MEMCACHED
+              value: "shuffle-memcached.soc-shuffle.svc.cluster.local:11211"
           resources:
             requests:
               cpu: "200m"
@@ -80,6 +84,9 @@ spec:
               value: "http://shuffle-opensearch-master-hl:9200"
             - name: SHUFFLE_OPENSEARCH_SKIPSSL_VERIFY
               value: "true"
+            # Propagé aux workers qu'orborus crée → ils partagent le cache d'exécution.
+            - name: SHUFFLE_MEMCACHED
+              value: "shuffle-memcached.soc-shuffle.svc.cluster.local:11211"
           # CLEANUP : valeur du chart (`false`) conservée — NE PAS ajouter CLEANUP=true ici.
           # Le chart Shuffle hardcode CLEANUP=false (orborus-dpl.yaml:85) sans toggle Helm.
           # CLEANUP=true tue les workers en cours d'exécution → workflows ABORTED (testé
