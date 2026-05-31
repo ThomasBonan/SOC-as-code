@@ -520,7 +520,18 @@ def score():
     # Behavioral floor (Phase 9): decode/analyze the command line and raise the
     # final score to a minimum if a high-confidence TTP is detected. Pure floor —
     # never lowers the weighted score, so existing scenario tuning is preserved.
-    if BEHAVIOR_ENABLED:
+    # Prefer a pre-computed behavior_score (clean integer from /normalize — avoids
+    # passing the quote/backslash-laden command_line through a Shuffle JSON body).
+    # Fall back to decoding command_line for direct /score callers (tests, scenarios).
+    _bs_in = body.get("behavior_score")
+    _bs_valid = _bs_in is not None and not (
+        isinstance(_bs_in, str) and (not _bs_in.strip() or _bs_in.strip().startswith("$")))
+    if _bs_valid:
+        _bscore = max(0, min(100, _safe_int(_bs_in, 0)))
+        behavior = {"behavior_score": _bscore, "source": "normalize",
+                    "yara_matches": body.get("yara_matches") if isinstance(body.get("yara_matches"), list) else []}
+        floor = behavior_floor(_bscore)
+    elif BEHAVIOR_ENABLED:
         behavior = compute_behavior(command_line)
         floor = behavior_floor(behavior["behavior_score"])
     else:
@@ -584,13 +595,22 @@ def normalize():
     decoded = _decode_powershell(cl)
     urls = _extract_urls((cl + " " + decoded) if decoded else cl)
 
+    # Compute the behavioral score HERE (we already hold the raw command line).
+    # The SOAR then forwards only the integer behavior_score to /score — never the
+    # raw command_line, whose embedded quotes/backslashes would corrupt the JSON
+    # body Shuffle builds (cause of a workflow hang observed 2026-05-31).
+    beh = compute_behavior(cl) if BEHAVIOR_ENABLED else {"behavior_score": 0, "yara_matches": [], "techniques": []}
+
     return jsonify({
-        "sha256":       sha256,
-        "srcip":        srcip if isinstance(srcip, str) else "",
-        "dstuser":      dstuser if isinstance(dstuser, str) else "",
-        "command_line": cl,
-        "decoded":      decoded[:512],
-        "urls":         urls,
+        "sha256":         sha256,
+        "srcip":          srcip if isinstance(srcip, str) else "",
+        "dstuser":        dstuser if isinstance(dstuser, str) else "",
+        "command_line":   cl,
+        "decoded":        decoded[:512],
+        "urls":           urls,
+        "behavior_score": beh["behavior_score"],
+        "yara_matches":   beh.get("yara_matches", []),
+        "techniques":     beh.get("techniques", []),
         "has_sha256":   bool(sha256),
         "has_srcip":    bool(srcip),
         # has_ioc lets the SOAR route a single-condition "no enrichable IOC"

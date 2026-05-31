@@ -798,10 +798,12 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                      url="$ENV_RISK_ENGINE_URL/normalize",
                      headers="Content-Type: application/json", body=norm_body),
 
-        # Single parent → risk_engine. command_line drives the behavioral floor.
+        # Single parent → risk_engine. Pass the INTEGER behavior_score from /normalize
+        # (NOT the raw command_line — its embedded quotes/backslashes corrupt the JSON
+        # body Shuffle builds, which hangs the workflow; observed live 2026-05-31).
         # No cortex/misp bare-values: those dims default to 0 (scenarios do deep enrichment).
         make_risk_engine_call("triage",
-                              extra_fields={"command_line": "$action_normalize.body.command_line"},
+                              extra_fields={"behavior_score": "$action_normalize.body.behavior_score"},
                               x=400, y=0),
 
         make_ignore_alert(),
