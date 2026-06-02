@@ -50,6 +50,14 @@
     - selftest
     - soc_automation
 
+- name: "soc_automation | Wazuh noise suppression — override règles Sysmon bruyantes (FP)"
+  import_tasks: wazuh_noise_suppression.yml
+  when: soc_automation_enable_noise_suppression | default(true) | bool
+  tags:
+    - integration
+    - noise
+    - soc_automation
+
 - name: "soc_automation | Wazuh AR scripts — déployer isolate-agent + disable-account + whitelists"
   import_tasks: wazuh_ar_scripts.yml
   when: soc_automation_enable_ar_scripts | bool

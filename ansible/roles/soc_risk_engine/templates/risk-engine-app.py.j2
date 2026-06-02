@@ -46,9 +46,13 @@ YARA_RULES_PATH       = "/config/yara"
 # (max — can only RAISE the score). Runtime override via mounted ConfigMap, with
 # a baked tactic-level fallback so the engine never breaks if the CM is absent.
 MITRE_SEVERITY_PATH  = "/config/mitre-severity.json"
-POLICY_VERSION       = "2.7"
+POLICY_VERSION       = "2.8"
 ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
 LISTEN_PORT          = 8080
+# Hard cap on /analyze-file content (Phase 9.2 — file-content YARA). A collector
+# (Active Response on the endpoint) base64-encodes a dropped script and POSTs it
+# here; we YARA-scan the actual CONTENT, not just the rule/MITRE classification.
+MAX_ANALYZE_FILE_BYTES = 1048576
 
 {% raw %}
 import base64
@@ -740,6 +744,63 @@ def normalize():
         "has_sha256":     bool(sha256),
         "has_srcip":      bool(srcip),
         "has_ioc":        bool(sha256 or srcip),
+    }), 200
+
+
+@app.route("/analyze-file", methods=["POST"])
+def analyze_file():
+    """
+    Analyze the CONTENT of a dropped file (Phase 9.2) — not just its rule/MITRE
+    classification. A collector (endpoint Active Response) base64-encodes the file
+    and POSTs it here; we YARA-scan the decoded content and return a verdict.
+
+    Request body (JSON):
+      content_b64 : str  — base64 of the raw file bytes (REQUIRED)
+      file_path   : str  — original path on the endpoint (for context/logging)
+      agent       : str  — agent name (context)
+    Response: behavior_score (0-100), yara_matches, techniques, techniques_csv,
+              behavior_floor, verdict (decision tier from the floor), size_bytes.
+    The verdict mirrors /score decision tiers so the SOAR can branch identically
+    (auto_closed / reviewed / auto_promoted / contained / escalated).
+    """
+    body = request.get_json(silent=True) or {}
+    b64 = body.get("content_b64", "")
+    file_path = body.get("file_path", "") if isinstance(body.get("file_path"), str) else ""
+    if not isinstance(b64, str) or not b64.strip() or b64.strip().startswith("$"):
+        return jsonify({"error": "content_b64 missing or unsubstituted",
+                        "behavior_score": 0, "verdict": "auto_closed",
+                        "yara_matches": [], "techniques": [], "techniques_csv": "",
+                        "behavior_floor": 0, "size_bytes": 0,
+                        "policy_version": POLICY_VERSION}), 400
+    try:
+        raw = base64.b64decode(b64, validate=False)[:MAX_ANALYZE_FILE_BYTES]
+        content = raw.decode("utf-8", "replace")
+    except Exception as exc:
+        return jsonify({"error": "invalid base64: %s" % exc,
+                        "behavior_score": 0, "verdict": "auto_closed",
+                        "yara_matches": [], "techniques": [], "techniques_csv": "",
+                        "behavior_floor": 0, "size_bytes": 0,
+                        "policy_version": POLICY_VERSION}), 400
+
+    beh = compute_behavior(content) if BEHAVIOR_ENABLED else {
+        "behavior_score": 0, "yara_matches": [], "techniques": []}
+    floor = behavior_floor(beh["behavior_score"])
+    verdict = _decide(float(floor))   # tier from the behavioral floor alone
+    techniques = beh.get("techniques", [])
+    logger.info("analyze-file path=%s size=%d behavior=%d verdict=%s yara=%s",
+                file_path, len(raw), beh["behavior_score"], verdict,
+                ",".join(beh.get("yara_matches", [])) or "-")
+    return jsonify({
+        "file_path":      file_path,
+        "behavior_score": beh["behavior_score"],
+        "yara_matches":   beh.get("yara_matches", []),
+        "techniques":     techniques,
+        "techniques_csv": ",".join(techniques),
+        "behavior_floor": floor,
+        "verdict":        verdict,
+        "size_bytes":     len(raw),
+        "truncated":      len(raw) >= MAX_ANALYZE_FILE_BYTES,
+        "policy_version": POLICY_VERSION,
     }), 200
 
 

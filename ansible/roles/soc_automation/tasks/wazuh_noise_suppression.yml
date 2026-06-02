@@ -1,0 +1,76 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_noise_suppression.yml — Override de règles Sysmon bruyantes (FP connus)
+# tag: integration, noise
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Injecte soc-noise-suppression.xml dans /var/ossec/etc/rules/. Chaque règle
+# override une règle Sysmon modulaire vers level 0 (non alerté, non routé) sur un
+# critère chirurgical (ex. __PSScriptPolicyTest_ -> 92213 muté en level 0).
+#
+# Idempotence : signature sha256(content) en commentaire HTML.
+# Filesystem pod éphémère → repair on every run (no-op si déjà à jour).
+# Restart wazuh-manager seulement si le fichier a changé.
+
+- name: "wazuh_noise_suppression | Lire le fichier de suppression"
+  ansible.builtin.set_fact:
+    _wns_content: "{{ lookup('file', role_path + '/files/soc-noise-suppression.xml') }}"
+
+- name: "wazuh_noise_suppression | Calculer la signature"
+  ansible.builtin.set_fact:
+    _wns_sig: "{{ _wns_content | hash('sha256') }}"
+
+- name: "wazuh_noise_suppression | Vérifier la signature déjà présente in-pod"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-noise-suppression-sig:{{ _wns_sig }}" /var/ossec/etc/rules/soc_noise_suppression.xml
+  register: _wns_check
+  changed_when: false
+  failed_when: false
+
+- name: "wazuh_noise_suppression | Déployer soc_noise_suppression.xml"
+  when: _wns_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'cat > /var/ossec/etc/rules/soc_noise_suppression.xml'
+    stdin: |
+      <!-- soc-noise-suppression-sig:{{ _wns_sig }} (managed by 180-soc-automation/wazuh_noise_suppression) -->
+      {{ _wns_content }}
+  register: _wns_deploy
+  changed_when: _wns_deploy.rc == 0
+  failed_when: _wns_deploy.rc != 0
+
+- name: "wazuh_noise_suppression | Restart wazuh-manager si la suppression a changé"
+  # nohup + redirect FDs + & : sinon kubectl exec reste pendu après restart
+  # (FDs hérités des daemons forkés). Pattern aligné sur wazuh_selftest_scenarios.
+  when: _wns_deploy is defined and _wns_deploy.changed | default(false)
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'nohup /var/ossec/bin/wazuh-control restart > /dev/null 2>&1 &'
+  register: _wns_restart
+  changed_when: true
+  failed_when: false
+
+- name: "wazuh_noise_suppression | Attendre que wazuh-analysisd réécoute"
+  when: _wns_restart is defined and _wns_restart.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-control status
+  register: _wns_status
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 4
+  until:
+    - "'wazuh-analysisd is running' in (_wns_status.stdout | default(''))"
+
+- name: "wazuh_noise_suppression | [info] Récap"
+  ansible.builtin.debug:
+    msg:
+      - "Suppression FP déployée (sig {{ _wns_sig[:12] }}…)"
+      - "Rule 100260 : 92213 -> level 0 pour __PSScriptPolicyTest_ (PowerShell exec-policy probe)"

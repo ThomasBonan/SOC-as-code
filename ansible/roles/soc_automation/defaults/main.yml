@@ -39,6 +39,7 @@ soc_automation_wazuh_behavior_routing:
 soc_automation_enable_wazuh_manager_labels: true   # Injecter <labels> agent.type dans ossec.conf manager
 soc_automation_enable_wazuh_selftest_scenarios: true   # Rules 999901-999903 + décodeurs IOC pour selftest E2E
 soc_automation_enable_ar_scripts:     true   # Déployer scripts AR custom (isolate-agent, disable-account)
+soc_automation_enable_noise_suppression: true   # Override règles Sysmon bruyantes (FP connus, ex. __PSScriptPolicyTest)
 
 # ── Labels du Wazuh manager (agent 000) ────────────────────────────
 # Propagés à TOUTES les alertes émises par le manager local (selftest, logger

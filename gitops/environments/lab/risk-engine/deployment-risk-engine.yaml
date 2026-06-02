@@ -42,7 +42,7 @@ spec:
       # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
-        checksum/script: "5bf482b4b1fa922cb7f797151054afa917b00eef9f4842d47ab8c2776281bce1"
+        checksum/script: "7a01ced587662e8482ba2c42fc211988b6cf90771dd2da2a4a38a165afb92c32"
         # SHA256 des règles YARA montées — recalculé par _bump-checksums.py. Un
         # changement de ruleset roll le pod (sinon le CM est mis à jour mais yara
         # reste compilé en mémoire — yara est compilé une seule fois au boot).

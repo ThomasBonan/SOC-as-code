@@ -1,0 +1,22 @@
+<!--
+  soc-noise-suppression.xml — Réduction de bruit Sysmon (faux positifs connus).
+  Managed by 180-soc-automation/wazuh_noise_suppression.
+  Chaque règle override une règle bruyante du ruleset Sysmon modulaire vers
+  level 0 (= non alerté, non routé vers la pipeline) sur un critère CHIRURGICAL.
+  Ne JAMAIS suppr. large : chaque override cible un artefact bénin précis.
+-->
+<group name="sysmon,sysmon_eid11_detections,soc_noise,">
+
+  <!-- __PSScriptPolicyTest_<rand>.<rand>.ps1 : sonde de politique d'exécution
+       créée par PowerShell dans %TEMP% à CHAQUE lancement (AppLocker/WDAC probe),
+       exécutée puis supprimée aussitôt. La règle 92213 ("Executable file dropped
+       in folder commonly used by malware", level 15) fire dessus = faux positif
+       à chaque commande powershell. -> level 0 (ignore). -->
+  <rule id="100260" level="0">
+    <if_sid>92213</if_sid>
+    <field name="win.eventdata.targetFilename" type="pcre2">(?i)__PSScriptPolicyTest_[A-Za-z0-9]+\.[A-Za-z0-9]+\.ps1</field>
+    <description>Benign PowerShell execution-policy probe (PSScriptPolicyTest) in TEMP — suppressed (FP tuning)</description>
+    <group>soc_noise_suppressed,</group>
+  </rule>
+
+</group>
