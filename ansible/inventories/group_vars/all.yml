@@ -282,10 +282,12 @@ soc_risk_behavior:
   enabled: true
   encoded_present_score: 50      # "commande encodée présente" (obfuscation seule) → tier auto_promote
   floors:                        # [seuil_score_comportemental, score_final_minimum] — top-down
-    - [90, 90]                   # critique (AMSI bypass, cred dumping)        → escalate
-    - [70, 75]                   # élevé (download cradle, IEX distant, inject) → contained
-    - [50, 50]                   # moyen (commande encodée)                    → auto_promoted
-                                 # NB: flags suspects seuls (40) restent sous 50 → aucun plancher
+    - [90, 90]                   # critique (AMSI bypass, cred dumping, impact, MITRE Cred-Access/Impact) → escalate
+    - [70, 75]                   # élevé (download cradle, IEX distant, inject, proxy-exec)                → contained
+    - [50, 50]                   # moyen (commande encodée, persistence, WMI exec)                        → auto_promoted
+    - [40, 20]                   # TTP faible-confiance (recon, LOLBin isolé, flags suspects) (Phase 9.1) → reviewed
+                                 # NB: < 40 reste sans plancher → tags only, jamais d'auto-action.
+                                 # GARDER SYNCHRO avec gitops/.../configmap-app-script.yaml (BEHAVIOR_FLOORS).
 
 # ============================================================
 # SOC Slack — notifications escalated (risk_score >= 90)

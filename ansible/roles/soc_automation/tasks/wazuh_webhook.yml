@@ -104,6 +104,26 @@
         )
         +
         (
+          (soc_automation_wazuh_behavior_routing.enabled | default(false) | bool)
+          | ternary(
+              [{
+                'key': 'behavior',
+                'kind': 'behavior',
+                'value': {
+                  'workflow_id': (_ww_shuffle_config.resources[0].data.triage_workflow_id | default('')),
+                  'webhook_url': _ww_hook_url,
+                  'rule_ids':    [],
+                  'group':       (soc_automation_wazuh_behavior_routing.group | default('sysmon_eid1_detections')),
+                  'min_level':   (soc_automation_wazuh_behavior_routing.min_level | default(3)),
+                  'description': 'Behavioral routing (group-scoped) -> alert-triage MITRE+YARA',
+                  'ar_command':  ''
+                }
+              }],
+              []
+            )
+        )
+        +
+        (
           (soc_automation_wazuh_webhook_enable_fallback | default(false) | bool)
           | ternary(
               [{
@@ -624,14 +644,28 @@
           url = v.get('webhook_url', '')
           if not url:
               continue
+          # Per-entry level override (behavioral routing uses a lower threshold
+          # than scenarios so low-severity Sysmon EID1 events still reach triage),
+          # falling back to the global min_level.
+          lvl = v.get('min_level')
+          try:
+              lvl = int(lvl)
+          except (TypeError, ValueError):
+              lvl = min_level
           lines = [
               '  <integration>',
               '    <name>shuffle</name>',
               '    <hook_url>' + url + '</hook_url>',
-              '    <level>' + str(min_level) + '</level>',
+              '    <level>' + str(lvl) + '</level>',
           ]
           if rule_ids:
               lines.append('    <rule_id>' + ','.join(str(r) for r in rule_ids) + '</rule_id>')
+          # Group-scoped routing (Wazuh integratord native <group> filter). Used by
+          # the behavioral integration to catch a whole rule group (e.g. Sysmon
+          # process-creation detections) without lowering the global threshold.
+          grp = v.get('group')
+          if grp and isinstance(grp, str) and grp.strip() and not grp.strip().startswith('$'):
+              lines.append('    <group>' + grp.strip() + '</group>')
           lines.append('    <alert_format>json</alert_format>')
           lines.append('  </integration>')
           blocks.append('\n'.join(lines))

@@ -42,7 +42,7 @@ spec:
       # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
-        checksum/script: "722b50e9303585950088a4b367f6133eb1d1e716b701f8fdf00d328232360ddd"
+        checksum/script: "e6cef06c5bdc328d7201eb79d1d62ca64e50b93289add0a59cb44d04b538f946"
     spec:
       securityContext:
         runAsNonRoot: true
@@ -122,6 +122,11 @@ spec:
             - name: yara-rules
               mountPath: /config/yara
               readOnly:  true
+            # Table MITRE ATT&CK technique->severite (lecture seule depuis ConfigMap)
+            - name: mitre-severity
+              mountPath: /config/mitre-severity.json
+              subPath:   mitre-severity.json
+              readOnly:  true
             # Volumes emptyDir accessibles en écriture
             - name: libs
               mountPath: /app/libs
@@ -138,6 +143,9 @@ spec:
         - name: yara-rules
           configMap:
             name: soc-risk-engine-yara-rules
+        - name: mitre-severity
+          configMap:
+            name: soc-mitre-severity
         - name: libs
           emptyDir: {}
         - name: tmp

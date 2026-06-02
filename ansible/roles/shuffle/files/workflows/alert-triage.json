@@ -68,7 +68,7 @@
         },
         {
           "name": "body",
-          "value": "{\"data\": {\"hash_sha256\": \"$exec.all_fields.data.hash_sha256\", \"srcip\": \"$exec.all_fields.data.srcip\", \"dstuser\": \"$exec.all_fields.data.dstuser\", \"win\": {\"eventdata\": {\"hashes\": \"$exec.all_fields.data.win.eventdata.hashes\", \"commandLine\": \"$exec.all_fields.data.win.eventdata.commandLine\"}}}}"
+          "value": "{\"data\": {\"hash_sha256\": \"$exec.all_fields.data.hash_sha256\", \"srcip\": \"$exec.all_fields.data.srcip\", \"dstuser\": \"$exec.all_fields.data.dstuser\", \"win\": {\"eventdata\": {\"hashes\": \"$exec.all_fields.data.win.eventdata.hashes\", \"commandLine\": \"$exec.all_fields.data.win.eventdata.commandLine\"}}}, \"rule\": {\"mitre\": {\"id\": \"$exec.all_fields.rule.mitre.id\", \"tactic\": \"$exec.all_fields.rule.mitre.tactic\"}}}"
         },
         {
           "name": "verify",
@@ -327,7 +327,7 @@
         },
         {
           "name": "body",
-          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
+          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"mitre:$action_normalize.body.techniques_csv\",\"tactic:$action_normalize.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
         },
         {
           "name": "verify",

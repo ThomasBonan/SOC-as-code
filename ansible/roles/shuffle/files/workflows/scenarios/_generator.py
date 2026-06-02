@@ -250,12 +250,18 @@ def make_escalate(severity: int = 4, tlp: int = 3,
                         headers=headers, body=body)
 
 
-def make_update_case_risk(x: int = 1100, y: int = 150) -> dict[str, Any]:
+def make_update_case_risk(x: int = 1100, y: int = 150,
+                          extra_tags: list[str] | None = None) -> dict[str, Any]:
     """
     Persist risk_score_v2 + risk_decision custom fields in TheHive case.
     Parity with alert-triage workflow. Without this action, the case has no
     risk_score visible in TheHive UI / selftest assertions (but the engine
     still computes it — visible in Shuffle execution results).
+
+    `extra_tags` appends extra case tags (each a literal JSON string that MAY
+    contain a Shuffle ref, e.g. "mitre:$action_normalize.body.techniques_csv").
+    Used by the alert-triage workflow to surface the behavioral verdict
+    (MITRE techniques / tactics) on the case. Scenarios pass nothing.
 
     NOTE: The custom field `risk_score_v2` uses `{"float": <value>}` envelope
     (TheHive 5 typed custom field input format). `risk_decision` uses `{"string": ...}`.
@@ -265,9 +271,12 @@ def make_update_case_risk(x: int = 1100, y: int = 150) -> dict[str, Any]:
     # Build the body as a raw string (not via json.dumps) because the field
     # values contain Shuffle variable references like `$action_call_risk_engine.body.risk_score`
     # which must remain unquoted-numeric in the JSON for TheHive to accept it as float.
+    tags = ['"source:wazuh"', '"risk_engine:processed"',
+            '"risk_decision:$action_call_risk_engine.body.risk_decision"']
+    for t in (extra_tags or []):
+        tags.append('"' + t + '"')
     body = (
-        '{"tags":["source:wazuh","risk_engine:processed",'
-        '"risk_decision:$action_call_risk_engine.body.risk_decision"],'
+        '{"tags":[' + ",".join(tags) + '],'
         '"customFields":{'
         '"risk_score_v2":{"float":$action_call_risk_engine.body.risk_score},'
         '"risk_decision":{"string":"$action_call_risk_engine.body.risk_decision"}'
@@ -771,6 +780,10 @@ def build_alert_triage_workflow() -> dict[str, Any]:
 
     # /normalize body — scalar substitutions only (no bare-dict injection). Missing
     # fields resolve to literal "$..." strings which the engine ignores (startswith $).
+    # rule.mitre.{id,tactic} are forwarded as QUOTED scalars (always valid JSON).
+    # Whatever shape Shuffle renders the arrays into (JSON, python repr, CSV), the
+    # engine's _mitre_score regex-extracts the T#### ids and substring-matches the
+    # tactics — so the MITRE behavioral floor works without bare-value injection.
     norm_body = json.dumps({
         "data": {
             "hash_sha256": "$exec.all_fields.data.hash_sha256",
@@ -780,7 +793,11 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                 "hashes":      "$exec.all_fields.data.win.eventdata.hashes",
                 "commandLine": "$exec.all_fields.data.win.eventdata.commandLine",
             }},
-        }
+        },
+        "rule": {"mitre": {
+            "id":     "$exec.all_fields.rule.mitre.id",
+            "tactic": "$exec.all_fields.rule.mitre.tactic",
+        }},
     })
 
     # LINEAR SPINE (deadlock-proof). Lesson learned live (2026-05-31): Shuffle 1.4
@@ -823,7 +840,13 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                          "message":  "Process command line (base64-encoded — decode to read)",
                          "tags":     ["source:wazuh", "powershell-command", "encoding:base64"],
                      })),
-        make_update_case_risk(x=1100, y=0),
+        # Surface the behavioral verdict on the case: MITRE techniques + tactics
+        # (Shuffle-safe CSV scalars from /normalize). One tag each — the analyst
+        # sees WHICH classic technique fired (e.g. mitre:T1053.005, tactic:Persistence).
+        make_update_case_risk(x=1100, y=0, extra_tags=[
+            "mitre:$action_normalize.body.techniques_csv",
+            "tactic:$action_normalize.body.tactics_csv",
+        ]),
         make_escalate(severity=4, tlp=3),
     ]
 

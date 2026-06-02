@@ -6,6 +6,7 @@ kind: Kustomization
 resources:
   - configmap-asset-criticality.yaml
   - configmap-yara-rules.yaml
+  - configmap-mitre-severity.yaml
   - configmap-risk-policy.yaml
   - configmap-app-script.yaml
   - deployment-risk-engine.yaml

@@ -25,6 +25,17 @@ soc_automation_enable_wazuh_webhook:  true   # Injecter le bloc integration Shuf
 # en plus du scenario → 2 workers Shuffle concurrents → ABORTED par routing
 # load-balance Service shuffle-workers (Shuffle 1.4 K8s limitation).
 soc_automation_wazuh_webhook_enable_fallback: false
+# Routing comportemental chirurgical (Phase 9.1) : ajoute UNE integration scopée
+# par <group> Wazuh, à un niveau plus bas que les scenarios, pointée sur le
+# webhook alert-triage (seul workflow qui appelle /normalize → analyse MITRE+YARA).
+# Pas de double-dispatch : le groupe sysmon_eid1_detections ne contient AUCUNE
+# règle de scenario (malware=sysmon,hacktool,credential_dump ; bruteforce/privesc
+# = auth/sudo). Les scenarios gardent leur <level> 9 ; seul ce bloc descend à 3.
+# Cible : événements Sysmon EID1 process-creation (atomic red team, LOLBins, TTP).
+soc_automation_wazuh_behavior_routing:
+  enabled:   true
+  group:     "sysmon_eid1_detections"   # groupe Wazuh à router (resserrer si trop bruyant)
+  min_level: 3                          # seuil bas, propre à ce bloc uniquement
 soc_automation_enable_wazuh_manager_labels: true   # Injecter <labels> agent.type dans ossec.conf manager
 soc_automation_enable_wazuh_selftest_scenarios: true   # Rules 999901-999903 + décodeurs IOC pour selftest E2E
 soc_automation_enable_ar_scripts:     true   # Déployer scripts AR custom (isolate-agent, disable-account)

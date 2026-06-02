@@ -66,9 +66,15 @@ data:
     BEHAVIOR_ENABLED      = True
     ENCODED_PRESENT_SCORE = 50
     # [behavior_score_threshold, min_final_score] — top-down, first match wins.
-    BEHAVIOR_FLOORS       = [[90, 90], [70, 75], [50, 50]]
+    BEHAVIOR_FLOORS       = [[90, 90], [70, 75], [50, 50], [40, 20]]
     YARA_RULES_PATH       = "/config/yara"
-    POLICY_VERSION       = "2.6"
+    # MITRE ATT&CK technique → behavioral severity map (Phase 9.1). Driven by the
+    # rule.mitre.id Wazuh already attaches: authoritative classification, O(1) lookup,
+    # no command_line dependency. Folded into the same behavioral floor as YARA
+    # (max — can only RAISE the score). Runtime override via mounted ConfigMap, with
+    # a baked tactic-level fallback so the engine never breaks if the CM is absent.
+    MITRE_SEVERITY_PATH  = "/config/mitre-severity.json"
+    POLICY_VERSION       = "2.7"
     ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
     LISTEN_PORT          = 8080
 
@@ -100,6 +106,47 @@ data:
     except Exception as exc:
         logger.warning("Cannot load %s: %s — using built-in defaults", ASSET_WEIGHTS_PATH, exc)
         ASSET_WEIGHTS = {"server-prod": 5, "server-internal": 3, "workstation": 2, "lab": 1, "default": 1}
+
+
+    # ── Load MITRE ATT&CK severity map (Phase 9.1) ────────────────────────────────
+    # Baked default is tactic-level only (degraded but safe): if the ConfigMap is
+    # absent every MITRE-tagged event still scores by its tactic. The mounted
+    # ConfigMap adds the granular per-technique policy (the tunable part).
+    _MITRE_DEFAULT = {
+        "version": "baked",
+        "default": 40,
+        "tactics": {
+            "impact": 90, "credential access": 90, "exfiltration": 70,
+            "privilege escalation": 70, "defense evasion": 70, "lateral movement": 55,
+            "command and control": 55, "initial access": 60, "persistence": 50,
+            "execution": 45, "collection": 45, "discovery": 35,
+            "reconnaissance": 30, "resource development": 30,
+        },
+        "techniques": {},
+    }
+
+
+    def _normalize_mitre_map(raw):
+        return {
+            "version":    str(raw.get("version", "configmap")),
+            "default":    int(raw.get("default", 40)),
+            "tactics":    {str(k).strip().lower(): int(v)
+                           for k, v in (raw.get("tactics") or {}).items()},
+            "techniques": {str(k).strip().upper(): int(v)
+                           for k, v in (raw.get("techniques") or {}).items()},
+        }
+
+
+    try:
+        with open(MITRE_SEVERITY_PATH) as f:
+            MITRE_SEVERITY = _normalize_mitre_map(json.load(f))
+        logger.info("MITRE severity map loaded from %s: v=%s (%d techniques, %d tactics)",
+                    MITRE_SEVERITY_PATH, MITRE_SEVERITY["version"],
+                    len(MITRE_SEVERITY["techniques"]), len(MITRE_SEVERITY["tactics"]))
+    except Exception as exc:
+        logger.warning("Cannot load %s: %s — using baked tactic-level MITRE defaults",
+                       MITRE_SEVERITY_PATH, exc)
+        MITRE_SEVERITY = _normalize_mitre_map(_MITRE_DEFAULT)
 
 
     # ── Defensive coercion helpers ────────────────────────────────────────────────
@@ -391,24 +438,75 @@ data:
             return []
 
 
-    def compute_behavior(command_line):
-        """Decode + analyze a process command line.
-        Returns {behavior_score 0-100, encoded, yara_matches, techniques, decoded_preview}.
-        behavior_score only ever RAISES the final risk via behavior_floor()."""
+    _MITRE_TECH_RE = re.compile(r"T\d{4}(?:\.\d{3,})?")
+
+
+    def _mitre_score(mitre_ids, tactics=None):
+        """Max ATT&CK behavioral severity for the technique ids / tactics Wazuh
+        attached. ROBUST to however Shuffle renders the arrays — native list, JSON
+        string, or python repr ['T1087', ...]: technique ids are regex-extracted and
+        tactic names matched as substrings against the policy map. Lookup per id:
+        exact technique → base technique (sub stripped). Then tactic fallback, then
+        map default. Returns (score 0-100, techniques[list], tactics[list]). 0 when
+        no MITRE info is present (so non-tagged events are never floored)."""
+        def _txt(v):
+            if isinstance(v, str):
+                return "" if v.strip().startswith("$") else v
+            try:
+                return json.dumps(v or [])
+            except (TypeError, ValueError):
+                return ""
+
+        techs = sorted({m.upper() for m in _MITRE_TECH_RE.findall(_txt(mitre_ids))})
+        tac_text = _txt(tactics).lower()
+        tac_map  = MITRE_SEVERITY["tactics"]
+        tacs = [name for name in tac_map if name and name in tac_text]
+        if not techs and not tacs:
+            return 0, [], []
+        tech_map = MITRE_SEVERITY["techniques"]
+        scores = []
+        for t in techs:
+            if t in tech_map:
+                scores.append(tech_map[t])
+            else:
+                base = t.split(".")[0]
+                if base in tech_map:
+                    scores.append(tech_map[base])
+        for tac in tacs:
+            scores.append(tac_map[tac])
+        if not scores:
+            # MITRE-tagged but nothing in the map → conservative default floor.
+            scores.append(MITRE_SEVERITY["default"])
+        score = int(max(0, min(100, max(scores))))
+        return score, techs, [t.title() for t in tacs]
+
+
+    def compute_behavior(command_line, mitre_ids=None, tactics=None):
+        """Decode + analyze a process command line AND fold in the MITRE ATT&CK
+        severity Wazuh attached. behavior_score = max(yara, mitre, encoded-present).
+        Returns {behavior_score, encoded, yara_matches, techniques, tactics,
+        mitre_score, yara_score, decoded_preview}. Only ever RAISES the final risk
+        via behavior_floor() — never a weighted dimension."""
         cl = command_line if isinstance(command_line, str) else ""
         decoded = _decode_powershell(cl)
         encoded = bool(decoded) or bool(_ENC_RE.search(cl))
         buf = (cl + "\n" + decoded) if decoded else cl
         matches = _run_yara(buf)
-        score = max([m["score"] for m in matches], default=0)
+        yara_score = max([m["score"] for m in matches], default=0)
+        mitre_score, mitre_tech, mitre_tac = _mitre_score(mitre_ids, tactics)
+        score = max(yara_score, mitre_score)
         if encoded:
             score = max(score, ENCODED_PRESENT_SCORE)
-        techniques = sorted({m["technique"] for m in matches if m["technique"]})
+        yara_tech = {m["technique"] for m in matches if m["technique"]}
+        techniques = sorted(yara_tech | set(mitre_tech))
         return {
             "behavior_score":  int(max(0, min(100, score))),
             "encoded":         encoded,
             "yara_matches":    [m["rule"] for m in matches],
             "techniques":      techniques,
+            "tactics":         mitre_tac,
+            "mitre_score":     mitre_score,
+            "yara_score":      int(yara_score),
             "decoded_preview": decoded[:160],
         }
 
@@ -501,6 +599,12 @@ data:
                 "floors":                BEHAVIOR_FLOORS,
                 "yara_loaded":           bool(_load_yara()),
             },
+            "mitre": {
+                "version":    MITRE_SEVERITY["version"],
+                "techniques": len(MITRE_SEVERITY["techniques"]),
+                "tactics":    len(MITRE_SEVERITY["tactics"]),
+                "default":    MITRE_SEVERITY["default"],
+            },
         }), 200
 
 
@@ -540,6 +644,8 @@ data:
         frequency        = max(1, _safe_int(body.get("frequency"), default=1))
         scenario         = body.get("scenario") or ""
         command_line     = body.get("command_line", "")
+        mitre_ids        = body.get("mitre_ids")
+        mitre_tactics    = body.get("mitre_tactics")
 
         result   = _compute(wazuh_severity, cortex_max_level, misp_hit, asset_type, frequency)
         base_score = result["score"]
@@ -560,7 +666,7 @@ data:
                         "yara_matches": body.get("yara_matches") if isinstance(body.get("yara_matches"), list) else []}
             floor = behavior_floor(_bscore)
         elif BEHAVIOR_ENABLED:
-            behavior = compute_behavior(command_line)
+            behavior = compute_behavior(command_line, mitre_ids, mitre_tactics)
             floor = behavior_floor(behavior["behavior_score"])
         else:
             behavior = {"behavior_score": 0, "encoded": False, "yara_matches": [],
@@ -623,11 +729,21 @@ data:
         decoded = _decode_powershell(cl)
         urls = _extract_urls((cl + " " + decoded) if decoded else cl)
 
-        # Compute the behavioral score HERE (we already hold the raw command line).
-        # The SOAR then forwards only the integer behavior_score to /score — never the
-        # raw command_line, whose embedded quotes/backslashes would corrupt the JSON
-        # body Shuffle builds (cause of a workflow hang observed 2026-05-31).
-        beh = compute_behavior(cl) if BEHAVIOR_ENABLED else {"behavior_score": 0, "yara_matches": [], "techniques": []}
+        # MITRE ATT&CK ids/tactics Wazuh attached (rule.mitre.{id,tactic}). These are
+        # the authoritative, command_line-independent behavioral signal — extracted
+        # here from the raw alert and folded into the behavior score below.
+        _rule  = fields.get("rule") if isinstance(fields.get("rule"), dict) else {}
+        _mitre = _rule.get("mitre") if isinstance(_rule.get("mitre"), dict) else {}
+        mitre_ids = _mitre.get("id")
+        mitre_tac = _mitre.get("tactic")
+
+        # Compute the behavioral score HERE (we already hold the raw command line +
+        # the MITRE tags). The SOAR then forwards only the integer behavior_score to
+        # /score — never the raw command_line, whose embedded quotes/backslashes would
+        # corrupt the JSON body Shuffle builds (cause of a workflow hang 2026-05-31).
+        beh = (compute_behavior(cl, mitre_ids, mitre_tac) if BEHAVIOR_ENABLED
+               else {"behavior_score": 0, "yara_matches": [], "techniques": [],
+                     "tactics": [], "mitre_score": 0})
 
         # IMPORTANT: do NOT return the raw command_line / decoded in the response.
         # Their quotes/backslashes/`$` (PowerShell vars) corrupt Shuffle's handling of
@@ -643,8 +759,11 @@ data:
             "srcip":          srcip if isinstance(srcip, str) else "",
             "dstuser":        dstuser if isinstance(dstuser, str) else "",
             "behavior_score": beh["behavior_score"],
+            "mitre_score":    beh.get("mitre_score", 0),
             "yara_matches":   beh.get("yara_matches", []),
             "techniques":     beh.get("techniques", []),
+            "techniques_csv": ",".join(beh.get("techniques", [])),   # Shuffle-safe scalar for case tags
+            "tactics_csv":    ",".join(beh.get("tactics", [])),      # Shuffle-safe scalar for case tags
             "command_b64":    command_b64,   # base64(raw command line) — decode to read
             "decoded_b64":    decoded_b64,   # base64(decoded PowerShell payload)
             "has_command":    bool(cl),

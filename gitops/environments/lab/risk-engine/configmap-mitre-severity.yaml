@@ -1,0 +1,162 @@
+# configmap-mitre-severity.yaml — Table MITRE ATT&CK technique -> severite (Phase 9.1)
+# Source : ansible/roles/soc_risk_engine/files/mitre-severity.json
+# Montee en lecture seule sur /config/mitre-severity.json, chargee par le risk-engine
+# au demarrage. Signal comportemental primaire derive de rule.mitre.id (Wazuh).
+# Applique comme PLANCHER (max avec le score pondere 5-dim) — ne fait que MONTER le score.
+#
+# DRIFT GUARD : si ce fichier change, ArgoCD sync le CM mais le pod ne redemarre pas
+# tout seul (volume CM). Le risk-engine charge la map au boot -> relancer un rollout :
+#   kubectl -n soc-thehive rollout restart deployment/risk-engine
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-mitre-severity
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-risk-engine
+    app.kubernetes.io/component: soc-risk-engine
+    soc.lab/playbook: "190-soc-risk-engine"
+    soc.lab/environment: dev
+  annotations:
+    soc.lab/managed-by: "190-soc-risk-engine"
+    soc.lab/description: "MITRE ATT&CK technique->severity map for the risk-engine behavioral floor."
+data:
+  mitre-severity.json: |
+    {
+      "version": "1.0-2026-06-02",
+      "description": "MITRE ATT&CK technique -> behavioral severity (0-100) for the SOC risk-engine. Driven by rule.mitre.id that Wazuh already attaches to each alert. Applied as a behavioral FLOOR (max with the weighted 5-dim score), never a weighted dimension, so tuned scenario scores stay intact and MITRE can only RAISE the final risk. Lookup order: exact technique id -> base technique (sub-technique stripped) -> tactic fallback -> default. Score bands map onto soc_risk_thresholds (auto_close=15, auto_promote=50, auto_contain=75, escalate=90) plus the [40,20] reviewed floor. Source of truth; mirrored to gitops/environments/lab/risk-engine/configmap-mitre-severity.yaml.",
+      "default": 40,
+      "tactics": {
+        "impact": 90,
+        "credential access": 90,
+        "exfiltration": 70,
+        "privilege escalation": 70,
+        "defense evasion": 70,
+        "lateral movement": 55,
+        "command and control": 55,
+        "initial access": 60,
+        "persistence": 50,
+        "execution": 45,
+        "collection": 45,
+        "discovery": 35,
+        "reconnaissance": 30,
+        "resource development": 30
+      },
+      "techniques": {
+        "T1003": 90,
+        "T1003.001": 90,
+        "T1003.002": 90,
+        "T1003.003": 90,
+        "T1003.004": 85,
+        "T1003.005": 85,
+        "T1003.006": 90,
+        "T1555": 85,
+        "T1552": 80,
+        "T1558": 85,
+        "T1558.003": 85,
+        "T1556": 85,
+        "T1212": 80,
+        "T1187": 70,
+    
+        "T1486": 90,
+        "T1490": 90,
+        "T1485": 85,
+        "T1561": 85,
+        "T1489": 80,
+        "T1491": 70,
+        "T1529": 65,
+    
+        "T1562": 85,
+        "T1562.001": 85,
+        "T1070": 80,
+        "T1070.001": 80,
+        "T1070.004": 70,
+        "T1027": 70,
+        "T1620": 80,
+        "T1140": 60,
+        "T1112": 60,
+        "T1036": 55,
+        "T1497": 50,
+        "T1218": 70,
+        "T1218.005": 75,
+        "T1218.010": 70,
+        "T1218.011": 70,
+        "T1574": 70,
+    
+        "T1068": 80,
+        "T1548": 70,
+        "T1548.002": 75,
+        "T1134": 70,
+        "T1055": 75,
+        "T1484": 70,
+    
+        "T1053": 50,
+        "T1053.005": 50,
+        "T1547": 50,
+        "T1547.001": 50,
+        "T1543": 55,
+        "T1543.003": 55,
+        "T1136": 60,
+        "T1136.001": 60,
+        "T1505": 60,
+        "T1098": 60,
+        "T1546": 55,
+        "T1037": 50,
+    
+        "T1021": 60,
+        "T1021.001": 60,
+        "T1021.002": 60,
+        "T1570": 60,
+        "T1550": 70,
+    
+        "T1059": 45,
+        "T1059.001": 45,
+        "T1059.003": 40,
+        "T1059.005": 45,
+        "T1047": 50,
+        "T1204": 45,
+        "T1569": 50,
+        "T1569.002": 50,
+        "T1106": 50,
+    
+        "T1105": 70,
+        "T1071": 50,
+        "T1219": 60,
+        "T1090": 55,
+    
+        "T1566": 60,
+        "T1190": 70,
+        "T1078": 60,
+        "T1133": 55,
+    
+        "T1041": 70,
+        "T1048": 70,
+        "T1567": 65,
+    
+        "T1056": 60,
+        "T1056.001": 60,
+        "T1560": 50,
+        "T1113": 45,
+        "T1115": 45,
+        "T1005": 45,
+    
+        "T1087": 40,
+        "T1082": 35,
+        "T1083": 35,
+        "T1018": 35,
+        "T1057": 35,
+        "T1016": 30,
+        "T1049": 35,
+        "T1069": 40,
+        "T1033": 30,
+        "T1007": 35,
+        "T1012": 35,
+        "T1518": 40,
+        "T1518.001": 45,
+        "T1046": 45,
+        "T1135": 35,
+        "T1201": 30,
+        "T1010": 30
+      }
+    }
