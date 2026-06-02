@@ -25,40 +25,44 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 CONFIGMAP = HERE / "configmap-app-script.yaml"
+YARA_CONFIGMAP = HERE / "configmap-yara-rules.yaml"
 DEPLOYMENT = HERE / "deployment-risk-engine.yaml"
 
-ANN_LINE_RE = re.compile(
-    r'(^\s*checksum/script:\s*")[0-9a-f]{64}(".*$)',
-    re.MULTILINE,
-)
+
+def _ann_re(name: str) -> re.Pattern:
+    return re.compile(rf'(^\s*checksum/{name}:\s*")[0-9a-f]{{64}}(".*$)', re.MULTILINE)
 
 
 def compute_sha() -> str:
     with CONFIGMAP.open() as f:
         cm = yaml.safe_load(f)
-    script = cm["data"]["risk-engine-app.py"]
-    return hashlib.sha256(script.encode()).hexdigest()
+    return hashlib.sha256(cm["data"]["risk-engine-app.py"].encode()).hexdigest()
 
 
-def patch_deployment(new_sha: str) -> bool:
+def compute_yara_sha() -> str:
+    """SHA256 of all mounted YARA rule files, concatenated in sorted key order
+    (deterministic). Bumps when any .yar rule changes → pod rolls."""
+    with YARA_CONFIGMAP.open() as f:
+        cm = yaml.safe_load(f)
+    blob = "".join(cm["data"][k] for k in sorted(cm["data"]))
+    return hashlib.sha256(blob.encode()).hexdigest()
+
+
+def patch_deployment(name: str, new_sha: str) -> bool:
     text = DEPLOYMENT.read_text()
-    new_text, n = ANN_LINE_RE.subn(
-        lambda m: f'{m.group(1)}{new_sha}{m.group(2)}',
-        text,
-    )
+    new_text, n = _ann_re(name).subn(lambda m: f'{m.group(1)}{new_sha}{m.group(2)}', text)
     if n == 0:
-        print(
-            "ERROR: checksum/script annotation not found in deployment-risk-engine.yaml",
-            file=sys.stderr,
-        )
+        print(f"ERROR: checksum/{name} annotation not found in deployment-risk-engine.yaml",
+              file=sys.stderr)
         sys.exit(2)
     if new_text == text:
-        print(f"checksum/script already up-to-date ({new_sha[:12]}…)")
+        print(f"checksum/{name} already up-to-date ({new_sha[:12]}…)")
         return False
     DEPLOYMENT.write_text(new_text)
-    print(f"checksum/script updated → {new_sha[:12]}…")
+    print(f"checksum/{name} updated → {new_sha[:12]}…")
     return True
 
 
 if __name__ == "__main__":
-    patch_deployment(compute_sha())
+    patch_deployment("script", compute_sha())
+    patch_deployment("yara", compute_yara_sha())

@@ -43,6 +43,10 @@ spec:
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
         checksum/script: "5bf482b4b1fa922cb7f797151054afa917b00eef9f4842d47ab8c2776281bce1"
+        # SHA256 des règles YARA montées — recalculé par _bump-checksums.py. Un
+        # changement de ruleset roll le pod (sinon le CM est mis à jour mais yara
+        # reste compilé en mémoire — yara est compilé une seule fois au boot).
+        checksum/yara: "4160a6d8576faaa4702a1f0a50c11ec599f3c525bffadffbde4012862d92689a"
     spec:
       securityContext:
         runAsNonRoot: true

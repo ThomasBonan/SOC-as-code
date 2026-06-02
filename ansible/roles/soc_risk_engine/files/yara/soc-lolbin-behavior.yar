@@ -15,7 +15,7 @@
 rule LOLBin_Scheduled_Task_Persistence
 {
     meta:
-        score = 45
+        score = 50
         severity = "medium"
         technique = "T1053.005"
     strings:
@@ -29,7 +29,7 @@ rule LOLBin_Scheduled_Task_Persistence
 rule LOLBin_RunKey_Persistence
 {
     meta:
-        score = 45
+        score = 50
         severity = "medium"
         technique = "T1547.001"
     strings:
