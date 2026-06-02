@@ -629,12 +629,18 @@ def score():
     # Prefer a pre-computed behavior_score (clean integer from /normalize — avoids
     # passing the quote/backslash-laden command_line through a Shuffle JSON body).
     # Fall back to decoding command_line for direct /score callers (tests, scenarios).
+    # MITRE is forwarded as bare-value arrays (proven [$expr] pattern — a quoted
+    # "$expr" holding a list corrupts the Shuffle body → SyntaxError, seen live
+    # 2026-06-02). Always folded in: behavioral = max(yara behavior_score, mitre).
+    m_score, m_tech, m_tac = _mitre_score(mitre_ids, mitre_tactics)
     _bs_in = body.get("behavior_score")
     _bs_valid = _bs_in is not None and not (
         isinstance(_bs_in, str) and (not _bs_in.strip() or _bs_in.strip().startswith("$")))
     if _bs_valid:
-        _bscore = max(0, min(100, _safe_int(_bs_in, 0)))
-        behavior = {"behavior_score": _bscore, "source": "normalize",
+        _yara_bs = max(0, min(100, _safe_int(_bs_in, 0)))
+        _bscore = max(_yara_bs, m_score)
+        behavior = {"behavior_score": _bscore, "yara_score": _yara_bs, "mitre_score": m_score,
+                    "techniques": m_tech, "tactics": m_tac, "source": "normalize+mitre",
                     "yara_matches": body.get("yara_matches") if isinstance(body.get("yara_matches"), list) else []}
         floor = behavior_floor(_bscore)
     elif BEHAVIOR_ENABLED:
@@ -642,7 +648,7 @@ def score():
         floor = behavior_floor(behavior["behavior_score"])
     else:
         behavior = {"behavior_score": 0, "encoded": False, "yara_matches": [],
-                    "techniques": [], "decoded_preview": ""}
+                    "techniques": [], "tactics": [], "mitre_score": 0, "decoded_preview": ""}
         floor = 0
     final_score = round(max(adj_score, float(floor)), 2)
     decision = _decide(final_score)
@@ -654,6 +660,8 @@ def score():
         "risk_score_base":     base_score,
         "behavior_floor":      floor,
         "behavior":            behavior,
+        "techniques_csv":      ",".join(behavior.get("techniques", [])),
+        "tactics_csv":         ",".join(behavior.get("tactics", [])),
         "scenario":            scenario if isinstance(scenario, str) else "",
         "scenario_mult":       multiplier,
         "risk_decision":       decision,
@@ -701,21 +709,13 @@ def normalize():
     decoded = _decode_powershell(cl)
     urls = _extract_urls((cl + " " + decoded) if decoded else cl)
 
-    # MITRE ATT&CK ids/tactics Wazuh attached (rule.mitre.{id,tactic}). These are
-    # the authoritative, command_line-independent behavioral signal — extracted
-    # here from the raw alert and folded into the behavior score below.
-    _rule  = fields.get("rule") if isinstance(fields.get("rule"), dict) else {}
-    _mitre = _rule.get("mitre") if isinstance(_rule.get("mitre"), dict) else {}
-    mitre_ids = _mitre.get("id")
-    mitre_tac = _mitre.get("tactic")
-
-    # Compute the behavioral score HERE (we already hold the raw command line +
-    # the MITRE tags). The SOAR then forwards only the integer behavior_score to
-    # /score — never the raw command_line, whose embedded quotes/backslashes would
-    # corrupt the JSON body Shuffle builds (cause of a workflow hang 2026-05-31).
-    beh = (compute_behavior(cl, mitre_ids, mitre_tac) if BEHAVIOR_ENABLED
-           else {"behavior_score": 0, "yara_matches": [], "techniques": [],
-                 "tactics": [], "mitre_score": 0})
+    # Compute the YARA/decode behavioral score HERE (we already hold the raw command
+    # line). The SOAR forwards only the integer behavior_score to /score — never the
+    # raw command_line, whose quotes/backslashes corrupt the Shuffle body (hang
+    # 2026-05-31). MITRE is NOT handled here: rule.mitre.id is an array that, sent
+    # via a Shuffle template body, corrupts the JSON (SyntaxError, seen 2026-06-02).
+    # It is forwarded to /score as a bare-value [$expr] instead, and folded there.
+    beh = compute_behavior(cl) if BEHAVIOR_ENABLED else {"behavior_score": 0, "yara_matches": [], "techniques": []}
 
     # IMPORTANT: do NOT return the raw command_line / decoded in the response.
     # Their quotes/backslashes/`$` (PowerShell vars) corrupt Shuffle's handling of
@@ -731,11 +731,8 @@ def normalize():
         "srcip":          srcip if isinstance(srcip, str) else "",
         "dstuser":        dstuser if isinstance(dstuser, str) else "",
         "behavior_score": beh["behavior_score"],
-        "mitre_score":    beh.get("mitre_score", 0),
         "yara_matches":   beh.get("yara_matches", []),
         "techniques":     beh.get("techniques", []),
-        "techniques_csv": ",".join(beh.get("techniques", [])),   # Shuffle-safe scalar for case tags
-        "tactics_csv":    ",".join(beh.get("tactics", [])),      # Shuffle-safe scalar for case tags
         "command_b64":    command_b64,   # base64(raw command line) — decode to read
         "decoded_b64":    decoded_b64,   # base64(decoded PowerShell payload)
         "has_command":    bool(cl),

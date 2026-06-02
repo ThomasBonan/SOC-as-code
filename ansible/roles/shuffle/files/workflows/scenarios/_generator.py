@@ -780,10 +780,6 @@ def build_alert_triage_workflow() -> dict[str, Any]:
 
     # /normalize body — scalar substitutions only (no bare-dict injection). Missing
     # fields resolve to literal "$..." strings which the engine ignores (startswith $).
-    # rule.mitre.{id,tactic} are forwarded as QUOTED scalars (always valid JSON).
-    # Whatever shape Shuffle renders the arrays into (JSON, python repr, CSV), the
-    # engine's _mitre_score regex-extracts the T#### ids and substring-matches the
-    # tactics — so the MITRE behavioral floor works without bare-value injection.
     norm_body = json.dumps({
         "data": {
             "hash_sha256": "$exec.all_fields.data.hash_sha256",
@@ -793,11 +789,7 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                 "hashes":      "$exec.all_fields.data.win.eventdata.hashes",
                 "commandLine": "$exec.all_fields.data.win.eventdata.commandLine",
             }},
-        },
-        "rule": {"mitre": {
-            "id":     "$exec.all_fields.rule.mitre.id",
-            "tactic": "$exec.all_fields.rule.mitre.tactic",
-        }},
+        }
     })
 
     # LINEAR SPINE (deadlock-proof). Lesson learned live (2026-05-31): Shuffle 1.4
@@ -819,8 +811,17 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         # (NOT the raw command_line — its embedded quotes/backslashes corrupt the JSON
         # body Shuffle builds, which hangs the workflow; observed live 2026-05-31).
         # No cortex/misp bare-values: those dims default to 0 (scenarios do deep enrichment).
+        # behavior_score (YARA/decode) from /normalize as a clean integer + MITRE
+        # ids/tactics as BARE values ([$expr] wrap — Shuffle injects the native
+        # rule.mitre arrays without corrupting the JSON; a quoted "$expr" holding a
+        # list throws SyntaxError in the Shuffle HTTP app, seen live 2026-06-02).
+        # The engine folds behavioral = max(yara behavior_score, mitre).
         make_risk_engine_call("triage",
                               extra_fields={"behavior_score": "$action_normalize.body.behavior_score"},
+                              bare_value_fields={
+                                  "mitre_ids":     "$exec.all_fields.rule.mitre.id",
+                                  "mitre_tactics": "$exec.all_fields.rule.mitre.tactic",
+                              },
                               x=400, y=0),
 
         make_ignore_alert(),
@@ -844,8 +845,8 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         # (Shuffle-safe CSV scalars from /normalize). One tag each — the analyst
         # sees WHICH classic technique fired (e.g. mitre:T1053.005, tactic:Persistence).
         make_update_case_risk(x=1100, y=0, extra_tags=[
-            "mitre:$action_normalize.body.techniques_csv",
-            "tactic:$action_normalize.body.tactics_csv",
+            "mitre:$action_call_risk_engine.body.techniques_csv",
+            "tactic:$action_call_risk_engine.body.tactics_csv",
         ]),
         make_escalate(severity=4, tlp=3),
     ]

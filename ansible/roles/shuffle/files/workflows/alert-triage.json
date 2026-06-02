@@ -68,7 +68,7 @@
         },
         {
           "name": "body",
-          "value": "{\"data\": {\"hash_sha256\": \"$exec.all_fields.data.hash_sha256\", \"srcip\": \"$exec.all_fields.data.srcip\", \"dstuser\": \"$exec.all_fields.data.dstuser\", \"win\": {\"eventdata\": {\"hashes\": \"$exec.all_fields.data.win.eventdata.hashes\", \"commandLine\": \"$exec.all_fields.data.win.eventdata.commandLine\"}}}, \"rule\": {\"mitre\": {\"id\": \"$exec.all_fields.rule.mitre.id\", \"tactic\": \"$exec.all_fields.rule.mitre.tactic\"}}}"
+          "value": "{\"data\": {\"hash_sha256\": \"$exec.all_fields.data.hash_sha256\", \"srcip\": \"$exec.all_fields.data.srcip\", \"dstuser\": \"$exec.all_fields.data.dstuser\", \"win\": {\"eventdata\": {\"hashes\": \"$exec.all_fields.data.win.eventdata.hashes\", \"commandLine\": \"$exec.all_fields.data.win.eventdata.commandLine\"}}}}"
         },
         {
           "name": "verify",
@@ -105,7 +105,7 @@
         },
         {
           "name": "body",
-          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"triage\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_normalize.body.behavior_score\"}"
+          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"triage\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_normalize.body.behavior_score\", \"mitre_ids\": [$exec.all_fields.rule.mitre.id], \"mitre_tactics\": [$exec.all_fields.rule.mitre.tactic]}"
         },
         {
           "name": "verify",
@@ -327,7 +327,7 @@
         },
         {
           "name": "body",
-          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"mitre:$action_normalize.body.techniques_csv\",\"tactic:$action_normalize.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
+          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"mitre:$action_call_risk_engine.body.techniques_csv\",\"tactic:$action_call_risk_engine.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
         },
         {
           "name": "verify",
