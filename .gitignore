@@ -40,6 +40,9 @@ ansible/.vault_pass
 .claude/settings.local.json
 .claude
 
+# Plans de suivi locaux (jamais commités)
+docs/plans/
+
 # Déjà présents mais à vérifier
 ansible/.secrets/
 ansible/playbooks/artifacts/admin.conf
