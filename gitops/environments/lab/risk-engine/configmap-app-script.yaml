@@ -74,6 +74,7 @@ data:
     # (max — can only RAISE the score). Runtime override via mounted ConfigMap, with
     # a baked tactic-level fallback so the engine never breaks if the CM is absent.
     MITRE_SEVERITY_PATH  = "/config/mitre-severity.json"
+    EVIDENCE_RULES_PATH  = "/config/evidence-rules.json"
     POLICY_VERSION       = "3.0"
     ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
     LISTEN_PORT          = 8080
@@ -151,6 +152,34 @@ data:
         logger.warning("Cannot load %s: %s — using baked tactic-level MITRE defaults",
                        MITRE_SEVERITY_PATH, exc)
         MITRE_SEVERITY = _normalize_mitre_map(_MITRE_DEFAULT)
+
+
+    # ── Load evidence-grade rule registry (Phase 10 / B) ──────────────────────────
+    try:
+        with open(EVIDENCE_RULES_PATH) as f:
+            _er = json.load(f)
+        EVIDENCE_RULES = {str(k): int(v) for k, v in (_er.get("rules") or {}).items()}
+        logger.info("Evidence-grade rule registry loaded from %s: %d rules",
+                    EVIDENCE_RULES_PATH, len(EVIDENCE_RULES))
+    except Exception as exc:
+        logger.warning("Cannot load %s: %s — no evidence-grade rules", EVIDENCE_RULES_PATH, exc)
+        EVIDENCE_RULES = {}
+
+
+    def _evidence_grade_score(rule_id):
+        """Severity for a curated high-fidelity rule_id, else 0. The rule's detection
+        logic IS the evidence → treated as CONTENT-grade (full floor range) in /score."""
+        if rule_id is None:
+            return 0
+        if isinstance(rule_id, (int, float)) and not isinstance(rule_id, bool):
+            rid = str(int(rule_id))
+        elif isinstance(rule_id, str):
+            rid = rule_id.strip()
+            if not rid or rid.startswith("$"):
+                return 0
+        else:
+            return 0
+        return EVIDENCE_RULES.get(rid, 0)
 
 
     # ── Defensive coercion helpers ────────────────────────────────────────────────
@@ -722,6 +751,8 @@ data:
         command_line     = body.get("command_line", "")
         mitre_ids        = body.get("mitre_ids")
         mitre_tactics    = body.get("mitre_tactics")
+        # Evidence-grade rule (curated high-fidelity allowlist) → CONTENT-grade floor.
+        eg_score         = _evidence_grade_score(body.get("rule_id"))
 
         result   = _compute(wazuh_severity, cortex_max_level, misp_hit, asset_type, frequency)
         base_score = result["score"]
@@ -745,21 +776,25 @@ data:
             # m_score = MITRE TAG. Evidence-weighted floor (POLICY 3.0): content can contain/
             # escalate, the tag alone is capped at auto_promote (never destructive on a tag).
             _yara_bs = max(0, min(100, _safe_int(_bs_in, 0)))
-            _bscore = max(_yara_bs, m_score)
+            _bscore = max(_yara_bs, m_score, eg_score)
             behavior = {"behavior_score": _bscore, "yara_score": _yara_bs, "mitre_score": m_score,
+                        "evidence_grade": eg_score,
                         "techniques": m_tech, "tactics": m_tac, "source": "normalize+mitre",
                         "yara_matches": body.get("yara_matches") if isinstance(body.get("yara_matches"), list) else []}
-            floor = _evidence_floor(_yara_bs, m_score)
+            # eg_score (curated rule) joins the CONTENT side — full range, like a YARA hit.
+            floor = _evidence_floor(max(_yara_bs, eg_score), m_score)
         elif BEHAVIOR_ENABLED:
             behavior = compute_behavior(command_line, mitre_ids, mitre_tactics)
+            behavior["evidence_grade"] = eg_score
             _content = behavior["yara_score"]
             if behavior.get("encoded"):
                 _content = max(_content, ENCODED_PRESENT_SCORE)
-            floor = _evidence_floor(_content, behavior.get("mitre_score", 0))
+            floor = _evidence_floor(max(_content, eg_score), behavior.get("mitre_score", 0))
         else:
-            behavior = {"behavior_score": 0, "encoded": False, "yara_matches": [],
-                        "techniques": [], "tactics": [], "mitre_score": 0, "decoded_preview": ""}
-            floor = 0
+            behavior = {"behavior_score": eg_score, "encoded": False, "yara_matches": [],
+                        "techniques": [], "tactics": [], "mitre_score": 0,
+                        "evidence_grade": eg_score, "decoded_preview": ""}
+            floor = _evidence_floor(eg_score, m_score)
         final_score = round(max(adj_score, float(floor)), 2)
         decision = _decide(final_score)
 

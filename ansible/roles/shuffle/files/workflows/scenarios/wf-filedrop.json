@@ -322,7 +322,7 @@
         },
         {
           "name": "body",
-          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"filedrop\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_analyze_file.body.behavior_score\", \"cortex_hash_mb_taxonomies\": [$action_get_cortex_hash_mb_result.body.report.summary.taxonomies], \"cortex_hash_circl_taxonomies\": [$action_get_cortex_hash_circl_result.body.report.summary.taxonomies], \"misp_hash_attributes\": [$action_search_misp_hash.body.response.Attribute]}"
+          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"rule_id\": \"$exec.all_fields.rule.id\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"filedrop\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_analyze_file.body.behavior_score\", \"cortex_hash_mb_taxonomies\": [$action_get_cortex_hash_mb_result.body.report.summary.taxonomies], \"cortex_hash_circl_taxonomies\": [$action_get_cortex_hash_circl_result.body.report.summary.taxonomies], \"misp_hash_attributes\": [$action_search_misp_hash.body.response.Attribute]}"
         },
         {
           "name": "verify",

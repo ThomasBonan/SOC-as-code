@@ -82,3 +82,11 @@
     - filedrop
     - fim
     - soc_automation
+
+- name: "soc_automation | Règles evidence-grade — détections haute-fidélité (Phase 10 / B)"
+  import_tasks: wazuh_evidence_rules.yml
+  when: soc_automation_enable_evidence_rules | default(true) | bool
+  tags:
+    - integration
+    - evidence
+    - soc_automation

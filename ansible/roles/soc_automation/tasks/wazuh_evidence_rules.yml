@@ -1,0 +1,107 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_evidence_rules.yml — Déployer les règles haute-fidélité "evidence-grade" (Phase 10 / B)
+# tag: integration, evidence
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Déploie soc_evidence_rules.xml (rules 100210-100217, group soc_evidence_grade) dans
+# /var/ossec/etc/rules/ (in-pod, PVC = persistant mais re-vérifié à chaque run).
+# Leurs rule_ids sont enregistrés dans le risk-engine (evidence-rules.json) → traités
+# comme une preuve de CONTENU (plancher pleine plage, peuvent contenir/escalader sans IOC).
+#
+# Idempotence : signature sha256 du contenu en commentaire. Garde-fou (incident 'status'
+# statique 2026-06-03) : configcheck `wazuh-analysisd -t` APRÈS écriture, AVANT tout
+# restart ; si KO -> on retire le fichier (analysisd reste sain) + fail loudly.
+
+- name: "evidence_rules | Lire le ruleset evidence-grade"
+  ansible.builtin.set_fact:
+    _evr_content: "{{ lookup('file', role_path + '/files/soc_evidence_rules.xml') }}"
+
+- name: "evidence_rules | Signature"
+  ansible.builtin.set_fact:
+    _evr_sig: "{{ _evr_content | hash('sha256') }}"
+
+- name: "evidence_rules | Vérifier la signature in-pod"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-evidence-rules-sig:{{ _evr_sig }}" /var/ossec/etc/rules/soc_evidence_rules.xml
+  register: _evr_check
+  changed_when: false
+  failed_when: false
+
+- name: "evidence_rules | Déployer soc_evidence_rules.xml"
+  when: _evr_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'cat > /var/ossec/etc/rules/soc_evidence_rules.xml'
+    stdin: |
+      <!-- soc-evidence-rules-sig:{{ _evr_sig }} (managed by 180-soc-automation/wazuh_evidence_rules) -->
+      {{ _evr_content }}
+  register: _evr_deploy
+  changed_when: _evr_deploy.rc == 0
+  failed_when: _evr_deploy.rc != 0
+
+- name: "evidence_rules | Configcheck APRÈS écriture, AVANT restart"
+  when: _evr_deploy is defined and _evr_deploy.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-analysisd -t
+  register: _evr_configcheck
+  changed_when: false
+  failed_when: false
+
+- name: "evidence_rules | [diag] Configcheck KO — sortie"
+  when:
+    - _evr_deploy is defined and _evr_deploy.changed | default(false)
+    - _evr_configcheck.rc | default(1) != 0
+  ansible.builtin.debug:
+    msg: "{{ (_evr_configcheck.stdout_lines | default([])) + (_evr_configcheck.stderr_lines | default([])) }}"
+
+- name: "evidence_rules | Retirer le ruleset invalide (analysisd reste sain) + fail"
+  when:
+    - _evr_deploy is defined and _evr_deploy.changed | default(false)
+    - _evr_configcheck.rc | default(1) != 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    rm -f /var/ossec/etc/rules/soc_evidence_rules.xml
+  register: _evr_remove
+  changed_when: true
+  failed_when: true
+
+- name: "evidence_rules | Restart wazuh-manager si changement (et configcheck OK)"
+  when:
+    - _evr_deploy is defined and _evr_deploy.changed | default(false)
+    - _evr_configcheck.rc | default(1) == 0
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'nohup /var/ossec/bin/wazuh-control restart > /dev/null 2>&1 &'
+  register: _evr_restart
+  changed_when: true
+  failed_when: false
+
+- name: "evidence_rules | Attendre wazuh-analysisd"
+  when: _evr_restart is defined and _evr_restart.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-control status
+  register: _evr_status
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 4
+  until:
+    - "'wazuh-analysisd is running' in (_evr_status.stdout | default(''))"
+
+- name: "evidence_rules | [info] Récap"
+  ansible.builtin.debug:
+    msg:
+      - "Ruleset evidence-grade déployé (sig {{ _evr_sig[:12] }}…) : 100210-100217 (group soc_evidence_grade)"
+      - "Ces rule_ids sont 'evidence-grade' dans le risk-engine (evidence-rules.json) → plancher pleine plage."
+      - "GARDER SYNCHRO rule_ids/sévérités : soc_evidence_rules.xml ↔ evidence-rules.json ↔ configmap-evidence-rules.yaml"

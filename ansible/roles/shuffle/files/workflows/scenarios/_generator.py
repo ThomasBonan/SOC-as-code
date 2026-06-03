@@ -184,6 +184,7 @@ def make_risk_engine_call(scenario_key: str, extra_fields: dict[str, str] | None
     payload = {
         "case_id": "$action_create_thehive_alert.body._id",
         "wazuh_severity": "$exec.all_fields.rule.level",
+        "rule_id": "$exec.all_fields.rule.id",
         "agent_name": "$exec.all_fields.agent.name",
         "asset_type": "$exec.all_fields.agent.labels.type",
         "scenario": scenario_key,

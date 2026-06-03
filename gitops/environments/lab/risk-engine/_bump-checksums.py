@@ -27,6 +27,7 @@ HERE = Path(__file__).resolve().parent
 CONFIGMAP = HERE / "configmap-app-script.yaml"
 YARA_CONFIGMAP = HERE / "configmap-yara-rules.yaml"
 MITRE_CONFIGMAP = HERE / "configmap-mitre-severity.yaml"
+EVIDENCE_CONFIGMAP = HERE / "configmap-evidence-rules.yaml"
 DEPLOYMENT = HERE / "deployment-risk-engine.yaml"
 
 
@@ -57,6 +58,14 @@ def compute_mitre_sha() -> str:
     return hashlib.sha256(cm["data"]["mitre-severity.json"].encode()).hexdigest()
 
 
+def compute_evidence_sha() -> str:
+    """SHA256 of the mounted evidence-grade rule registry. Bumps when the
+    rule_id->severity map changes → pod rolls (parsed once at boot)."""
+    with EVIDENCE_CONFIGMAP.open() as f:
+        cm = yaml.safe_load(f)
+    return hashlib.sha256(cm["data"]["evidence-rules.json"].encode()).hexdigest()
+
+
 def patch_deployment(name: str, new_sha: str) -> bool:
     text = DEPLOYMENT.read_text()
     new_text, n = _ann_re(name).subn(lambda m: f'{m.group(1)}{new_sha}{m.group(2)}', text)
@@ -76,3 +85,4 @@ if __name__ == "__main__":
     patch_deployment("script", compute_sha())
     patch_deployment("yara", compute_yara_sha())
     patch_deployment("mitre", compute_mitre_sha())
+    patch_deployment("evidence", compute_evidence_sha())

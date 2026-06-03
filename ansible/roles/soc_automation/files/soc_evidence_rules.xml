@@ -1,0 +1,108 @@
+<!--
+  soc_evidence_rules.xml — Règles haute-fidélité "evidence-grade" (Phase 10 / B).
+  Managed by 180-soc-automation/wazuh_evidence_rules.
+  Détections Sysmon FIELD-AWARE (esprit Sigma) dont la LOGIQUE est une preuve forte
+  (faible faux-positif). Leurs rule_ids sont enregistrés dans
+  ansible/roles/soc_risk_engine/files/evidence-rules.json -> le risk-engine les traite
+  comme une preuve de CONTENU (plancher pleine plage) : elles peuvent contenir/escalader
+  même SANS IOC enrichissable. À l'inverse d'un simple tag MITRE (plafonné auto_promote).
+
+  Garder rule_ids + sévérités SYNCHRO avec evidence-rules.json :
+    100210=90 100211=85 100212=90 100213=85 100214=90 100215=95 100216=75 100217=60
+
+  Curation initiale (extensible via SOCFortress / sigma_to_wazuh — cf. docs/plans).
+  group soc_evidence_grade : utilisé pour audit/visibilité.
+-->
+<group name="sysmon,soc_evidence_grade,">
+
+  <!-- T1003.001 — accès mémoire LSASS (EID10 ProcessAccess). SANS IOC ni
+       command_line : seul un evidence-grade peut le scorer. GrantedAccess de dump. -->
+  <rule id="100210" level="12">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^10$</field>
+    <field name="win.eventdata.targetImage" type="pcre2">(?i)\\lsass\.exe$</field>
+    <field name="win.eventdata.grantedAccess" type="pcre2">(?i)0x(1010|1410|1438|143a|1fffff)</field>
+    <description>Evidence: LSASS process access with credential-dump GrantedAccess by $(win.eventdata.sourceImage)</description>
+    <mitre><id>T1003.001</id></mitre>
+    <group>soc_evidence_grade,credential_access,</group>
+  </rule>
+
+  <!-- T1003.002 — dump des ruches SAM/SYSTEM/SECURITY via reg save (EID1). -->
+  <rule id="100211" level="11">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)reg(\.exe)?\s+save\s+.*hklm\\(sam|system|security)</field>
+    <description>Evidence: Registry hive dump (reg save HKLM\SAM|SYSTEM|SECURITY)</description>
+    <mitre><id>T1003.002</id></mitre>
+    <group>soc_evidence_grade,credential_access,</group>
+  </rule>
+
+  <!-- T1562.001 — sabotage Defender (EID1). -->
+  <rule id="100212" level="12">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(set-mppreference\s+.*-disablerealtimemonitoring|add-mppreference\s+.*-exclusionpath|sc(\.exe)?\s+(stop|config)\s+windefend)</field>
+    <description>Evidence: Windows Defender tampering ($(win.eventdata.commandLine))</description>
+    <mitre><id>T1562.001</id></mitre>
+    <group>soc_evidence_grade,defense_evasion,</group>
+  </rule>
+
+  <!-- T1070.001 — effacement des journaux d'événements (EID1 wevtutil/Clear-EventLog). -->
+  <rule id="100213" level="11">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(wevtutil\s+cl|clear-eventlog|wevtutil\s+clear-log)</field>
+    <description>Evidence: Windows event log cleared ($(win.eventdata.commandLine))</description>
+    <mitre><id>T1070.001</id></mitre>
+    <group>soc_evidence_grade,defense_evasion,</group>
+  </rule>
+
+  <!-- T1490 — destruction des sauvegardes / shadow copies (EID1). -->
+  <rule id="100214" level="12">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(vssadmin\s+delete\s+shadows|wbadmin\s+delete\s+(catalog|systemstatebackup)|bcdedit\s+.*recoveryenabled\s+no|wmic\s+shadowcopy\s+delete)</field>
+    <description>Evidence: Shadow copy / backup deletion ($(win.eventdata.commandLine))</description>
+    <mitre><id>T1490</id></mitre>
+    <group>soc_evidence_grade,impact,</group>
+  </rule>
+
+  <!-- T1003.001 — dump LSASS via comsvcs.dll MiniDump ou procdump (EID1). -->
+  <rule id="100215" level="13">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(comsvcs\.dll.*minidump|minidump.*comsvcs|procdump(64)?(\.exe)?\s+.*lsass|rundll32.*comsvcs.*lsass)</field>
+    <description>Evidence: LSASS memory dump (comsvcs MiniDump / procdump)</description>
+    <mitre><id>T1003.001</id></mitre>
+    <group>soc_evidence_grade,credential_access,</group>
+  </rule>
+
+  <!-- T1059.001 — cradle PowerShell in-memory (download + exec) (EID1). -->
+  <rule id="100216" level="10">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(iex|invoke-expression).{0,40}(downloadstring|net\.webclient|invoke-webrequest)|(downloadstring|net\.webclient).{0,40}(iex|invoke-expression)</field>
+    <description>Evidence: PowerShell in-memory download cradle (IEX + DownloadString)</description>
+    <mitre><id>T1059.001</id></mitre>
+    <group>soc_evidence_grade,execution,</group>
+  </rule>
+
+  <!-- T1547.001/T1053.005 — persistence Run key / schtasks lançant un interpréteur (EID1). -->
+  <rule id="100217" level="9">
+    <decoded_as>windows_eventchannel</decoded_as>
+    <field name="win.system.providerName">^Microsoft-Windows-Sysmon$</field>
+    <field name="win.system.eventID">^1$</field>
+    <field name="win.eventdata.commandLine" type="pcre2">(?i)(reg(\.exe)?\s+add\s+.*currentversion\\run.*\.(exe|ps1|bat|vbs|scr)|schtasks(\.exe)?\s+/create\s+.*(powershell|cmd|wscript|mshta))</field>
+    <description>Evidence: Persistence via Run key / scheduled task launching an interpreter</description>
+    <mitre><id>T1547.001</id></mitre>
+    <group>soc_evidence_grade,persistence,</group>
+  </rule>
+
+</group>

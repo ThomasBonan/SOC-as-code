@@ -105,7 +105,7 @@
         },
         {
           "name": "body",
-          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"triage\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_normalize.body.behavior_score\", \"mitre_ids\": [$exec.all_fields.rule.mitre.id], \"mitre_tactics\": [$exec.all_fields.rule.mitre.tactic]}"
+          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"rule_id\": \"$exec.all_fields.rule.id\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"triage\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_normalize.body.behavior_score\", \"mitre_ids\": [$exec.all_fields.rule.mitre.id], \"mitre_tactics\": [$exec.all_fields.rule.mitre.tactic]}"
         },
         {
           "name": "verify",

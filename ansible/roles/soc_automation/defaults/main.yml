@@ -69,6 +69,13 @@ soc_automation_enable_filedrop_rules:     true
 soc_automation_enable_filedrop_collector: false
 soc_automation_filedrop_collector_rules_group: "sysmon_eid11_detections"
 
+# ── Règles haute-fidélité "evidence-grade" (Phase 10 / B) ───────────────────────
+# Déploie soc_evidence_rules.xml (rules 100210-100217, détections Sysmon field-aware
+# faible-FP). Leurs rule_ids sont 'evidence-grade' dans le risk-engine (evidence-rules.json)
+# → la détection EST une preuve (plancher pleine plage, peut contenir/escalader sans IOC),
+# contrairement à un simple tag MITRE (plafonné auto_promote). Faible-FP → activé par défaut.
+soc_automation_enable_evidence_rules: true
+
 # ── FIM agent.conf (voie SANS script — recommandée) ─────────────────────────────
 # Pousse une config <syscheck> dans /var/ossec/etc/shared/<groupe>/agent.conf
 # (PVC Longhorn = PERSISTANT, contrairement à ossec.conf). Le manager recalcule

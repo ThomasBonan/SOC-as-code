@@ -1,0 +1,18 @@
+{
+  "version": "1.0-2026-06-03",
+  "description": "Evidence-grade rule registry (Phase 10 / B). Maps a Wazuh rule_id to a behavioral severity (0-100) for rules whose DETECTION LOGIC is itself high-fidelity evidence (field-aware, low false-positive) — not a vague MITRE tag. Folded into _evidence_floor on the CONTENT side (full floor range), so a confirmed high-fidelity detection can reach contained/escalated even with NO enrichable IOC (e.g. native 'event log cleared'). This is the curated allowlist (Q1): only rule_ids listed here are trusted to score on their own. Generic rules + bare MITRE tags stay capped at auto_promote. Source of truth; mirrored to gitops/.../configmap-evidence-rules.yaml. Rule_ids 100200-100202 + 100210-100217 are deployed by 180-soc-automation (soc_sysmon_hacktools.xml + soc_evidence_rules.xml).",
+  "default": 0,
+  "rules": {
+    "100200": 95,
+    "100201": 95,
+    "100202": 95,
+    "100210": 90,
+    "100211": 85,
+    "100212": 90,
+    "100213": 85,
+    "100214": 90,
+    "100215": 95,
+    "100216": 75,
+    "100217": 60
+  }
+}

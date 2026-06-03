@@ -273,5 +273,25 @@ results.append(check("domain: ip rejetée", cd("8.8.8.8"), ""))
 results.append(check("domain: host sans point rejeté", cd("localhost"), ""))
 results.append(check("domain: unsubstitué rejeté", cd("$exec.all_fields.data.url"), ""))
 
+# ── Phase 10 / B — registre evidence-grade (allowlist haute-fidélité) ─────────
+eg = behavior._evidence_grade_score
+# 37) Lookup registre : rule curée -> sévérité ; inconnue/unsubstituée -> 0.
+results.append(check("evidence-grade: rule curée (100210)", eg("100210"), 90))
+results.append(check("evidence-grade: rule LSASS dump (100215)", eg("100215"), 95))
+results.append(check("evidence-grade: rule inconnue -> 0", eg("99999"), 0))
+results.append(check("evidence-grade: unsubstitué -> 0", eg("$exec.all_fields.rule.id"), 0))
+results.append(check("evidence-grade: int accepté", eg(100210), 90))
+# 38) Fold dans _evidence_floor : une rule haute-fidélité (95) SANS IOC → escalate (90).
+#     C'est l'allowlist Q1 : la détection EST la preuve, pas besoin d'enrichissement.
+results.append(check("evidence: rule curée 95 (no IOC) -> escalate 90",
+                     ef(max(0, eg("100215")), 0), 90))
+# 39) Une rule curée 'persistence' (100217=60) seule → auto_promote 50.
+results.append(check("evidence: rule curée 60 -> auto_promote 50",
+                     ef(max(0, eg("100217")), 0), 50))
+# 40) Rule GÉNÉRIQUE (hors registre, eg=0) + tag MITRE T1105=70 → reste capé à 50.
+#     La distinction clé : règle curée = preuve (escalade) ; règle générique = tag (capé).
+results.append(check("evidence: rule générique + tag -> capé 50",
+                     ef(max(0, eg("92205")), 70), 50))
+
 print(f"\n{sum(results)}/{len(results)} PASS")
 exit(0 if all(results) else 1)

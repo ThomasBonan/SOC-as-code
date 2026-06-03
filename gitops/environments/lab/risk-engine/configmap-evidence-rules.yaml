@@ -1,0 +1,43 @@
+# configmap-evidence-rules.yaml — Registre evidence-grade (Phase 10 / B)
+# Source : ansible/roles/soc_risk_engine/files/evidence-rules.json
+# Monté en lecture seule sur /config/evidence-rules.json, chargé au boot par le moteur.
+# rule_id -> sévérité (0-100) pour les règles dont la DÉTECTION est une preuve forte
+# (allowlist curée). Folded côté CONTENU de _evidence_floor (plage complète) -> une
+# règle haute-fidélité peut contenir/escalader même SANS IOC enrichissable.
+#
+# DRIFT GUARD : changement ici -> ArgoCD sync le CM, mais le moteur charge au boot ->
+# rollout requis (checksum/evidence dans le Deployment, recalculé par _bump-checksums).
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: soc-evidence-rules
+  namespace: soc-thehive
+  labels:
+    app.kubernetes.io/managed-by: soc-risk-engine
+    app.kubernetes.io/component: soc-risk-engine
+    soc.lab/playbook: "190-soc-risk-engine"
+    soc.lab/environment: dev
+  annotations:
+    soc.lab/managed-by: "190-soc-risk-engine"
+    soc.lab/description: "Evidence-grade rule_id->severity registry for the risk-engine content floor."
+data:
+  evidence-rules.json: |
+    {
+      "version": "1.0-2026-06-03",
+      "description": "Evidence-grade rule registry (Phase 10 / B). rule_id -> severity (0-100). Folded into _evidence_floor on the CONTENT side (full range): a curated high-fidelity rule can reach contained/escalated with NO enrichable IOC. Generic rules + bare MITRE tags stay capped at auto_promote. Mirrors ansible/roles/soc_risk_engine/files/evidence-rules.json.",
+      "default": 0,
+      "rules": {
+        "100200": 95,
+        "100201": 95,
+        "100202": 95,
+        "100210": 90,
+        "100211": 85,
+        "100212": 90,
+        "100213": 85,
+        "100214": 90,
+        "100215": 95,
+        "100216": 75,
+        "100217": 60
+      }
+    }

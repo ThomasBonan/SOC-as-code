@@ -92,6 +92,36 @@ def _load_mitre():
 MITRE_SEVERITY = _load_mitre()
 
 
+# ── Evidence-grade rule registry (Phase 10 / B) ───────────────────────────────
+EVIDENCE_RULES_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "files", "evidence-rules.json")
+
+
+def _load_evidence_rules():
+    try:
+        with open(EVIDENCE_RULES_PATH) as f:
+            return {str(k): int(v) for k, v in (json.load(f).get("rules") or {}).items()}
+    except Exception:
+        return {}
+
+
+EVIDENCE_RULES = _load_evidence_rules()
+
+
+def _evidence_grade_score(rule_id):
+    if rule_id is None:
+        return 0
+    if isinstance(rule_id, (int, float)) and not isinstance(rule_id, bool):
+        rid = str(int(rule_id))
+    elif isinstance(rule_id, str):
+        rid = rule_id.strip()
+        if not rid or rid.startswith("$"):
+            return 0
+    else:
+        return 0
+    return EVIDENCE_RULES.get(rid, 0)
+
+
 def _load_yara():
     global _YARA, _YARA_TRIED
     if _YARA_TRIED:
