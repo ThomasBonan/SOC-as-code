@@ -260,5 +260,18 @@ results.append(check("evidence: tag faible -> reviewed 20", ef(0, 40), 20))
 #     content=50 -> floor 50 ; mitre=90 -> capé 50 ; max=50.
 results.append(check("evidence: content 50 vs tag capé -> 50", ef(50, 90), 50))
 
+# ── Phase 10 / A1 — extraction universelle : validation IP/domaine ───────────
+ci, cd = behavior._clean_ip, behavior._clean_domain
+# 35) IP routable conservée ; loopback/unsubstitué/garbage rejetés.
+results.append(check("ip: routable", ci("8.8.8.8"), "8.8.8.8"))
+results.append(check("ip: loopback rejeté", ci("127.0.0.1"), ""))
+results.append(check("ip: unsubstitué rejeté", ci("$exec.all_fields.data.dstip"), ""))
+results.append(check("ip: garbage rejeté", ci("not-an-ip"), ""))
+# 36) Domaine FQDN normalisé ; IP/host-sans-point/unsubstitué rejetés.
+results.append(check("domain: fqdn", cd("Evil.COM."), "evil.com"))
+results.append(check("domain: ip rejetée", cd("8.8.8.8"), ""))
+results.append(check("domain: host sans point rejeté", cd("localhost"), ""))
+results.append(check("domain: unsubstitué rejeté", cd("$exec.all_fields.data.url"), ""))
+
 print(f"\n{sum(results)}/{len(results)} PASS")
 exit(0 if all(results) else 1)

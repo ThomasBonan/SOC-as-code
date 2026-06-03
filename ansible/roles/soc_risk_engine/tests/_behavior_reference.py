@@ -27,6 +27,30 @@ MITRE_SEVERITY_PATH = os.path.join(
 _ENC_RE = re.compile(r"-e(?:nc|ncodedcommand|ncoded)?\s+([A-Za-z0-9+/=]{16,})", re.I)
 _SHA256_RE = re.compile(r"SHA256=([A-Fa-f0-9]{64})")
 _URL_RE = re.compile(r"https?://[^\s'\"<>|]+", re.I)
+# Universal artifact extraction (Phase 10 / normalize v2).
+_IPV4_RE = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
+_DOMAIN_RE = re.compile(r"^(?=.{1,253}$)(?!-)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+$")
+_IP_SKIP = ("127.", "0.0.0.0", "::1", "255.255.255.255")
+
+
+def _clean_ip(v):
+    if not isinstance(v, str):
+        return ""
+    s = v.strip()
+    if not s or s.startswith("$") or not _IPV4_RE.match(s):
+        return ""
+    if any(s == p or s.startswith(p) for p in _IP_SKIP):
+        return ""
+    return s
+
+
+def _clean_domain(v):
+    if not isinstance(v, str):
+        return ""
+    s = v.strip().rstrip(".").lower()
+    if not s or s.startswith("$") or _IPV4_RE.match(s):
+        return ""
+    return s if _DOMAIN_RE.match(s) else ""
 
 # yara compiled handle (lazy, cached). None if yara unavailable or no rules.
 _YARA = None
