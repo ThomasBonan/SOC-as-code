@@ -42,11 +42,15 @@ spec:
       # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
-        checksum/script: "7a01ced587662e8482ba2c42fc211988b6cf90771dd2da2a4a38a165afb92c32"
+        checksum/script: "2ef9652d46bf413a754b2e37342c43b51793da3dc786fb8c6d8ee2a3ffa7762a"
         # SHA256 des règles YARA montées — recalculé par _bump-checksums.py. Un
         # changement de ruleset roll le pod (sinon le CM est mis à jour mais yara
         # reste compilé en mémoire — yara est compilé une seule fois au boot).
-        checksum/yara: "4160a6d8576faaa4702a1f0a50c11ec599f3c525bffadffbde4012862d92689a"
+        checksum/yara: "b4bd3408241cadf37b85262e3685012380a3c71211dc69ce7d219ee132e7a87f"
+        # SHA256 de la table MITRE montée — recalculé par _bump-checksums.py. La
+        # map est chargée une fois au boot (module load) → un changement doit
+        # rouler le pod, sinon le CM est sync mais la sévérité reste l'ancienne.
+        checksum/mitre: "f962a18ef143ca927f73fc2286cb13c57130119a547b98df1a4070d2bf05b859"
     spec:
       securityContext:
         runAsNonRoot: true

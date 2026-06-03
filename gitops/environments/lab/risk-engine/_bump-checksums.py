@@ -26,6 +26,7 @@ import yaml
 HERE = Path(__file__).resolve().parent
 CONFIGMAP = HERE / "configmap-app-script.yaml"
 YARA_CONFIGMAP = HERE / "configmap-yara-rules.yaml"
+MITRE_CONFIGMAP = HERE / "configmap-mitre-severity.yaml"
 DEPLOYMENT = HERE / "deployment-risk-engine.yaml"
 
 
@@ -48,6 +49,14 @@ def compute_yara_sha() -> str:
     return hashlib.sha256(blob.encode()).hexdigest()
 
 
+def compute_mitre_sha() -> str:
+    """SHA256 of the mounted MITRE severity map. Bumps when the technique->severity
+    table changes → pod rolls (the map is parsed once at boot)."""
+    with MITRE_CONFIGMAP.open() as f:
+        cm = yaml.safe_load(f)
+    return hashlib.sha256(cm["data"]["mitre-severity.json"].encode()).hexdigest()
+
+
 def patch_deployment(name: str, new_sha: str) -> bool:
     text = DEPLOYMENT.read_text()
     new_text, n = _ann_re(name).subn(lambda m: f'{m.group(1)}{new_sha}{m.group(2)}', text)
@@ -66,3 +75,4 @@ def patch_deployment(name: str, new_sha: str) -> bool:
 if __name__ == "__main__":
     patch_deployment("script", compute_sha())
     patch_deployment("yara", compute_yara_sha())
+    patch_deployment("mitre", compute_mitre_sha())

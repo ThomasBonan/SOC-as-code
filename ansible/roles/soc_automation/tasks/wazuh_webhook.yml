@@ -92,6 +92,50 @@
 #   - les scenarios couvrent suffisamment de cas pour ne pas nécessiter
 #     un catchall (alerts hors-scenario non workflow-traitées sont OK)
 #   - OU Shuffle 1.5+ avec K8s native worker routing
+# Normaliser les routes comportementales (Phase 9.2) : liste [{group, min_level}].
+# Préfère `routes` ; rétro-compat sur les scalaires `group`/`min_level` si absent.
+# Retourne [] quand le routing est désactivé.
+- name: "wazuh_webhook | Normaliser les routes comportementales (group-scoped)"
+  when: _ww_hook_url is defined
+  ansible.builtin.set_fact:
+    _ww_behavior_routes: >-
+      {{
+        (soc_automation_wazuh_behavior_routing.routes
+         | default([{
+             'group':     (soc_automation_wazuh_behavior_routing.group | default('sysmon_eid1_detections')),
+             'min_level': (soc_automation_wazuh_behavior_routing.min_level | default(3)),
+           }]))
+        if (soc_automation_wazuh_behavior_routing.enabled | default(false) | bool)
+        else []
+      }}
+
+# Construire une entrée d'intégration complète par route (JSON -> from_json pour
+# une évaluation native robuste, quotes-safe via to_json sur chaque valeur).
+- name: "wazuh_webhook | Construire les entrées d'intégration comportementales"
+  when: _ww_hook_url is defined
+  vars:
+    _triage_wf_id: "{{ _ww_shuffle_config.resources[0].data.triage_workflow_id | default('') }}"
+    _ww_behavior_entries_json: |-
+      [
+      {% for r in _ww_behavior_routes | default([]) %}
+        {
+          "key": "behavior-{{ r.group }}",
+          "kind": "behavior",
+          "value": {
+            "workflow_id": {{ _triage_wf_id | to_json }},
+            "webhook_url": {{ _ww_hook_url | to_json }},
+            "rule_ids": [],
+            "group": {{ r.group | to_json }},
+            "min_level": {{ r.min_level | default(3) | int }},
+            "description": "Behavioral routing (group-scoped) -> alert-triage MITRE+YARA",
+            "ar_command": ""
+          }
+        }{{ "," if not loop.last else "" }}
+      {% endfor %}
+      ]
+  ansible.builtin.set_fact:
+    _ww_behavior_entries: "{{ _ww_behavior_entries_json | from_json }}"
+
 - name: "wazuh_webhook | Construire la liste des intégrations Wazuh"
   when: _ww_hook_url is defined
   ansible.builtin.set_fact:
@@ -103,25 +147,7 @@
           | list
         )
         +
-        (
-          (soc_automation_wazuh_behavior_routing.enabled | default(false) | bool)
-          | ternary(
-              [{
-                'key': 'behavior',
-                'kind': 'behavior',
-                'value': {
-                  'workflow_id': (_ww_shuffle_config.resources[0].data.triage_workflow_id | default('')),
-                  'webhook_url': _ww_hook_url,
-                  'rule_ids':    [],
-                  'group':       (soc_automation_wazuh_behavior_routing.group | default('sysmon_eid1_detections')),
-                  'min_level':   (soc_automation_wazuh_behavior_routing.min_level | default(3)),
-                  'description': 'Behavioral routing (group-scoped) -> alert-triage MITRE+YARA',
-                  'ar_command':  ''
-                }
-              }],
-              []
-            )
-        )
+        (_ww_behavior_entries | default([]))
         +
         (
           (soc_automation_wazuh_webhook_enable_fallback | default(false) | bool)

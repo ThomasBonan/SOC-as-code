@@ -172,3 +172,14 @@ shuffle_scenarios:
     rule_ids: [5402, 5403, 4672, 999903]
     ar_command: disable-account
     description: "Privilege escalation -> user context enrichment + disable-account if score>=75"
+  - key: filedrop
+    json: scenarios/wf-filedrop.json
+    # Source-agnostique (wf-filedrop normalise le sha256). Deux sources :
+    #   100274 = Wazuh FIM 'file added' (syscheck.sha256_after) — SANS script agent
+    #            (agent.conf realtime). Hash-only.
+    #   100271 = collecteur collect-file.ps1 (data.sha256 + data.content_b64) — opt-in,
+    #            ajoute le contenu (PE binaire inclus).
+    # wf-filedrop : /normalize -> Cortex/MISP (hash) + /analyze-file (contenu) -> isolate-agent.
+    rule_ids: [100274, 100271]
+    ar_command: isolate-agent
+    description: "Dropped-file (FIM hash | collector content) -> Cortex/MISP + /analyze-file -> isolate-agent if score>=75"

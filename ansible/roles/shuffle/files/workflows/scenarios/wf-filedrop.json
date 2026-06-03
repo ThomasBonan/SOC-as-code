@@ -1,0 +1,1393 @@
+{
+  "name": "SOC FileDrop Triage",
+  "description": "Collected dropped file -> /analyze-file (content YARA) + hash analyzers -> risk engine -> isolate-agent if score>=75",
+  "start": "action_create_thehive_alert",
+  "tags": [
+    "soc",
+    "scenario",
+    "filedrop",
+    "wazuh",
+    "thehive",
+    "cortex",
+    "misp",
+    "yara"
+  ],
+  "actions": [
+    {
+      "id": "action_create_thehive_alert",
+      "label": "action_create_thehive_alert",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/alert"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"title\": \"[FILEDROP] $exec.all_fields.rule.description\", \"type\": \"External\", \"source\": \"wazuh\", \"sourceRef\": \"wazuh-$exec.all_fields.agent.id-$exec.all_fields.rule.id-$exec.all_fields.timestamp\", \"description\": \"Agent: $exec.all_fields.agent.name ($exec.all_fields.agent.ip) | Rule: $exec.all_fields.rule.id | Level: $exec.all_fields.rule.level | Scenario: filedrop\", \"severity\": 3, \"tags\": [\"source:wazuh\", \"scenario:filedrop\", \"agent:$exec.all_fields.agent.name\", \"rule:$exec.all_fields.rule.id\"]}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": -400,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_normalize",
+      "label": "action_normalize",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_RISK_ENGINE_URL/normalize"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Content-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\": {\"hash_sha256\": \"$exec.all_fields.data.hash_sha256\", \"sha256\": \"$exec.all_fields.data.sha256\", \"win\": {\"eventdata\": {\"hashes\": \"$exec.all_fields.data.win.eventdata.hashes\"}}}, \"syscheck\": {\"sha256_after\": \"$exec.all_fields.syscheck.sha256_after\"}}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": -250,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_analyze_file",
+      "label": "action_analyze_file",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_RISK_ENGINE_URL/analyze-file"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Content-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"content_b64\": \"$exec.all_fields.data.content_b64\", \"file_path\": \"$exec.all_fields.data.file_path\", \"agent\": \"$exec.all_fields.agent.name\"}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": -100,
+        "y": -250
+      }
+    },
+    {
+      "id": "action_run_cortex_hash_mb",
+      "label": "action_run_cortex_hash_mb",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_MB/run"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\": \"$action_normalize.body.sha256\", \"dataType\": \"hash\", \"tlp\": 2, \"message\": \"auto-filedrop-mb\"}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": -100,
+        "y": -150
+      }
+    },
+    {
+      "id": "action_get_cortex_hash_mb_result",
+      "label": "action_get_cortex_hash_mb_result",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "GET",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=60seconds"
+        },
+        {
+          "name": "method",
+          "value": "GET"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 100,
+        "y": -150
+      }
+    },
+    {
+      "id": "action_run_cortex_hash_circl",
+      "label": "action_run_cortex_hash_circl",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_CIRCL/run"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"data\": \"$action_normalize.body.sha256\", \"dataType\": \"hash\", \"tlp\": 2, \"message\": \"auto-filedrop-circl\"}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": -100,
+        "y": 150
+      }
+    },
+    {
+      "id": "action_get_cortex_hash_circl_result",
+      "label": "action_get_cortex_hash_circl_result",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "GET",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=60seconds"
+        },
+        {
+          "name": "method",
+          "value": "GET"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_CORTEX_APIKEY"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 100,
+        "y": 150
+      }
+    },
+    {
+      "id": "action_search_misp_hash",
+      "label": "action_search_misp_hash",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_MISP_URL/attributes/restSearch"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json\nAccept: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"value\": \"$action_normalize.body.sha256\", \"returnFormat\": \"json\"}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 200,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_call_risk_engine",
+      "label": "action_call_risk_engine",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_RISK_ENGINE_URL/score"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Content-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"filedrop\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_analyze_file.body.behavior_score\", \"cortex_hash_mb_taxonomies\": [$action_get_cortex_hash_mb_result.body.report.summary.taxonomies], \"cortex_hash_circl_taxonomies\": [$action_get_cortex_hash_circl_result.body.report.summary.taxonomies], \"misp_hash_attributes\": [$action_search_misp_hash.body.response.Attribute]}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 400,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_ignore_alert",
+      "label": "action_ignore_alert",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/alert/$action_create_thehive_alert.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"status\": \"Ignored\"}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 800,
+        "y": -300
+      }
+    },
+    {
+      "id": "action_promote_to_case",
+      "label": "action_promote_to_case",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/alert/$action_create_thehive_alert.body._id/case"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 800,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_add_case_observable",
+      "label": "action_add_case_observable",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id/observable"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"dataType\": \"hash\", \"data\": \"$action_normalize.body.sha256\", \"tags\": [\"source:wazuh\"]}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 1100,
+        "y": 0
+      }
+    },
+    {
+      "id": "action_update_case_risk",
+      "label": "action_update_case_risk",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"filedrop:$action_analyze_file.body.verdict\",\"mitre:$action_analyze_file.body.techniques_csv\",\"file:$exec.all_fields.syscheck.path\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 1100,
+        "y": 150
+      }
+    },
+    {
+      "id": "action_get_wazuh_jwt",
+      "label": "action_get_wazuh_jwt",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_WAZUH_API_URL/security/user/authenticate"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Basic $ENV_WAZUH_B64AUTH"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 1400,
+        "y": 400
+      }
+    },
+    {
+      "id": "action_active_response",
+      "label": "action_active_response",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PUT",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_WAZUH_API_URL/active-response?agents_list=$exec.all_fields.agent.id"
+        },
+        {
+          "name": "method",
+          "value": "PUT"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $action_get_wazuh_jwt.body.data.token\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"command\": \"isolate-agent\", \"alert\": {\"data\": {\"srcip\": \"$exec.all_fields.data.srcip\"}}, \"arguments\": [\"isolate\"]}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 1700,
+        "y": 400
+      }
+    },
+    {
+      "id": "action_misp_create_event",
+      "label": "action_misp_create_event",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_MISP_URL/events/add"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"Event\": {\"info\": \"[SOC-filedrop] $exec.all_fields.rule.description\", \"distribution\": 0, \"threat_level_id\": 2, \"analysis\": 1, \"Attribute\": [{\"type\": \"sha256\", \"value\": \"$action_normalize.body.sha256\", \"category\": \"Payload delivery\", \"to_ids\": true, \"comment\": \"Case: $action_promote_to_case.body._id | Score: $action_call_risk_engine.body.risk_score\"}]}}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 1700,
+        "y": 600
+      }
+    },
+    {
+      "id": "action_escalate",
+      "label": "action_escalate",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "PATCH",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_THEHIVE_URL/api/v1/case/$action_promote_to_case.body._id"
+        },
+        {
+          "name": "method",
+          "value": "PATCH"
+        },
+        {
+          "name": "headers",
+          "value": "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"severity\": 4, \"tlp\": 3, \"flag\": true}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "90"
+        }
+      ],
+      "position": {
+        "x": 1400,
+        "y": 300
+      }
+    },
+    {
+      "id": "action_notify_slack_filedrop",
+      "label": "action_notify_slack_filedrop",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_SLACK_WEBHOOK_URL"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Content-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"channel\": \"$ENV_SLACK_CHANNEL\",\"text\": \"SOC ESCALATED \u2014 filedrop on $exec.all_fields.agent.name (score $action_call_risk_engine.body.risk_score)\",\"blocks\": [{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\":rotating_light: SOC ESCALATED\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Scenario:*\\nfiledrop\"},{\"type\":\"mrkdwn\",\"text\":\"*Risk score:*\\n$action_call_risk_engine.body.risk_score / 100\"},{\"type\":\"mrkdwn\",\"text\":\"*Decision:*\\n$action_call_risk_engine.body.risk_decision\"},{\"type\":\"mrkdwn\",\"text\":\"*Agent:*\\n$exec.all_fields.agent.name\"},{\"type\":\"mrkdwn\",\"text\":\"*Rule:*\\n$exec.all_fields.rule.id (lvl $exec.all_fields.rule.level)\"},{\"type\":\"mrkdwn\",\"text\":\"*Environment:*\\n$ENV_SOC_ENVIRONMENT\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*IOC:* `$exec.all_fields.rule.id`\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"Open TheHive case\",\"emoji\":true},\"url\":\"$ENV_THEHIVE_PUBLIC_URL/cases/$action_promote_to_case.body._id\"}]}]}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "5"
+        }
+      ],
+      "position": {
+        "x": 2000,
+        "y": 700
+      }
+    }
+  ],
+  "triggers": [
+    {
+      "trigger_type": "WEBHOOK",
+      "id": "trigger_wazuh_webhook",
+      "name": "Wazuh FileDrop Webhook",
+      "status": "running",
+      "parameters": [
+        {
+          "name": "info",
+          "value": "Webhook trigger from Wazuh"
+        }
+      ],
+      "position": {
+        "x": -800,
+        "y": 0
+      }
+    }
+  ],
+  "branches": [
+    {
+      "source_id": "trigger_wazuh_webhook",
+      "destination_id": "action_create_thehive_alert",
+      "conditions": []
+    },
+    {
+      "source_id": "action_create_thehive_alert",
+      "destination_id": "action_normalize",
+      "conditions": []
+    },
+    {
+      "source_id": "action_normalize",
+      "destination_id": "action_analyze_file",
+      "conditions": []
+    },
+    {
+      "source_id": "action_normalize",
+      "destination_id": "action_run_cortex_hash_mb",
+      "conditions": []
+    },
+    {
+      "source_id": "action_run_cortex_hash_mb",
+      "destination_id": "action_get_cortex_hash_mb_result",
+      "conditions": []
+    },
+    {
+      "source_id": "action_normalize",
+      "destination_id": "action_run_cortex_hash_circl",
+      "conditions": []
+    },
+    {
+      "source_id": "action_run_cortex_hash_circl",
+      "destination_id": "action_get_cortex_hash_circl_result",
+      "conditions": []
+    },
+    {
+      "source_id": "action_normalize",
+      "destination_id": "action_search_misp_hash",
+      "conditions": []
+    },
+    {
+      "source_id": "action_analyze_file",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_get_cortex_hash_mb_result",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_get_cortex_hash_circl_result",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_search_misp_hash",
+      "destination_id": "action_call_risk_engine",
+      "conditions": []
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_ignore_alert",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "auto_closed",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "reviewed",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "auto_promoted",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "contained",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_call_risk_engine",
+      "destination_id": "action_promote_to_case",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_promote_to_case",
+      "destination_id": "action_add_case_observable",
+      "conditions": []
+    },
+    {
+      "source_id": "action_add_case_observable",
+      "destination_id": "action_update_case_risk",
+      "conditions": []
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_get_wazuh_jwt",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "contained",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_update_case_risk",
+      "destination_id": "action_get_wazuh_jwt",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    },
+    {
+      "source_id": "action_get_wazuh_jwt",
+      "destination_id": "action_active_response",
+      "conditions": []
+    },
+    {
+      "source_id": "action_active_response",
+      "destination_id": "action_misp_create_event",
+      "conditions": []
+    },
+    {
+      "source_id": "action_misp_create_event",
+      "destination_id": "action_escalate",
+      "conditions": []
+    },
+    {
+      "source_id": "action_escalate",
+      "destination_id": "action_notify_slack_filedrop",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
+    }
+  ],
+  "workflow_variables": []
+}

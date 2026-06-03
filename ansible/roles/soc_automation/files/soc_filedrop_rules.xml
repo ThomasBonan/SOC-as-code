@@ -1,0 +1,68 @@
+<!--
+  soc_filedrop_rules.xml — classification des events de collecte de contenu (Phase 9.2).
+  Managed by 180-soc-automation/wazuh_filedrop_collector.
+  L'agent ré-injecte une ligne JSON (collect-file.ps1) dans un <localfile> json :
+    {"soc_filedrop":"1","status":"collected","file_path":"...","sha256":"...","content_b64":"..."}
+  Le décodeur json natif de Wazuh aplatit ces clés. Ces règles taguent l'event en
+  group soc_filedrop_content pour le routage dédié -> webhook wf-filedrop -> /analyze-file.
+-->
+<group name="sysmon,soc_filedrop,">
+
+  <!-- Parent : tout event de collecte (présence du marqueur soc_filedrop). -->
+  <rule id="100270" level="3">
+    <decoded_as>json</decoded_as>
+    <field name="soc_filedrop">^1$</field>
+    <description>SOC file-drop collector event</description>
+    <group>soc_filedrop,</group>
+  </rule>
+
+  <!-- Contenu collecté avec succès -> à analyser (routé vers wf-filedrop /analyze-file).
+       PAS de tag <mitre> ici : c'est un event PORTEUR (carrier), pas un verdict. Le
+       verdict vient de l'analyse de CONTENU (/analyze-file) + intel hash (Cortex/MISP).
+       Un tag T1105 forcerait un floor 75 (contained) sur CHAQUE fichier collecté. -->
+  <rule id="100271" level="10">
+    <if_sid>100270</if_sid>
+    <field name="soc_status">^collected$</field>
+    <description>SOC file-drop content collected: $(file_path) — pending /analyze-file verdict</description>
+    <group>soc_filedrop_content,</group>
+  </rule>
+
+  <!-- Fichier indisponible (TOCTOU : dropper auto-supprimé). Signal en soi
+       (un fichier qui se volatilise est suspect) mais pas de contenu à analyser. -->
+  <rule id="100272" level="6">
+    <if_sid>100270</if_sid>
+    <field name="soc_status">^unavailable$</field>
+    <description>SOC file-drop vanished before collection (possible self-deleting dropper): $(file_path)</description>
+    <mitre><id>T1070.004</id></mitre>
+    <group>soc_filedrop_gone,</group>
+  </rule>
+
+  <!-- Modes non-actionnables (dry-run / skip / erreur) : trace de bas niveau. -->
+  <rule id="100273" level="2">
+    <if_sid>100270</if_sid>
+    <field name="soc_status" type="pcre2">^(would-collect|skipped-whitelist|skipped-ext|error)$</field>
+    <description>SOC file-drop collector non-action ($(soc_status)): $(file_path)</description>
+    <group>soc_filedrop_info,</group>
+  </rule>
+
+</group>
+
+<!--
+  Voie SANS SCRIPT sur l'agent : Wazuh FIM (syscheck) configuré via agent.conf
+  centralisé (distribué par le manager). Un fichier exécutable/script AJOUTÉ dans
+  un dossier sensible déclenche la rule native 554 (file added) qui porte
+  syscheck.sha256_after -> enrichissement hash (Cortex/MISP) via wf-filedrop.
+  Prérequis agent.conf : <syscheck> realtime + <alert_new_files>yes</alert_new_files>
+  (cf. files/ar_scripts/README-collect-file.md, section FIM). PAS de tag MITRE
+  (carrier) : le verdict vient du hash/contenu, pas de la détection FIM.
+-->
+<group name="syscheck,soc_filedrop,">
+
+  <rule id="100274" level="10">
+    <if_sid>554</if_sid>
+    <field name="file" type="pcre2">(?i)\\(Windows\\Temp|ProgramData|Users\\Public|AppData\\Local\\Temp|Windows\\System32|SysWOW64)\\[^\\]*\.(exe|dll|scr|ps1|bat|cmd|vbs|js|jse|hta|com)$</field>
+    <description>SOC FIM: executable/script added in a sensitive directory: $(file)</description>
+    <group>soc_filedrop_content,</group>
+  </rule>
+
+</group>

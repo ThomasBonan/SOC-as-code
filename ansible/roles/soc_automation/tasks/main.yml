@@ -65,3 +65,20 @@
     - integration
     - ar
     - soc_automation
+
+- name: "soc_automation | File-drop collector — règle de classification + déclencheur AR (Phase 9.2)"
+  import_tasks: wazuh_filedrop_collector.yml
+  when: soc_automation_enable_filedrop_rules | default(true) | bool
+  tags:
+    - integration
+    - filedrop
+    - soc_automation
+
+- name: "soc_automation | FIM agent.conf — voie sans script (syscheck -> sha256 hash) (Phase 9.2)"
+  import_tasks: wazuh_fim_agent_conf.yml
+  when: soc_automation_enable_fim_agent_conf | default(false) | bool
+  tags:
+    - integration
+    - filedrop
+    - fim
+    - soc_automation

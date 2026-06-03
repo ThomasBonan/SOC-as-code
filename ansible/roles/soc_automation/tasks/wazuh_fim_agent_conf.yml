@@ -1,0 +1,97 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_fim_agent_conf.yml — Pousser la config FIM via agent.conf centralisé (Phase 9.2)
+# tag: integration, filedrop, fim
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Voie SANS script sur l'agent : écrit un <syscheck> dans
+#   /var/ossec/etc/shared/{{ soc_automation_fim_group }}/agent.conf
+# Ce chemin est sur le PVC Longhorn (vérifié : /var/ossec/etc est un mount PVC) →
+# PERSISTANT au restart du pod (contrairement à ossec.conf réécrit par le chart).
+# Le manager recalcule merged.mg automatiquement (remoted) → les agents du groupe
+# récupèrent la conf (~10 min). PAS de restart manager nécessaire.
+#
+# Un fichier exécutable/script AJOUTÉ dans un fim_dir déclenche la rule 554 (native)
+# -> rule custom 100274 (soc_filedrop_rules.xml) porte syscheck.sha256_after
+# -> wf-filedrop -> Cortex/MISP (hash) -> isolate-agent si score>=75.
+#
+# PRÉREQUIS opérateur : assigner les agents Windows au groupe {{ soc_automation_fim_group }}
+# (UI Management>Agents, ou `agent_groups -a -i <id> -g {{ soc_automation_fim_group }}`).
+# Idempotence : signature sha256 du contenu en commentaire XML. Filesystem PVC →
+# l'écriture persiste, mais on re-vérifie à chaque run (no-op si déjà à jour).
+
+- name: "fim_agent_conf | Construire le contenu agent.conf (syscheck)"
+  ansible.builtin.set_fact:
+    _fim_dirs_csv: "{{ soc_automation_fim_dirs | join(',') }}"
+
+- name: "fim_agent_conf | Rendu du bloc <agent_config>"
+  ansible.builtin.set_fact:
+    _fim_agent_conf: |
+      <agent_config>
+        <!-- soc-fim managed by 180-soc-automation/wazuh_fim_agent_conf -->
+        <syscheck>
+          <disabled>no</disabled>
+          <alert_new_files>yes</alert_new_files>
+          <directories realtime="{{ 'yes' if (soc_automation_fim_realtime | default(true) | bool) else 'no' }}" check_all="yes" report_changes="{{ 'yes' if (soc_automation_fim_report_changes | default(true) | bool) else 'no' }}">{{ _fim_dirs_csv }}</directories>
+        </syscheck>
+      </agent_config>
+
+- name: "fim_agent_conf | Signature du contenu"
+  ansible.builtin.set_fact:
+    _fim_sig: "{{ _fim_agent_conf | hash('sha256') }}"
+
+- name: "fim_agent_conf | Vérifier la signature déjà présente in-pod"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-fim-agent-conf-sig:{{ _fim_sig }}"
+    /var/ossec/etc/shared/{{ soc_automation_fim_group }}/agent.conf
+  register: _fim_check
+  changed_when: false
+  failed_when: false
+
+- name: "fim_agent_conf | S'assurer que le groupe existe (dir shared/<groupe>)"
+  when: _fim_check.rc | default(1) != 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'install -d -o wazuh -g wazuh -m 0770 /var/ossec/etc/shared/{{ soc_automation_fim_group }}'
+  register: _fim_groupdir
+  changed_when: _fim_groupdir.rc == 0
+  failed_when: _fim_groupdir.rc != 0
+
+- name: "fim_agent_conf | Écrire shared/{{ soc_automation_fim_group }}/agent.conf"
+  when: _fim_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'cat > /var/ossec/etc/shared/{{ soc_automation_fim_group }}/agent.conf
+      && chown wazuh:wazuh /var/ossec/etc/shared/{{ soc_automation_fim_group }}/agent.conf
+      && chmod 0660 /var/ossec/etc/shared/{{ soc_automation_fim_group }}/agent.conf'
+    stdin: |
+      <!-- soc-fim-agent-conf-sig:{{ _fim_sig }} (managed by 180-soc-automation/wazuh_fim_agent_conf) -->
+      {{ _fim_agent_conf }}
+  register: _fim_write
+  changed_when: _fim_write.rc == 0
+  failed_when: _fim_write.rc != 0
+
+# Validation : merged.mg se régénère seul (remoted), mais on force un verify-agent-conf
+# pour attraper une erreur de syntaxe AVANT que les agents ne tirent une conf cassée.
+- name: "fim_agent_conf | Valider la syntaxe (verify-agent-conf)"
+  when: _fim_write is defined and _fim_write.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/verify-agent-conf -f /var/ossec/etc/shared/{{ soc_automation_fim_group }}/agent.conf
+  register: _fim_verify
+  changed_when: false
+  failed_when: false
+
+- name: "fim_agent_conf | [info] Récap"
+  ansible.builtin.debug:
+    msg:
+      - "agent.conf FIM écrit : shared/{{ soc_automation_fim_group }}/agent.conf (sig {{ _fim_sig[:12] }}…)"
+      - "Dossiers surveillés (realtime={{ soc_automation_fim_realtime }}, report_changes={{ soc_automation_fim_report_changes }}) : {{ _fim_dirs_csv }}"
+      - "verify-agent-conf : {{ _fim_verify.stdout | default('(non lancé — pas de changement)') | trim }}"
+      - "RAPPEL : assigne tes agents Windows au groupe '{{ soc_automation_fim_group }}' (UI ou agent_groups). Sans ça, la conf n'est appliquée à aucun agent."

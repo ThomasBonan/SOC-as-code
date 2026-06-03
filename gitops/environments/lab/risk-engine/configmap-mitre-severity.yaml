@@ -24,7 +24,7 @@ metadata:
 data:
   mitre-severity.json: |
     {
-      "version": "1.0-2026-06-02",
+      "version": "1.1-2026-06-03",
       "description": "MITRE ATT&CK technique -> behavioral severity (0-100) for the SOC risk-engine. Driven by rule.mitre.id that Wazuh already attaches to each alert. Applied as a behavioral FLOOR (max with the weighted 5-dim score), never a weighted dimension, so tuned scenario scores stay intact and MITRE can only RAISE the final risk. Lookup order: exact technique id -> base technique (sub-technique stripped) -> tactic fallback -> default. Score bands map onto soc_risk_thresholds (auto_close=15, auto_promote=50, auto_contain=75, escalate=90) plus the [40,20] reviewed floor. Source of truth; mirrored to gitops/environments/lab/risk-engine/configmap-mitre-severity.yaml.",
       "default": 40,
       "tactics": {
@@ -102,6 +102,9 @@ data:
         "T1505": 60,
         "T1098": 60,
         "T1546": 55,
+        "T1546.011": 45,
+        "T1546.012": 60,
+        "T1546.015": 55,
         "T1037": 50,
     
         "T1021": 60,

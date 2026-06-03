@@ -25,21 +25,67 @@ soc_automation_enable_wazuh_webhook:  true   # Injecter le bloc integration Shuf
 # en plus du scenario → 2 workers Shuffle concurrents → ABORTED par routing
 # load-balance Service shuffle-workers (Shuffle 1.4 K8s limitation).
 soc_automation_wazuh_webhook_enable_fallback: false
-# Routing comportemental chirurgical (Phase 9.1) : ajoute UNE integration scopée
-# par <group> Wazuh, à un niveau plus bas que les scenarios, pointée sur le
+# Routing comportemental chirurgical (Phase 9.1, étendu 9.2) : ajoute N integrations
+# scopées par <group> Wazuh, à un niveau plus bas que les scenarios, pointées sur le
 # webhook alert-triage (seul workflow qui appelle /normalize → analyse MITRE+YARA).
-# Pas de double-dispatch : le groupe sysmon_eid1_detections ne contient AUCUNE
-# règle de scenario (malware=sysmon,hacktool,credential_dump ; bruteforce/privesc
-# = auth/sudo). Les scenarios gardent leur <level> 9 ; seul ce bloc descend à 3.
-# Cible : événements Sysmon EID1 process-creation (atomic red team, LOLBins, TTP).
+# Pas de double-dispatch : AUCUNE route ne doit recouvrir un groupe de scenario
+# (malware=sysmon,hacktool,credential_dump ; bruteforce/privesc=auth/sudo) sinon
+# 2 <integration> pour la même alerte → 2 workers Shuffle concurrents → ABORTED.
+# Les scenarios gardent leur <level> 9 ; seules ces routes descendent à min_level.
+#
+# routes[] (Phase 9.2) : une route = un bloc <integration><group>…</group> distinct.
+#   - sysmon_eid1_detections  : process-creation (LOLBins, TTP, atomic red team,
+#                               sdbinst / Application Compatibility Database T1546.011).
+#   - sysmon_eid11_detections : FileCreate (dropper — exécutable/script déposé, ex.
+#                               "PowerShell created an executable in Windows root").
+#                               Le fichier est ensuite catégorisé par hash puis contenu.
 soc_automation_wazuh_behavior_routing:
-  enabled:   true
-  group:     "sysmon_eid1_detections"   # groupe Wazuh à router (resserrer si trop bruyant)
-  min_level: 3                          # seuil bas, propre à ce bloc uniquement
+  enabled: true
+  routes:
+    - group:     "sysmon_eid1_detections"
+      min_level: 3
+    - group:     "sysmon_eid11_detections"
+      min_level: 3
+  # Rétro-compat : si `routes` est absent (override d'env ancien), ces scalaires
+  # synthétisent une route unique EID1.
+  group:     "sysmon_eid1_detections"
+  min_level: 3
 soc_automation_enable_wazuh_manager_labels: true   # Injecter <labels> agent.type dans ossec.conf manager
 soc_automation_enable_wazuh_selftest_scenarios: true   # Rules 999901-999903 + décodeurs IOC pour selftest E2E
 soc_automation_enable_ar_scripts:     true   # Déployer scripts AR custom (isolate-agent, disable-account)
 soc_automation_enable_noise_suppression: true   # Override règles Sysmon bruyantes (FP connus, ex. __PSScriptPolicyTest)
+
+# ── Collecteur de contenu de fichier déposé (Phase 9.2) ─────────────────────────
+# Deux toggles distincts :
+#   - enable_filedrop_rules (true)     : déploie soc_filedrop_rules.xml côté manager
+#     (classe l'event ré-injecté data.soc_filedrop=1 en group soc_filedrop_content).
+#     Sans risque : prépare la pipeline à recevoir les events de contenu.
+#   - enable_filedrop_collector (false): injecte le DÉCLENCHEUR AR <command>/<active-response>
+#     qui lance collect-file.ps1 SUR L'AGENT. OPT-IN : n'activer QU'APRÈS avoir
+#     installé collect-file.ps1 + le <localfile> agent.conf sur la flotte Windows
+#     (hors périmètre repo — cf. files/ar_scripts/README-collect-file.md). Sinon le
+#     déclencheur logge juste "no such file" côté agent.
+soc_automation_enable_filedrop_rules:     true
+soc_automation_enable_filedrop_collector: false
+soc_automation_filedrop_collector_rules_group: "sysmon_eid11_detections"
+
+# ── FIM agent.conf (voie SANS script — recommandée) ─────────────────────────────
+# Pousse une config <syscheck> dans /var/ossec/etc/shared/<groupe>/agent.conf
+# (PVC Longhorn = PERSISTANT, contrairement à ossec.conf). Le manager recalcule
+# merged.mg et les agents du groupe la récupèrent (~10 min, pas de restart manager).
+# OPT-IN (false) : pousser du FIM realtime à une flotte est impactant (perf endpoint).
+# N'active QU'APRÈS avoir choisi un groupe dédié + assigné tes agents Windows au groupe
+# (UI Management>Agents ou `agent_groups -a -i <id> -g <groupe>`).
+# fim_dirs : dossiers à risque (PAS C:\Windows entier en realtime = trop lourd).
+soc_automation_enable_fim_agent_conf: false
+soc_automation_fim_group:            "windows"
+soc_automation_fim_realtime:         true
+soc_automation_fim_report_changes:   true
+soc_automation_fim_dirs:
+  - 'C:\Windows\Temp'
+  - 'C:\ProgramData'
+  - 'C:\Users\Public'
+  - 'C:\Users\*\AppData\Local\Temp'
 
 # ── Labels du Wazuh manager (agent 000) ────────────────────────────
 # Propagés à TOUTES les alertes émises par le manager local (selftest, logger

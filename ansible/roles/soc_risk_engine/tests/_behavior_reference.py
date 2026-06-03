@@ -106,8 +106,9 @@ def _deep_get(obj, *paths):
 
 
 def _extract_sha256(fields):
-    # 1) already-split field (syslog selftest decoder)
-    v = _deep_get(fields, "data.hash_sha256")
+    # 1) direct field: syslog decoder, file-drop collector (data.sha256),
+    #    Wazuh FIM file-added (syscheck.sha256_after — no agent script)
+    v = _deep_get(fields, "data.hash_sha256", "data.sha256", "syscheck.sha256_after")
     if isinstance(v, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", v or ""):
         return v.lower()
     # 2) raw Sysmon eventchannel combined hashes string
@@ -224,6 +225,35 @@ def compute_behavior(command_line, mitre_ids=None, tactics=None):
         "techniques": techniques,
         "tactics": mitre_tac,
         "mitre_score": mitre_score,
+        "yara_score": int(yara_score),
+        "decoded_preview": decoded[:160],
+    }
+
+
+def compute_behavior_bytes(raw):
+    """Behavioral analysis of raw FILE bytes (Phase 9.2 /analyze-file).
+    YARA scans the bytes DIRECTLY so binary PE rules match — a utf-8 decode
+    corrupts non-text bytes and loses PE patterns. PowerShell -enc decode + text
+    command rules folded in via a best-effort utf-8 view."""
+    raw = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8", "replace")
+    matches = _run_yara(raw)
+    text = raw.decode("utf-8", "ignore")
+    decoded = _decode_powershell(text)
+    if decoded:
+        matches = matches + _run_yara(decoded)
+    yara_score = max([m["score"] for m in matches], default=0)
+    encoded = bool(decoded) or bool(_ENC_RE.search(text))
+    score = yara_score
+    if encoded:
+        score = max(score, ENCODED_PRESENT_SCORE)
+    techniques = sorted({m["technique"] for m in matches if m["technique"]})
+    return {
+        "behavior_score": int(max(0, min(100, score))),
+        "encoded": encoded,
+        "yara_matches": sorted({m["rule"] for m in matches}),
+        "techniques": techniques,
+        "tactics": [],
+        "mitre_score": 0,
         "yara_score": int(yara_score),
         "decoded_preview": decoded[:160],
     }

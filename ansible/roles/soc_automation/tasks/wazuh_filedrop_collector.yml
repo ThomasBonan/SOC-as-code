@@ -1,0 +1,224 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# wazuh_filedrop_collector.yml — Plumbing manager du collecteur de contenu (Phase 9.2)
+# tag: integration, filedrop
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Déploie côté MANAGER (in-pod, éphémère) :
+#   1. soc_filedrop_rules.xml  -> classe l'event ré-injecté (data.soc_filedrop=1)
+#      en group soc_filedrop_content (routé Phase B vers wf-filedrop -> /analyze-file).
+#   2. Bloc <command> soc-collect-file + <active-response> (location=local,
+#      rules_group=sysmon_eid11_detections) -> déclenche collect-file.ps1 SUR L'AGENT.
+#
+# OPT-IN (toggle OFF par défaut) : tant que collect-file.ps1 n'est pas installé sur
+# la flotte Windows (hors périmètre de ce repo — cf. README-collect-file.md), injecter
+# le déclencheur AR ferait juste logguer une erreur "no such file" côté agent. On
+# active donc soc_automation_enable_filedrop_collector=true SEULEMENT après avoir
+# provisionné le script + la config <localfile> agent.conf sur les endpoints.
+#
+# NB localfile agent : le monitoring de C:\ProgramData\soc\filedrop-collect.log se
+# configure côté agent (agent.conf centralisé / groupe). Non géré ici (dépend des
+# groupes d'agents du client) — snippet fourni dans README-collect-file.md.
+
+- name: "filedrop_collector | Lire la règle de classification"
+  ansible.builtin.set_fact:
+    _fdc_rules: "{{ lookup('file', role_path + '/files/soc_filedrop_rules.xml') }}"
+
+- name: "filedrop_collector | Calculer la signature règle"
+  ansible.builtin.set_fact:
+    _fdc_rules_sig: "{{ _fdc_rules | hash('sha256') }}"
+
+- name: "filedrop_collector | Vérifier la signature règle in-pod"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-filedrop-rules-sig:{{ _fdc_rules_sig }}" /var/ossec/etc/rules/soc_filedrop_rules.xml
+  register: _fdc_rules_check
+  changed_when: false
+  failed_when: false
+
+- name: "filedrop_collector | Déployer soc_filedrop_rules.xml"
+  when: _fdc_rules_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      bash -c 'cat > /var/ossec/etc/rules/soc_filedrop_rules.xml'
+    stdin: |
+      <!-- soc-filedrop-rules-sig:{{ _fdc_rules_sig }} (managed by 180-soc-automation/wazuh_filedrop_collector) -->
+      {{ _fdc_rules }}
+  register: _fdc_rules_deploy
+  changed_when: _fdc_rules_deploy.rc == 0
+  failed_when: _fdc_rules_deploy.rc != 0
+
+# Configcheck APRÈS écriture de la règle, AVANT tout restart : une règle invalide
+# (ex. champ statique réservé) ferait échouer le chargement analysisd au restart →
+# manager dégradé. On valide d'abord ; si KO, on retire le fichier (analysisd reste
+# sain) et on fail loudly. (Garde-fou ajouté après l'incident 'status' static 2026-06-03.)
+- name: "filedrop_collector | Configcheck après déploiement de la règle"
+  when: _fdc_rules_deploy is defined and _fdc_rules_deploy.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-analysisd -t
+  register: _fdc_rules_configcheck
+  changed_when: false
+  failed_when: false
+
+- name: "filedrop_collector | [diag] Configcheck règle KO — sortie"
+  when:
+    - _fdc_rules_deploy is defined and _fdc_rules_deploy.changed | default(false)
+    - _fdc_rules_configcheck.rc | default(1) != 0
+  ansible.builtin.debug:
+    msg: "{{ _fdc_rules_configcheck.stdout_lines | default([]) + _fdc_rules_configcheck.stderr_lines | default([]) }}"
+
+- name: "filedrop_collector | Retirer la règle invalide (analysisd reste sain) + fail"
+  when:
+    - _fdc_rules_deploy is defined and _fdc_rules_deploy.changed | default(false)
+    - _fdc_rules_configcheck.rc | default(1) != 0
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    rm -f /var/ossec/etc/rules/soc_filedrop_rules.xml
+  register: _fdc_rules_remove
+  changed_when: true
+  failed_when: true   # stoppe le play : la règle est à corriger avant de continuer
+
+# ── Déclencheur AR (opt-in) — injecté seulement si activé ────────────────────────
+- name: "filedrop_collector | Vérifier le bloc AR collect-file in-pod"
+  when: soc_automation_enable_filedrop_collector | default(false) | bool
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    grep -q "soc-collect-file-ar:v1" /var/ossec/etc/ossec.conf
+  register: _fdc_ar_check
+  changed_when: false
+  failed_when: false
+
+- name: "filedrop_collector | Backup ossec.conf avant injection AR"
+  when:
+    - soc_automation_enable_filedrop_collector | default(false) | bool
+    - _fdc_ar_check.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - bash
+      - -c
+      - 'cp -a /var/ossec/etc/ossec.conf /var/ossec/etc/ossec.conf.bak-fdc-$(date +%Y%m%d%H%M%S) && ls -t /var/ossec/etc/ossec.conf.bak-fdc-* | tail -n +6 | xargs -r rm -f'
+  changed_when: true
+  failed_when: false
+
+- name: "filedrop_collector | Injecter <command> + <active-response> collect-file"
+  when:
+    - soc_automation_enable_filedrop_collector | default(false) | bool
+    - _fdc_ar_check.rc | default(1) != 0
+  ansible.builtin.shell:
+    cmd: >
+      kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+      exec -i -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+      python3 -
+    stdin: |
+      block = (
+          '\n  <!-- soc-collect-file-ar:v1 (managed by 180-soc-automation/wazuh_filedrop_collector) -->\n'
+          '  <command>\n'
+          '    <name>soc-collect-file</name>\n'
+          '    <executable>collect-file.ps1</executable>\n'
+          '    <timeout_allowed>no</timeout_allowed>\n'
+          '  </command>\n'
+          '  <active-response>\n'
+          '    <command>soc-collect-file</command>\n'
+          '    <location>local</location>\n'
+          '    <rules_group>{{ soc_automation_filedrop_collector_rules_group | default("sysmon_eid11_detections") }}</rules_group>\n'
+          '  </active-response>\n'
+      )
+      closing = '</ossec_config>'
+      with open('/var/ossec/etc/ossec.conf') as f:
+          content = f.read()
+      if 'soc-collect-file-ar:v1' in content:
+          print('AR collect-file deja present'); raise SystemExit(0)
+      if closing not in content:
+          raise SystemExit('Tag </ossec_config> non trouve dans ossec.conf')
+      with open('/var/ossec/etc/ossec.conf', 'w') as f:
+          f.write(content.replace(closing, block + closing))
+      print('Bloc AR collect-file injecte')
+  register: _fdc_ar_inject
+  changed_when: "'injecte' in (_fdc_ar_inject.stdout | default(''))"
+  failed_when: _fdc_ar_inject.rc | default(1) != 0
+
+- name: "filedrop_collector | Configcheck Wazuh post-injection AR"
+  when:
+    - soc_automation_enable_filedrop_collector | default(false) | bool
+    - _fdc_ar_inject is changed
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-analysisd -t
+  register: _fdc_configcheck
+  changed_when: false
+  failed_when: false
+
+- name: "filedrop_collector | Rollback ossec.conf si configcheck KO"
+  when:
+    - soc_automation_enable_filedrop_collector | default(false) | bool
+    - _fdc_ar_inject is changed
+    - _fdc_configcheck.rc | default(1) != 0
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ soc_automation_kubeconfig_path }}"
+      - exec
+      - -n
+      - "{{ soc_automation_wazuh_ns }}"
+      - "{{ soc_automation_wazuh_manager_pod }}"
+      - --
+      - bash
+      - -c
+      - 'LAST=$(ls -t /var/ossec/etc/ossec.conf.bak-fdc-* 2>/dev/null | head -1); if [ -n "$LAST" ]; then cp -a "$LAST" /var/ossec/etc/ossec.conf && echo "rolled back to $LAST"; fi; exit 1'
+  register: _fdc_rollback
+  failed_when: true
+
+# ── Reload si quoi que ce soit a changé (rules ou AR) ET configcheck OK ──────────
+# Le restart n'a lieu QUE si la validation est passée (sinon les tasks de retrait/
+# rollback ci-dessus ont déjà stoppé le play). Double garde-fou.
+- name: "filedrop_collector | Restart wazuh-manager si changement"
+  when: >
+    (_fdc_rules_deploy is defined and _fdc_rules_deploy.changed | default(false)
+     and _fdc_rules_configcheck.rc | default(1) == 0) or
+    (_fdc_ar_inject is defined and _fdc_ar_inject.changed | default(false)
+     and _fdc_configcheck.rc | default(1) == 0)
+  ansible.builtin.shell: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    bash -c 'nohup /var/ossec/bin/wazuh-control restart > /dev/null 2>&1 &'
+  register: _fdc_restart
+  changed_when: true
+  failed_when: false
+
+- name: "filedrop_collector | Attendre wazuh-analysisd"
+  when: _fdc_restart is defined and _fdc_restart.changed | default(false)
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ soc_automation_kubeconfig_path }}
+    exec -n {{ soc_automation_wazuh_ns }} {{ soc_automation_wazuh_manager_pod }} --
+    /var/ossec/bin/wazuh-control status
+  register: _fdc_status
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 4
+  until:
+    - "'wazuh-analysisd is running' in (_fdc_status.stdout | default(''))"
+
+- name: "filedrop_collector | [info] Récap"
+  ansible.builtin.debug:
+    msg:
+      - "Rule soc_filedrop_rules.xml (sig {{ _fdc_rules_sig[:12] }}…) : 100270-100273"
+      - "AR collect-file : {{ 'injecté/présent' if (soc_automation_enable_filedrop_collector | default(false) | bool) else 'OFF (opt-in — installer collect-file.ps1 sur les agents puis activer le toggle)' }}"
+      - "Routage soc_filedrop_content -> wf-filedrop : voir Phase B"

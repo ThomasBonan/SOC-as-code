@@ -74,7 +74,7 @@ data:
     # (max — can only RAISE the score). Runtime override via mounted ConfigMap, with
     # a baked tactic-level fallback so the engine never breaks if the CM is absent.
     MITRE_SEVERITY_PATH  = "/config/mitre-severity.json"
-    POLICY_VERSION       = "2.8"
+    POLICY_VERSION       = "2.9"
     ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
     LISTEN_PORT          = 8080
     # Hard cap on /analyze-file content (Phase 9.2 — file-content YARA). A collector
@@ -380,9 +380,11 @@ data:
 
 
     def _extract_sha256(fields):
-        """SHA256 from data.hash_sha256 (syslog decoder) OR the raw Sysmon
-        eventchannel combined 'Hashes' string (MD5=..,SHA256=..,IMPHASH=..)."""
-        v = _deep_get(fields, "data.hash_sha256")
+        """SHA256 from a direct field — data.hash_sha256 (syslog decoder), data.sha256
+        (file-drop collector), syscheck.sha256_after (Wazuh FIM 'file added', NO agent
+        script needed) — OR the raw Sysmon eventchannel combined 'Hashes' string
+        (MD5=..,SHA256=..,IMPHASH=..)."""
+        v = _deep_get(fields, "data.hash_sha256", "data.sha256", "syscheck.sha256_after")
         if isinstance(v, str) and re.fullmatch(r"[A-Fa-f0-9]{64}", v or ""):
             return v.lower()
         raw = _deep_get(fields, "data.win.eventdata.hashes", "data.win.eventdata.Hashes")
@@ -510,6 +512,37 @@ data:
             "techniques":      techniques,
             "tactics":         mitre_tac,
             "mitre_score":     mitre_score,
+            "yara_score":      int(yara_score),
+            "decoded_preview": decoded[:160],
+        }
+
+
+    def compute_behavior_bytes(raw):
+        """Behavioral analysis of raw FILE bytes (Phase 9.2 /analyze-file).
+        YARA scans the bytes DIRECTLY so binary PE rules match — a utf-8 decode
+        (the previous behaviour) corrupts non-text bytes and loses PE patterns.
+        The PowerShell -enc decode + text command rules are still folded in for
+        script droppers via a best-effort utf-8 view.
+        behavior_score = max(yara-on-bytes, yara-on-decoded, encoded-present)."""
+        raw = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8", "replace")
+        matches = _run_yara(raw)
+        text = raw.decode("utf-8", "ignore")
+        decoded = _decode_powershell(text)
+        if decoded:
+            matches = matches + _run_yara(decoded)
+        yara_score = max([m["score"] for m in matches], default=0)
+        encoded = bool(decoded) or bool(_ENC_RE.search(text))
+        score = yara_score
+        if encoded:
+            score = max(score, ENCODED_PRESENT_SCORE)
+        techniques = sorted({m["technique"] for m in matches if m["technique"]})
+        return {
+            "behavior_score":  int(max(0, min(100, score))),
+            "encoded":         encoded,
+            "yara_matches":    sorted({m["rule"] for m in matches}),
+            "techniques":      techniques,
+            "tactics":         [],
+            "mitre_score":     0,
             "yara_score":      int(yara_score),
             "decoded_preview": decoded[:160],
         }
@@ -794,23 +827,28 @@ data:
         body = request.get_json(silent=True) or {}
         b64 = body.get("content_b64", "")
         file_path = body.get("file_path", "") if isinstance(body.get("file_path"), str) else ""
+        # Graceful no-op (HTTP 200, behavior 0) when no content is present — e.g. a
+        # Wazuh FIM 'file added' event routes here through the same join but carries
+        # only a hash, no content_b64. Returning 200 (not 400) keeps the Shuffle join
+        # intact (a 4xx can flip the action to failed → broken join → deadlock).
         if not isinstance(b64, str) or not b64.strip() or b64.strip().startswith("$"):
-            return jsonify({"error": "content_b64 missing or unsubstituted",
+            return jsonify({"note": "no content_b64 — hash-only source (e.g. FIM)",
                             "behavior_score": 0, "verdict": "auto_closed",
                             "yara_matches": [], "techniques": [], "techniques_csv": "",
                             "behavior_floor": 0, "size_bytes": 0,
-                            "policy_version": POLICY_VERSION}), 400
+                            "policy_version": POLICY_VERSION}), 200
         try:
             raw = base64.b64decode(b64, validate=False)[:MAX_ANALYZE_FILE_BYTES]
-            content = raw.decode("utf-8", "replace")
         except Exception as exc:
             return jsonify({"error": "invalid base64: %s" % exc,
                             "behavior_score": 0, "verdict": "auto_closed",
                             "yara_matches": [], "techniques": [], "techniques_csv": "",
                             "behavior_floor": 0, "size_bytes": 0,
-                            "policy_version": POLICY_VERSION}), 400
+                            "policy_version": POLICY_VERSION}), 200
 
-        beh = compute_behavior(content) if BEHAVIOR_ENABLED else {
+        # YARA scans the raw BYTES (binary PE rules + text rules both match);
+        # never utf-8-decode first — that corrupts a PE and drops its patterns.
+        beh = compute_behavior_bytes(raw) if BEHAVIOR_ENABLED else {
             "behavior_score": 0, "yara_matches": [], "techniques": []}
         floor = behavior_floor(beh["behavior_score"])
         verdict = _decide(float(floor))   # tier from the behavioral floor alone

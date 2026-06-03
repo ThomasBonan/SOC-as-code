@@ -243,3 +243,59 @@ rule Credential_Access_LSASS_Dump
         ($rundll and $comsvcs and $lsass) or
         ($procdump and $lsass)
 }
+
+/*
+  Phase 9.2 — file-drop / shimming categorization. These complement the MITRE
+  floor (T1546.011 shimming = 45 -> reviewed, T1105 ingress = 70) by RAISING the
+  score only when a command line shows the ABUSIVE variant. A bare `sdbinst foo.sdb`
+  in a system path stays at the MITRE 45 (reviewed); these fire on the suspicious
+  shape (user-writable .sdb, PE written into a Windows system dir) -> auto_promote.
+*/
+
+rule Application_Shimming_Suspicious
+{
+    meta:
+        score = 60
+        severity = "high"
+        technique = "T1546.011"
+    strings:
+        $sdb = "sdbinst" nocase
+        $ext = ".sdb" nocase
+        // Locations a legitimate system-initiated shim install never uses.
+        $p1 = "\\temp\\" nocase
+        $p2 = "\\appdata\\" nocase
+        $p3 = "\\users\\public" nocase
+        $p4 = "\\programdata\\" nocase
+        $p5 = "\\downloads\\" nocase
+        $p6 = "\\desktop\\" nocase
+    condition:
+        $sdb and $ext and any of ($p*)
+}
+
+rule Dropper_Executable_In_System_Dir
+{
+    meta:
+        score = 65
+        severity = "high"
+        technique = "T1105"
+    strings:
+        // write / move verbs (scripts + LOLBins)
+        $w1 = "WriteAllBytes" nocase
+        $w2 = "DownloadFile" nocase
+        $w3 = "-OutFile" nocase
+        $w4 = "Move-Item" nocase
+        $w5 = "Copy-Item" nocase
+        $w6 = "copy " nocase
+        $w7 = "Set-Content" nocase
+        // Windows system directories — abnormal drop targets for legit installers.
+        $d1 = "\\windows\\system32" nocase
+        $d2 = "\\windows\\temp" nocase
+        $d3 = "c:\\windows\\" nocase
+        $d4 = "\\syswow64" nocase
+        // executable payload extensions
+        $pe1 = ".exe" nocase
+        $pe2 = ".dll" nocase
+        $pe3 = ".scr" nocase
+    condition:
+        any of ($w*) and any of ($d*) and any of ($pe*)
+}

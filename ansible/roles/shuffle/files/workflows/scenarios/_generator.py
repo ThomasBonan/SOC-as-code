@@ -747,6 +747,166 @@ def build_privesc_workflow() -> dict[str, Any]:
     }
 
 
+def build_filedrop_workflow() -> dict[str, Any]:
+    """
+    Dropped-file content scenario (Phase 9.2). SOURCE-AGNOSTIC via /normalize.
+    Source events (any of):
+      - Wazuh FIM 'file added' (rule 100274, syscheck.sha256_after) — NO agent
+        script, config-only via agent.conf. HASH-only (+ text diff).
+      - Collector re-injection (rule 100271, data.sha256 + data.content_b64) —
+        opt-in collect-file.ps1, adds full content (incl. binary PE).
+    HYBRID enrichment (the user's choice):
+      - /normalize unifies the SHA256 (data.sha256 | syscheck.sha256_after | Sysmon).
+      - HASH intel: Cortex MalwareBazaar + CIRCL + MISP on $action_normalize.body.sha256.
+      - CONTENT: /analyze-file on data.content_b64 (collector). Graceful (HTTP 200,
+        behavior 0) when absent (FIM) — never breaks the join.
+    Decision via /score (same proven formula as wf-malware) → isolate-agent on
+    contained/escalated. Clean → reviewed; malicious content or known-bad hash → contained.
+    """
+    trigger = _trigger_webhook("trigger_wazuh_webhook", "Wazuh FileDrop Webhook")
+
+    # /normalize body — unify the hash across sources (collector data.sha256, FIM
+    # syscheck.sha256_after, Sysmon Hashes). Scalar substitutions; missing fields
+    # resolve to literal "$..." which the engine ignores (startswith $).
+    norm_body = json.dumps({
+        "data": {
+            "hash_sha256": "$exec.all_fields.data.hash_sha256",
+            "sha256":      "$exec.all_fields.data.sha256",
+            "win": {"eventdata": {"hashes": "$exec.all_fields.data.win.eventdata.hashes"}},
+        },
+        "syscheck": {"sha256_after": "$exec.all_fields.syscheck.sha256_after"},
+    })
+
+    actions: list[dict[str, Any]] = [
+        make_create_alert("filedrop", severity=3),
+
+        # Normalize -> clean single sha256 scalar (source-agnostic).
+        _http_action("action_normalize", "POST", -250, 0,
+                     url="$ENV_RISK_ENGINE_URL/normalize",
+                     headers="Content-Type: application/json", body=norm_body),
+
+        # CONTENT analysis — YARA scan of the collected bytes (collector path only;
+        # FIM carries no content_b64 -> graceful HTTP 200 behavior 0).
+        _http_action("action_analyze_file", "POST", -100, -250,
+                     url="$ENV_RISK_ENGINE_URL/analyze-file",
+                     headers="Content-Type: application/json",
+                     body=json.dumps({
+                         "content_b64": "$exec.all_fields.data.content_b64",
+                         "file_path":   "$exec.all_fields.data.file_path",
+                         "agent":       "$exec.all_fields.agent.name",
+                     })),
+
+        # HASH intel — on the normalized sha256 (works for FIM + collector + Sysmon).
+        _http_action("action_run_cortex_hash_mb", "POST", -100, -150,
+                     url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_MB/run",
+                     headers="Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json",
+                     body=json.dumps({
+                         "data": "$action_normalize.body.sha256",
+                         "dataType": "hash", "tlp": 2, "message": "auto-filedrop-mb",
+                     })),
+        _http_action("action_get_cortex_hash_mb_result", "GET", 100, -150,
+                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_mb.body._id/waitreport?atMost=60seconds",
+                     headers="Authorization: Bearer $ENV_CORTEX_APIKEY"),
+
+        _http_action("action_run_cortex_hash_circl", "POST", -100, 150,
+                     url="$ENV_CORTEX_URL/api/analyzer/$ENV_CORTEX_HASH_ANALYZER_CIRCL/run",
+                     headers="Authorization: Bearer $ENV_CORTEX_APIKEY\nContent-Type: application/json",
+                     body=json.dumps({
+                         "data": "$action_normalize.body.sha256",
+                         "dataType": "hash", "tlp": 2, "message": "auto-filedrop-circl",
+                     })),
+        _http_action("action_get_cortex_hash_circl_result", "GET", 100, 150,
+                     url="$ENV_CORTEX_URL/api/job/$action_run_cortex_hash_circl.body._id/waitreport?atMost=60seconds",
+                     headers="Authorization: Bearer $ENV_CORTEX_APIKEY"),
+
+        _http_action("action_search_misp_hash", "POST", 200, 0,
+                     url="$ENV_MISP_URL/attributes/restSearch",
+                     headers="Authorization: $ENV_MISP_APIKEY\nContent-Type: application/json\nAccept: application/json",
+                     body=json.dumps({"value": "$action_normalize.body.sha256", "returnFormat": "json"})),
+
+        # Risk engine — behavior_score (content YARA, clean int) as extra_field +
+        # cortex/misp arrays as bare-values (proven [$expr] wrap).
+        make_risk_engine_call("filedrop",
+                              extra_fields={"behavior_score": "$action_analyze_file.body.behavior_score"},
+                              bare_value_fields={
+                                  "cortex_hash_mb_taxonomies":    "$action_get_cortex_hash_mb_result.body.report.summary.taxonomies",
+                                  "cortex_hash_circl_taxonomies": "$action_get_cortex_hash_circl_result.body.report.summary.taxonomies",
+                                  "misp_hash_attributes":         "$action_search_misp_hash.body.response.Attribute",
+                              }),
+
+        make_ignore_alert(),
+        make_promote_to_case(),
+        make_add_case_observable("$action_normalize.body.sha256", dtype="hash"),
+        # Surface the content verdict (techniques + file path) on the case.
+        make_update_case_risk(extra_tags=[
+            "filedrop:$action_analyze_file.body.verdict",
+            "mitre:$action_analyze_file.body.techniques_csv",
+            "file:$exec.all_fields.syscheck.path",
+        ]),
+
+        make_get_wazuh_jwt(),
+        make_active_response("isolate-agent", "$exec.all_fields.agent.id",
+                             extra_args=["isolate"]),
+        make_misp_event("filedrop", "sha256", "$action_normalize.body.sha256"),
+        make_escalate(severity=4, tlp=3),
+        make_slack_notify("filedrop"),
+    ]
+
+    branches = [
+        _branch("trigger_wazuh_webhook", "action_create_thehive_alert"),
+        # create_alert -> normalize -> 4 enrichments (all always run) -> risk_engine
+        _branch("action_create_thehive_alert", "action_normalize"),
+        _branch("action_normalize", "action_analyze_file"),
+        _branch("action_normalize", "action_run_cortex_hash_mb"),
+        _branch("action_run_cortex_hash_mb",   "action_get_cortex_hash_mb_result"),
+        _branch("action_normalize", "action_run_cortex_hash_circl"),
+        _branch("action_run_cortex_hash_circl","action_get_cortex_hash_circl_result"),
+        _branch("action_normalize", "action_search_misp_hash"),
+        # all 4 enrichments -> risk_engine (join; every parent always runs)
+        _branch("action_analyze_file",                 "action_call_risk_engine"),
+        _branch("action_get_cortex_hash_mb_result",    "action_call_risk_engine"),
+        _branch("action_get_cortex_hash_circl_result", "action_call_risk_engine"),
+        _branch("action_search_misp_hash",             "action_call_risk_engine"),
+
+        # 5 conditional decision branches (same as wf-malware)
+        _branch("action_call_risk_engine", "action_ignore_alert",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_closed"),
+        _branch("action_call_risk_engine", "action_promote_to_case",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="reviewed"),
+        _branch("action_call_risk_engine", "action_promote_to_case",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_promoted"),
+        _branch("action_call_risk_engine", "action_promote_to_case",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="contained"),
+        _branch("action_call_risk_engine", "action_promote_to_case",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+
+        _branch("action_promote_to_case",     "action_add_case_observable"),
+        _branch("action_add_case_observable", "action_update_case_risk"),
+
+        _branch("action_update_case_risk", "action_get_wazuh_jwt",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="contained"),
+        _branch("action_update_case_risk", "action_get_wazuh_jwt",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+        _branch("action_get_wazuh_jwt",   "action_active_response"),
+        _branch("action_active_response", "action_misp_create_event"),
+        _branch("action_misp_create_event", "action_escalate"),
+
+        _branch("action_escalate", "action_notify_slack_filedrop",
+                condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+    ]
+
+    return {
+        "name": "SOC FileDrop Triage",
+        "description": "Collected dropped file -> /analyze-file (content YARA) + hash analyzers -> risk engine -> isolate-agent if score>=75",
+        "start": "action_create_thehive_alert",
+        "tags": ["soc", "scenario", "filedrop", "wazuh", "thehive", "cortex", "misp", "yara"],
+        "actions": actions,
+        "triggers": [trigger],
+        "branches": branches,
+        "workflow_variables": [],
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Generic fallback workflow (alert-triage) — ROBUST rebuild (Phase 9)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -896,6 +1056,7 @@ def main() -> None:
         "wf-malware.json":    build_malware_workflow(),
         "wf-bruteforce.json": build_bruteforce_workflow(),
         "wf-privesc.json":    build_privesc_workflow(),
+        "wf-filedrop.json":   build_filedrop_workflow(),
     }
     for filename, wf in workflows.items():
         path = os.path.join(here, filename)
