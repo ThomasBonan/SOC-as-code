@@ -264,3 +264,15 @@ def behavior_floor(behavior_score):
         if behavior_score >= thresh:
             return floor
     return 0
+
+
+# POLICY 3.0 — a MITRE tag alone never exceeds auto_promote (mirrors THRESHOLDS).
+MITRE_TAG_FLOOR_CAP = 50
+
+
+def _evidence_floor(content_score, mitre_score):
+    """Content evidence (YARA/encoded) → full range ; MITRE tag alone → capped at
+    auto_promote (never destructive containment on a classification tag)."""
+    content_floor = behavior_floor(content_score)
+    mitre_floor = min(behavior_floor(mitre_score), MITRE_TAG_FLOOR_CAP)
+    return max(content_floor, mitre_floor)

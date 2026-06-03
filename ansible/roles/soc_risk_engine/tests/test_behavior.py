@@ -238,5 +238,27 @@ import base64 as _b64
 b28 = behavior.compute_behavior_bytes(_b64.b64decode(_b64.b64encode(pe_inject)))
 results.append(check("filebytes-b64-roundtrip score", b28["behavior_score"], 70))
 
+# ── Phase 10 / POLICY 3.0 — _evidence_floor : un TAG MITRE ne contient jamais seul ──
+# La décision /score utilise désormais _evidence_floor(content, mitre) : le CONTENU
+# (YARA/encoded) garde toute la plage ; le TAG MITRE seul est plafonné à auto_promote.
+ef = behavior._evidence_floor
+
+# 29) Tag MITRE seul (ex. T1105=70, le cas mimikatz-par-tag) → plafonné à 50
+#     (auto_promoted, cas créé, PAS d'AR) au lieu de 75 (contained).
+results.append(check("evidence: tag T1105 seul -> auto_promote cap", ef(0, 70), 50))
+# 30) Tag MITRE 'critique' seul (T1003.001=90) → toujours plafonné à 50 (pas escalate
+#     sur un simple tag — il faut le CONTENU ou un hit Cortex/MISP).
+results.append(check("evidence: tag cred-access seul -> cap 50", ef(0, 90), 50))
+# 31) CONTENU malveillant (YARA mimikatz=95) → NON plafonné → 90 (escalated). C'est
+#     l'analyse réelle qui autorise l'escalade.
+results.append(check("evidence: contenu YARA 95 -> escalate 90", ef(95, 0), 90))
+# 32) Contenu modéré (YARA 70) + tag faible → le contenu décide (75 contained).
+results.append(check("evidence: contenu 70 -> contained 75", ef(70, 30), 75))
+# 33) Contenu nul + tag faible (recon T1087=40) → tag plancher 20 (reviewed), < cap.
+results.append(check("evidence: tag faible -> reviewed 20", ef(0, 40), 20))
+# 34) Contenu < tag : max des deux planchers, mitre toujours capé.
+#     content=50 -> floor 50 ; mitre=90 -> capé 50 ; max=50.
+results.append(check("evidence: content 50 vs tag capé -> 50", ef(50, 90), 50))
+
 print(f"\n{sum(results)}/{len(results)} PASS")
 exit(0 if all(results) else 1)

@@ -46,7 +46,7 @@ YARA_RULES_PATH       = "/config/yara"
 # (max — can only RAISE the score). Runtime override via mounted ConfigMap, with
 # a baked tactic-level fallback so the engine never breaks if the CM is absent.
 MITRE_SEVERITY_PATH  = "/config/mitre-severity.json"
-POLICY_VERSION       = "2.9"
+POLICY_VERSION       = "3.0"
 ASSET_WEIGHTS_PATH   = "/config/asset-criticality.json"
 LISTEN_PORT          = 8080
 # Hard cap on /analyze-file content (Phase 9.2 — file-content YARA). A collector
@@ -527,6 +527,20 @@ def behavior_floor(behavior_score):
     return 0
 
 
+def _evidence_floor(content_score, mitre_score):
+    """Evidence-weighted floor (POLICY 3.0). CONTENT evidence (YARA match on the
+    command/file, decoded payload) uses the FULL floor range — it can reach
+    contained/escalated because it saw the actual malicious bytes. A MITRE TAG
+    ALONE (rule classification, low confidence) is CAPPED at auto_promote: it may
+    surface a case for review but NEVER triggers destructive containment/escalation
+    on its own ("on ne contient pas juste parce que ça ressemble à une technique").
+    Real containment requires corroboration — YARA content here, OR a malicious
+    Cortex/MISP verdict via the weighted 5-dim score (which is unaffected by this cap)."""
+    content_floor = behavior_floor(content_score)
+    mitre_floor = min(behavior_floor(mitre_score), THRESHOLDS["auto_promote"])
+    return max(content_floor, mitre_floor)
+
+
 # ── Scoring formula ───────────────────────────────────────────────────────────
 def _compute(wazuh_severity: int, cortex_max_level: int, misp_hit: bool,
              asset_type: str, frequency: int) -> dict:
@@ -674,15 +688,21 @@ def score():
     _bs_valid = _bs_in is not None and not (
         isinstance(_bs_in, str) and (not _bs_in.strip() or _bs_in.strip().startswith("$")))
     if _bs_valid:
+        # _yara_bs = CONTENT evidence (YARA/encoded from /normalize, no MITRE folded in).
+        # m_score = MITRE TAG. Evidence-weighted floor (POLICY 3.0): content can contain/
+        # escalate, the tag alone is capped at auto_promote (never destructive on a tag).
         _yara_bs = max(0, min(100, _safe_int(_bs_in, 0)))
         _bscore = max(_yara_bs, m_score)
         behavior = {"behavior_score": _bscore, "yara_score": _yara_bs, "mitre_score": m_score,
                     "techniques": m_tech, "tactics": m_tac, "source": "normalize+mitre",
                     "yara_matches": body.get("yara_matches") if isinstance(body.get("yara_matches"), list) else []}
-        floor = behavior_floor(_bscore)
+        floor = _evidence_floor(_yara_bs, m_score)
     elif BEHAVIOR_ENABLED:
         behavior = compute_behavior(command_line, mitre_ids, mitre_tactics)
-        floor = behavior_floor(behavior["behavior_score"])
+        _content = behavior["yara_score"]
+        if behavior.get("encoded"):
+            _content = max(_content, ENCODED_PRESENT_SCORE)
+        floor = _evidence_floor(_content, behavior.get("mitre_score", 0))
     else:
         behavior = {"behavior_score": 0, "encoded": False, "yara_matches": [],
                     "techniques": [], "tactics": [], "mitre_score": 0, "decoded_preview": ""}
