@@ -39,7 +39,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -72,7 +72,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -105,7 +105,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -134,7 +134,7 @@
         },
         {
           "name": "body",
-          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"privesc\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"agent_os\": \"$action_enrich_agent_context.body.data.affected_items.0.os.platform\", \"agent_groups\": \"$action_enrich_agent_context.body.data.affected_items.0.group\"}"
+          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"rule_id\": \"$exec.all_fields.rule.id\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"privesc\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"agent_os\": \"$action_enrich_agent_context.body.data.affected_items.0.os.platform\", \"agent_groups\": \"$action_enrich_agent_context.body.data.affected_items.0.group\"}"
         },
         {
           "name": "verify",
@@ -142,7 +142,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -179,7 +179,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -216,7 +216,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -253,7 +253,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -290,7 +290,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -323,7 +323,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -360,7 +360,7 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
@@ -397,12 +397,49 @@
         },
         {
           "name": "timeout",
-          "value": "60"
+          "value": "90"
         }
       ],
       "position": {
         "x": 1400,
         "y": 300
+      }
+    },
+    {
+      "id": "action_notify_slack_privesc",
+      "label": "action_notify_slack_privesc",
+      "app_name": "http",
+      "app_version": "1.4.0",
+      "name": "POST",
+      "parameters": [
+        {
+          "name": "url",
+          "value": "$ENV_SLACK_WEBHOOK_URL"
+        },
+        {
+          "name": "method",
+          "value": "POST"
+        },
+        {
+          "name": "headers",
+          "value": "Content-Type: application/json"
+        },
+        {
+          "name": "body",
+          "value": "{\"channel\": \"$ENV_SLACK_CHANNEL\",\"text\": \"SOC ESCALATED \u2014 privesc on $exec.all_fields.agent.name (score $action_call_risk_engine.body.risk_score)\",\"blocks\": [{\"type\":\"header\",\"text\":{\"type\":\"plain_text\",\"text\":\":rotating_light: SOC ESCALATED\",\"emoji\":true}},{\"type\":\"section\",\"fields\":[{\"type\":\"mrkdwn\",\"text\":\"*Scenario:*\\nprivesc\"},{\"type\":\"mrkdwn\",\"text\":\"*Risk score:*\\n$action_call_risk_engine.body.risk_score / 100\"},{\"type\":\"mrkdwn\",\"text\":\"*Decision:*\\n$action_call_risk_engine.body.risk_decision\"},{\"type\":\"mrkdwn\",\"text\":\"*Agent:*\\n$exec.all_fields.agent.name\"},{\"type\":\"mrkdwn\",\"text\":\"*Rule:*\\n$exec.all_fields.rule.id (lvl $exec.all_fields.rule.level)\"},{\"type\":\"mrkdwn\",\"text\":\"*Environment:*\\n$ENV_SOC_ENVIRONMENT\"}]},{\"type\":\"section\",\"text\":{\"type\":\"mrkdwn\",\"text\":\"*IOC:* `$exec.all_fields.data.dstuser`\"}},{\"type\":\"actions\",\"elements\":[{\"type\":\"button\",\"text\":{\"type\":\"plain_text\",\"text\":\"Open TheHive case\",\"emoji\":true},\"url\":\"$ENV_THEHIVE_PUBLIC_URL/cases/$action_promote_to_case.body._id\"}]}]}"
+        },
+        {
+          "name": "verify",
+          "value": "false"
+        },
+        {
+          "name": "timeout",
+          "value": "5"
+        }
+      ],
+      "position": {
+        "x": 2000,
+        "y": 700
       }
     }
   ],
@@ -1003,6 +1040,83 @@
       "source_id": "action_get_wazuh_jwt",
       "destination_id": "action_active_response",
       "conditions": []
+    },
+    {
+      "source_id": "action_escalate",
+      "destination_id": "action_notify_slack_privesc",
+      "conditions": [
+        {
+          "source": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "$action_call_risk_engine.body.risk_decision",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "condition": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "=",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          },
+          "destination": {
+            "description": "",
+            "id": "",
+            "name": "",
+            "example": "",
+            "value": "escalated",
+            "multiline": false,
+            "multiselect": false,
+            "options": null,
+            "action_field": "",
+            "variant": "",
+            "required": false,
+            "configuration": false,
+            "tags": null,
+            "schema": {
+              "type": ""
+            },
+            "skip_multicheck": false,
+            "value_replace": null,
+            "unique_toggled": false,
+            "error": "",
+            "hidden": false
+          }
+        }
+      ]
     }
   ],
   "workflow_variables": []
