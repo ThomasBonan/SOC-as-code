@@ -47,6 +47,8 @@ spec:
             - pip
             - install
             - "flask==3.1.0"
+            - "yara-python==4.5.4"
+            - "requests==2.32.3"
             - "--target=/app/libs"
             - "--no-cache-dir"
             - "--quiet"
@@ -66,6 +68,20 @@ spec:
           env:
             - name: PYTHONPATH
               value: /app/libs
+            # Deep-triage (Phase 10 / C) : enrichissement Cortex/MISP côté moteur.
+            # URLs .svc internes (le pod ne résout pas apps.soc.lab). Clés depuis le secret.
+            - name: CORTEX_URL
+              value: "{{ soc_endpoints.cortex.url | default('http://cortex.soc-cortex.svc:9001') }}"
+            - name: CORTEX_APIKEY
+              valueFrom: { secretKeyRef: { name: soc-automation-worker-creds, key: CORTEX_API_KEY, optional: true } }
+            - name: MISP_URL
+              value: "{{ soc_endpoints.misp.url | default('https://misp.soc-core.svc:443') }}"
+            - name: MISP_APIKEY
+              valueFrom: { secretKeyRef: { name: soc-automation-worker-creds, key: MISP_API_KEY, optional: true } }
+            - name: ENRICH_VERIFY_TLS
+              value: "false"
+            - name: ENRICH_CACHE_TTL
+              value: "3600"
           ports:
             - name: http
               containerPort: {{ soc_risk_engine_service_port }}

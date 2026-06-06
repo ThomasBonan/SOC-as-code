@@ -42,7 +42,7 @@ spec:
       # K8s à effectuer un rolling restart du Deployment (sinon le ConfigMap est
       # mis à jour mais le pod conserve la version montée — bug observé 2026-05-17).
       annotations:
-        checksum/script: "495ae0d66e95aaffc56d9c6d44bcf98ed5f7714bbc7b3eedb56e17e661346db6"
+        checksum/script: "db53dba31166cfb4d5cb6a85634a8c3d78df0c34615d6f68856c95da9e3322c3"
         # SHA256 des règles YARA montées — recalculé par _bump-checksums.py. Un
         # changement de ruleset roll le pod (sinon le CM est mis à jour mais yara
         # reste compilé en mémoire — yara est compilé une seule fois au boot).
@@ -69,6 +69,7 @@ spec:
             - install
             - "flask==3.1.0"
             - "yara-python==4.5.4"
+            - "requests==2.32.3"
             - "--target=/app/libs"
             - "--no-cache-dir"
             - "--quiet"
@@ -88,6 +89,23 @@ spec:
           env:
             - name: PYTHONPATH
               value: /app/libs
+            # Deep-triage (Phase 10 / C) : le moteur enrichit lui-même via Cortex/MISP.
+            # URLs = services .svc INTERNES (le pod ne résout PAS apps.soc.lab — domaine
+            # Ingress/MetalLB hors CoreDNS ; vérifié 2026-06-06). Mêmes URLs que Shuffle.
+            # CORTEX_URL = base SANS /api (le moteur ajoute /api/...). Clés API depuis le
+            # secret soc-automation-worker-creds (même ns). Absents -> enrichment off (graceful).
+            - name: CORTEX_URL
+              value: "http://cortex.soc-cortex.svc:9001"
+            - name: CORTEX_APIKEY
+              valueFrom: { secretKeyRef: { name: soc-automation-worker-creds, key: CORTEX_API_KEY, optional: true } }
+            - name: MISP_URL
+              value: "https://misp.soc-core.svc:443"
+            - name: MISP_APIKEY
+              valueFrom: { secretKeyRef: { name: soc-automation-worker-creds, key: MISP_API_KEY, optional: true } }
+            - name: ENRICH_VERIFY_TLS
+              value: "false"          # CA interne soc-lab-ca (lab)
+            - name: ENRICH_CACHE_TTL
+              value: "3600"
           ports:
             - name: http
               containerPort: 8080

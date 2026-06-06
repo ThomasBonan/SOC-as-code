@@ -968,22 +968,31 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                      url="$ENV_RISK_ENGINE_URL/normalize",
                      headers="Content-Type: application/json", body=norm_body),
 
-        # Single parent → risk_engine. Pass the INTEGER behavior_score from /normalize
-        # (NOT the raw command_line — its embedded quotes/backslashes corrupt the JSON
-        # body Shuffle builds, which hangs the workflow; observed live 2026-05-31).
-        # No cortex/misp bare-values: those dims default to 0 (scenarios do deep enrichment).
-        # behavior_score (YARA/decode) from /normalize as a clean integer + MITRE
-        # ids/tactics as BARE values ([$expr] wrap — Shuffle injects the native
-        # rule.mitre arrays without corrupting the JSON; a quoted "$expr" holding a
-        # list throws SyntaxError in the Shuffle HTTP app, seen live 2026-06-02).
-        # The engine folds behavioral = max(yara behavior_score, mitre).
-        make_risk_engine_call("triage",
-                              extra_fields={"behavior_score": "$action_normalize.body.behavior_score"},
-                              bare_value_fields={
-                                  "mitre_ids":     "$exec.all_fields.rule.mitre.id",
-                                  "mitre_tactics": "$exec.all_fields.rule.mitre.tactic",
-                              },
-                              x=400, y=0),
+        # DEEP-TRIAGE (Phase 10 / C). Single parent → /triage (no fan-out → no join →
+        # deadlock-free by construction). The ENGINE enriches the IOCs itself (Cortex+
+        # MISP, cached, server-side) so EVERY event gets a reputation verdict — the
+        # fallback no longer scores blind. Only Shuffle-safe SCALARS from /normalize are
+        # sent (clean IOCs, never raw command_line). MITRE ids/tactics as BARE [$expr]
+        # values (Shuffle injects native arrays). The engine builds the evidence-weighted
+        # score: enrichment(Cortex/MISP) + content(YARA via behavior_score) + MITRE(capped)
+        # + evidence-grade rule → decision.
+        _http_action("action_triage", "POST", 400, 0,
+                     url="$ENV_RISK_ENGINE_URL/triage",
+                     headers="Content-Type: application/json",
+                     body=(json.dumps({
+                         "sha256":         "$action_normalize.body.sha256",
+                         "srcip":          "$action_normalize.body.srcip",
+                         "dstip":          "$action_normalize.body.dstip",
+                         "domain":         "$action_normalize.body.domain",
+                         "url":            "$action_normalize.body.url",
+                         "behavior_score": "$action_normalize.body.behavior_score",
+                         "rule_id":        "$exec.all_fields.rule.id",
+                         "wazuh_severity": "$exec.all_fields.rule.level",
+                         "agent_name":     "$exec.all_fields.agent.name",
+                         "asset_type":     "$exec.all_fields.agent.labels.type",
+                     }).rstrip("}") +
+                         ', "mitre_ids": [$exec.all_fields.rule.mitre.id]'
+                         ', "mitre_tactics": [$exec.all_fields.rule.mitre.tactic]}')),
 
         make_ignore_alert(),
         make_promote_to_case(),
@@ -1006,8 +1015,8 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         # (Shuffle-safe CSV scalars from /normalize). One tag each — the analyst
         # sees WHICH classic technique fired (e.g. mitre:T1053.005, tactic:Persistence).
         make_update_case_risk(x=1100, y=0, extra_tags=[
-            "mitre:$action_call_risk_engine.body.techniques_csv",
-            "tactic:$action_call_risk_engine.body.tactics_csv",
+            "mitre:$action_triage.body.techniques_csv",
+            "tactic:$action_triage.body.tactics_csv",
         ]),
         make_escalate(severity=4, tlp=3),
     ]
@@ -1015,29 +1024,29 @@ def build_alert_triage_workflow() -> dict[str, Any]:
     branches = [
         _branch("trigger_wazuh_webhook", "action_create_thehive_alert"),
         _branch("action_create_thehive_alert", "action_normalize"),
-        # risk_engine: SINGLE unconditional parent → no join, never deadlocks.
-        _branch("action_normalize", "action_call_risk_engine"),
+        # /triage: SINGLE unconditional parent (normalize) → no join, never deadlocks.
+        # Enrichment Cortex/MISP happens INSIDE /triage (server-side), not via Shuffle fan-out.
+        _branch("action_normalize", "action_triage"),
 
-        # decision branches — PROVEN single-source multi-conditional fan-out.
-        # NB: "reviewed" (score 15-50) does NOT create a case — the alert stays an
-        # alert for human triage. Only auto_promoted/contained/escalated promote.
-        # (Fixes low-score events like file-drops being promoted with no justification.)
-        _branch("action_call_risk_engine", "action_ignore_alert",    condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_closed"),
-        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="auto_promoted"),
-        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="contained"),
-        _branch("action_call_risk_engine", "action_promote_to_case", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+        # decision branches — single-source multi-conditional fan-out (proven pattern).
+        # "reviewed" (15-50) does NOT create a case (alert stays for human triage) ;
+        # auto_promoted/contained/escalated promote.
+        _branch("action_triage", "action_ignore_alert",    condition_value="$action_triage.body.risk_decision", expected="auto_closed"),
+        _branch("action_triage", "action_promote_to_case", condition_value="$action_triage.body.risk_decision", expected="auto_promoted"),
+        _branch("action_triage", "action_promote_to_case", condition_value="$action_triage.body.risk_decision", expected="contained"),
+        _branch("action_triage", "action_promote_to_case", condition_value="$action_triage.body.risk_decision", expected="escalated"),
 
         # post-promote: persist risk (single parent) + guarded observables (terminal leaves)
         _branch("action_promote_to_case", "action_update_case_risk"),
         _branch("action_promote_to_case", "action_add_obs_hash", condition_value="$action_normalize.body.has_sha256", expected="true"),
         _branch("action_promote_to_case", "action_add_obs_ip",   condition_value="$action_normalize.body.has_srcip", expected="true"),
         _branch("action_promote_to_case", "action_add_obs_cmd",  condition_value="$action_normalize.body.has_command", expected="true"),
-        _branch("action_update_case_risk", "action_escalate", condition_value="$action_call_risk_engine.body.risk_decision", expected="escalated"),
+        _branch("action_update_case_risk", "action_escalate", condition_value="$action_triage.body.risk_decision", expected="escalated"),
     ]
 
     return {
         "name": "SOC Alert Triage",
-        "description": "Generic fallback: Wazuh -> normalize -> risk engine (behavioral floor) -> TheHive (linear, deadlock-proof)",
+        "description": "Generic fallback (Phase 10): Wazuh -> normalize -> /triage (engine enriches Cortex/MISP + behavioral + evidence) -> TheHive (linear, deadlock-proof)",
         "start": "action_create_thehive_alert",
         "tags": ["soc", "triage", "fallback", "wazuh", "thehive"],
         "actions": actions,

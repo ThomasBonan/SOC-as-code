@@ -666,6 +666,184 @@ def _apply_scenario_multiplier(score: float, scenario: str | None) -> tuple[floa
     return round(adjusted, 2), mult
 
 
+# ── Deep-triage enrichment orchestration (Phase 10 / C) ─────────────────────────
+# The engine enriches IOCs ITSELF (Cortex + MISP), with a per-IOC TTL cache, so the
+# SOAR does a single /triage call (no conditional fan-out → no Shuffle deadlock) and
+# EVERY event's IOCs get a reputation verdict. Fully graceful: if creds/network are
+# absent (env unset or requests missing) enrichment is skipped (cortex=0/misp=False)
+# and /triage degrades to the same score /score would give without enrichment.
+import time
+
+try:
+    import requests as _requests
+except Exception:
+    _requests = None
+
+CORTEX_URL    = os.environ.get("CORTEX_URL", "").rstrip("/")
+CORTEX_APIKEY = os.environ.get("CORTEX_APIKEY", "")
+MISP_URL      = os.environ.get("MISP_URL", "").rstrip("/")
+MISP_APIKEY   = os.environ.get("MISP_APIKEY", "")
+CORTEX_HASH_ANALYZERS = [a for a in os.environ.get("CORTEX_HASH_ANALYZERS", "").split(",") if a.strip()]
+CORTEX_IP_ANALYZERS   = [a for a in os.environ.get("CORTEX_IP_ANALYZERS", "").split(",") if a.strip()]
+ENRICH_HTTP_TIMEOUT = int(os.environ.get("ENRICH_HTTP_TIMEOUT", "75"))
+ENRICH_CACHE_TTL    = int(os.environ.get("ENRICH_CACHE_TTL", "3600"))
+ENRICH_VERIFY_TLS   = os.environ.get("ENRICH_VERIFY_TLS", "false").lower() in ("1", "true", "yes")
+ENRICH_ENABLED      = bool(_requests and (CORTEX_URL or MISP_URL))
+
+_enrich_cache = {}  # ioc -> (expiry_epoch, {"cortex_level": int, "misp_hit": bool})
+
+
+def _cache_get(key):
+    v = _enrich_cache.get(key)
+    if v and v[0] > time.time():
+        return v[1]
+    return None
+
+
+def _cache_put(key, val):
+    _enrich_cache[key] = (time.time() + ENRICH_CACHE_TTL, val)
+    return val
+
+
+_CORTEX_CATALOG = None  # {dataType: [analyzer_id, ...]} discovered once from Cortex
+
+
+def _get_cortex_analyzers(dtype):
+    """Analyzer ids that accept this dataType. Prefer the env override
+    (CORTEX_HASH_ANALYZERS / CORTEX_IP_ANALYZERS); else auto-discover from the Cortex
+    catalog (GET /api/analyzer), so no analyzer UUID has to be injected. Cached."""
+    if dtype == "hash" and CORTEX_HASH_ANALYZERS:
+        return CORTEX_HASH_ANALYZERS
+    if dtype in ("ip", "domain", "url") and CORTEX_IP_ANALYZERS:
+        return CORTEX_IP_ANALYZERS
+    global _CORTEX_CATALOG
+    if _CORTEX_CATALOG is None:
+        _CORTEX_CATALOG = {}
+        if _requests and CORTEX_URL and CORTEX_APIKEY:
+            try:
+                r = _requests.get(CORTEX_URL + "/api/analyzer",
+                                  headers={"Authorization": "Bearer " + CORTEX_APIKEY},
+                                  timeout=ENRICH_HTTP_TIMEOUT, verify=ENRICH_VERIFY_TLS)
+                for a in (r.json() or []):
+                    if not isinstance(a, dict):
+                        continue
+                    aid = a.get("id") or a.get("_id") or a.get("analyzerDefinitionId")
+                    for dt in (a.get("dataTypeList") or a.get("dataType") or []):
+                        _CORTEX_CATALOG.setdefault(str(dt), [])
+                        if aid and aid not in _CORTEX_CATALOG[str(dt)]:
+                            _CORTEX_CATALOG[str(dt)].append(aid)
+                logger.info("Cortex analyzer catalog discovered: %s",
+                            {k: len(v) for k, v in _CORTEX_CATALOG.items()})
+            except Exception as exc:
+                logger.warning("Cortex analyzer discovery failed: %s", exc)
+    return _CORTEX_CATALOG.get(dtype, [])
+
+
+def _cortex_max_level_for(ioc, dtype):
+    """Run the Cortex analyzers for this dataType on one IOC, return max taxonomy
+    level 0-3. Error-tolerant: any failure → 0 (never breaks triage)."""
+    analyzers = _get_cortex_analyzers(dtype)
+    if not (_requests and CORTEX_URL and CORTEX_APIKEY and analyzers and ioc):
+        return 0
+    hdr = {"Authorization": "Bearer " + CORTEX_APIKEY, "Content-Type": "application/json"}
+    best = 0
+    for az in analyzers:
+        try:
+            run = _requests.post(CORTEX_URL + "/api/analyzer/" + az + "/run",
+                                 json={"data": ioc, "dataType": dtype, "tlp": 2, "message": "auto-triage"},
+                                 headers=hdr, timeout=ENRICH_HTTP_TIMEOUT, verify=ENRICH_VERIFY_TLS)
+            jid = (run.json() or {}).get("_id") or (run.json() or {}).get("id")
+            if not jid:
+                continue
+            rep = _requests.get(CORTEX_URL + "/api/job/" + jid + "/waitreport?atMost=60seconds",
+                                headers=hdr, timeout=ENRICH_HTTP_TIMEOUT, verify=ENRICH_VERIFY_TLS)
+            taxos = (((rep.json() or {}).get("report") or {}).get("summary") or {}).get("taxonomies") or []
+            for t in taxos:
+                if isinstance(t, dict):
+                    best = max(best, _taxonomy_level(t.get("level")))
+        except Exception as exc:
+            logger.warning("cortex %s lookup failed: %s", dtype, exc)
+    return best
+
+
+def _misp_hit_for(ioc):
+    if not (_requests and MISP_URL and MISP_APIKEY and ioc):
+        return False
+    try:
+        r = _requests.post(MISP_URL + "/attributes/restSearch",
+                           json={"value": ioc, "returnFormat": "json", "limit": 5},
+                           headers={"Authorization": MISP_APIKEY, "Content-Type": "application/json",
+                                    "Accept": "application/json"},
+                           timeout=ENRICH_HTTP_TIMEOUT, verify=ENRICH_VERIFY_TLS)
+        attrs = (((r.json() or {}).get("response") or {}).get("Attribute")) or []
+        return len(attrs) > 0
+    except Exception as exc:
+        logger.warning("misp search failed: %s", exc)
+        return False
+
+
+def _enrich_one(ioc, dtype):
+    """Cached per-IOC enrichment → {"cortex_level": 0-3, "misp_hit": bool}."""
+    if not ioc:
+        return {"cortex_level": 0, "misp_hit": False}
+    cached = _cache_get(ioc)
+    if cached is not None:
+        return cached
+    return _cache_put(ioc, {"cortex_level": _cortex_max_level_for(ioc, dtype),
+                            "misp_hit": _misp_hit_for(ioc)})
+
+
+def enrich_event(art):
+    """Aggregate Cortex max level (0-3) + MISP hit across all IOCs present in the
+    extracted-artifacts dict. Returns (cortex_max_level, misp_hit, enriched_iocs)."""
+    cortex, misp, seen = 0, False, []
+    plan = []
+    if art.get("sha256"):
+        plan.append((art["sha256"], "hash"))
+    for ipk in ("srcip", "dstip"):
+        if art.get(ipk):
+            plan.append((art[ipk], "ip"))
+    if art.get("domain"):
+        plan.append((art["domain"], "domain"))
+    if art.get("url"):
+        plan.append((art["url"], "url"))
+    for ioc, dt in plan:
+        v = _enrich_one(ioc, dt)
+        cortex = max(cortex, v["cortex_level"])
+        misp = misp or v["misp_hit"]
+        seen.append("%s:%s" % (dt, "hit" if (v["cortex_level"] or v["misp_hit"]) else "clean"))
+    return cortex, misp, seen
+
+
+def _s(v):
+    return v if isinstance(v, str) else ""
+
+
+def _extract_artifacts(fields):
+    """Universal artifact extraction from a Wazuh event (Phase 10). Returns every
+    analyzable artifact. Shared by /triage; /normalize keeps its own (Shuffle-safe)
+    extraction for backward compatibility."""
+    cl = _deep_get(fields, "data.win.eventdata.commandLine",
+                   "data.win.eventdata.CommandLine", "data.command")
+    cl = cl if isinstance(cl, str) else ""
+    decoded = _decode_powershell(cl)
+    urls = _extract_urls((cl + " " + decoded) if decoded else cl)
+    return {
+        "sha256":  _extract_sha256(fields),
+        "srcip":   _clean_ip(_deep_get(fields, "data.srcip", "data.win.eventdata.SourceIp", "data.win.eventdata.IpAddress")),
+        "dstip":   _clean_ip(_deep_get(fields, "data.dstip", "data.win.eventdata.DestinationIp", "data.dest_ip")),
+        "domain":  _clean_domain(_deep_get(fields, "data.win.eventdata.queryName", "data.dns.question.name",
+                                           "data.win.eventdata.DestinationHostname", "data.url")),
+        "url":     urls[0] if urls else "",
+        "dstuser": _s(_deep_get(fields, "data.dstuser", "data.win.eventdata.targetUserName",
+                                "data.win.eventdata.User", "data.win.eventdata.user")),
+        "file_path": _s(_deep_get(fields, "data.win.eventdata.targetFilename", "data.win.eventdata.TargetFilename",
+                                  "syscheck.path", "data.audit.file.name", "data.file")),
+        "command_line": cl,
+        "decoded": decoded,
+    }
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.route("/health", methods=["GET"])
@@ -972,6 +1150,102 @@ def analyze_file():
         "verdict":        verdict,
         "size_bytes":     len(raw),
         "truncated":      len(raw) >= MAX_ANALYZE_FILE_BYTES,
+        "policy_version": POLICY_VERSION,
+    }), 200
+
+
+@app.route("/triage", methods=["POST"])
+def triage():
+    """Deep-triage (Phase 10 / C): ONE call that analyzes an event end-to-end so the
+    SOAR never fans out (no Shuffle deadlock). Steps: extract every artifact →
+    enrich IOCs via Cortex+MISP (cached, server-side) → behavioral (YARA/decode) +
+    MITRE(capped) + evidence-grade rule → evidence-weighted score → decision.
+    Accepts {"all_fields": {...}} or the raw alert. Fully graceful: no creds/network
+    → enrichment skipped, falls back to the local (behavior+rule) score.
+    """
+    body = request.get_json(silent=True) or {}
+    fields = body.get("all_fields") if isinstance(body.get("all_fields"), dict) else body
+
+    art = _extract_artifacts(fields)
+    rule = fields.get("rule") if isinstance(fields.get("rule"), dict) else {}
+    agent = fields.get("agent") if isinstance(fields.get("agent"), dict) else {}
+    mitre = rule.get("mitre") if isinstance(rule.get("mitre"), dict) else {}
+
+    # DUAL-MODE: prefer clean SCALARS in the body (Shuffle-safe, from /normalize) over
+    # raw-field extraction. Raw all_fields sent through a Shuffle body can corrupt it
+    # (quotes/backslashes in command_line) — the recommended workflow is
+    # normalize → /triage(scalars). Direct all_fields (tests) still works via fallback.
+    def _scalar(key):
+        v = body.get(key)
+        return v.strip() if isinstance(v, str) and v.strip() and not v.strip().startswith("$") else ""
+    for _k in ("sha256", "srcip", "dstip", "domain", "url", "file_path"):
+        _sv = _scalar(_k)
+        if _sv:
+            art[_k] = _sv
+
+    rule_id = _scalar("rule_id") or rule.get("id")
+    _ws = body.get("wazuh_severity")
+    _ws_ok = _ws is not None and not (isinstance(_ws, str) and (not _ws.strip() or _ws.strip().startswith("$")))
+    wazuh_severity = max(1, _safe_int(_ws if _ws_ok else rule.get("level"), 1))
+    eg_score = _evidence_grade_score(rule_id)
+    mitre_ids = body.get("mitre_ids") if body.get("mitre_ids") is not None else mitre.get("id")
+    mitre_tactics = body.get("mitre_tactics") if body.get("mitre_tactics") is not None else mitre.get("tactic")
+    m_score, m_tech, m_tac = _mitre_score(mitre_ids, mitre_tactics)
+
+    # CONTENT evidence: prefer a precomputed behavior_score (clean int from /normalize),
+    # else compute locally from the command line.
+    _bs = body.get("behavior_score")
+    _bs_ok = _bs is not None and not (isinstance(_bs, str) and (not _bs.strip() or _bs.strip().startswith("$")))
+    if _bs_ok:
+        content = max(0, min(100, _safe_int(_bs, 0)))
+        beh = {"behavior_score": content, "yara_matches": [], "techniques": []}
+    elif BEHAVIOR_ENABLED:
+        beh = compute_behavior(art["command_line"])
+        content = beh["yara_score"]
+        if beh.get("encoded"):
+            content = max(content, ENCODED_PRESENT_SCORE)
+    else:
+        beh = {"behavior_score": 0, "yara_matches": [], "techniques": []}
+        content = 0
+
+    # IOC reputation (Cortex/MISP, cached, graceful).
+    cortex_level, misp_hit, enriched = enrich_event(art)
+
+    asset_type = _resolve_asset_type({"asset_type": _scalar("asset_type") or _deep_get(agent, "labels.type"),
+                                      "agent_name": _scalar("agent_name") or agent.get("name")})
+    frequency = 1
+    result = _compute(wazuh_severity, cortex_level, misp_hit, asset_type, frequency)
+    base_score = result["score"]
+    floor = _evidence_floor(max(content, eg_score), m_score)
+    final_score = round(max(base_score, float(floor)), 2)
+    decision = _decide(final_score)
+
+    techniques = sorted(set(beh.get("techniques", [])) | set(m_tech))
+    logger.info("triage agent=%s rule=%s decision=%s score=%.1f (cortex=%d misp=%s eg=%d "
+                "content=%d mitre=%d) iocs=%s",
+                agent.get("name", "?"), rule.get("id", "?"), decision, final_score,
+                cortex_level, misp_hit, eg_score, content, m_score, ",".join(enriched) or "-")
+    return jsonify({
+        "risk_score":      final_score,
+        "risk_decision":   decision,
+        "risk_score_base": base_score,
+        "behavior_floor":  floor,
+        "dimensions":      result["dimensions"],
+        "techniques_csv":  ",".join(techniques),
+        "tactics_csv":     ",".join(m_tac),
+        "enrichment": {
+            "enabled":          ENRICH_ENABLED,
+            "cortex_max_level": cortex_level,
+            "misp_hit":         misp_hit,
+            "iocs":             enriched,
+        },
+        "evidence": {
+            "content_score":  content,
+            "mitre_score":    m_score,
+            "evidence_grade": eg_score,
+        },
+        "artifacts": {k: art[k] for k in ("sha256", "srcip", "dstip", "domain", "url",
+                                          "file_path", "dstuser")},
         "policy_version": POLICY_VERSION,
     }), 200
 

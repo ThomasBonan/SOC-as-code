@@ -1,6 +1,6 @@
 {
   "name": "SOC Alert Triage",
-  "description": "Generic fallback: Wazuh -> normalize -> risk engine (behavioral floor) -> TheHive (linear, deadlock-proof)",
+  "description": "Generic fallback (Phase 10): Wazuh -> normalize -> /triage (engine enriches Cortex/MISP + behavioral + evidence) -> TheHive (linear, deadlock-proof)",
   "start": "action_create_thehive_alert",
   "tags": [
     "soc",
@@ -85,15 +85,15 @@
       }
     },
     {
-      "id": "action_call_risk_engine",
-      "label": "action_call_risk_engine",
+      "id": "action_triage",
+      "label": "action_triage",
       "app_name": "http",
       "app_version": "1.4.0",
       "name": "POST",
       "parameters": [
         {
           "name": "url",
-          "value": "$ENV_RISK_ENGINE_URL/score"
+          "value": "$ENV_RISK_ENGINE_URL/triage"
         },
         {
           "name": "method",
@@ -105,7 +105,7 @@
         },
         {
           "name": "body",
-          "value": "{\"case_id\": \"$action_create_thehive_alert.body._id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"rule_id\": \"$exec.all_fields.rule.id\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"scenario\": \"triage\", \"frequency\": 1, \"environment\": \"$ENV_SOC_ENVIRONMENT\", \"behavior_score\": \"$action_normalize.body.behavior_score\", \"mitre_ids\": [$exec.all_fields.rule.mitre.id], \"mitre_tactics\": [$exec.all_fields.rule.mitre.tactic]}"
+          "value": "{\"sha256\": \"$action_normalize.body.sha256\", \"srcip\": \"$action_normalize.body.srcip\", \"dstip\": \"$action_normalize.body.dstip\", \"domain\": \"$action_normalize.body.domain\", \"url\": \"$action_normalize.body.url\", \"behavior_score\": \"$action_normalize.body.behavior_score\", \"rule_id\": \"$exec.all_fields.rule.id\", \"wazuh_severity\": \"$exec.all_fields.rule.level\", \"agent_name\": \"$exec.all_fields.agent.name\", \"asset_type\": \"$exec.all_fields.agent.labels.type\", \"mitre_ids\": [$exec.all_fields.rule.mitre.id], \"mitre_tactics\": [$exec.all_fields.rule.mitre.tactic]}"
         },
         {
           "name": "verify",
@@ -327,7 +327,7 @@
         },
         {
           "name": "body",
-          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"mitre:$action_call_risk_engine.body.techniques_csv\",\"tactic:$action_call_risk_engine.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
+          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"mitre:$action_triage.body.techniques_csv\",\"tactic:$action_triage.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
         },
         {
           "name": "verify",
@@ -412,11 +412,11 @@
     },
     {
       "source_id": "action_normalize",
-      "destination_id": "action_call_risk_engine",
+      "destination_id": "action_triage",
       "conditions": []
     },
     {
-      "source_id": "action_call_risk_engine",
+      "source_id": "action_triage",
       "destination_id": "action_ignore_alert",
       "conditions": [
         {
@@ -425,7 +425,7 @@
             "id": "",
             "name": "",
             "example": "",
-            "value": "$action_call_risk_engine.body.risk_decision",
+            "value": "$action_triage.body.risk_decision",
             "multiline": false,
             "multiselect": false,
             "options": null,
@@ -493,7 +493,7 @@
       ]
     },
     {
-      "source_id": "action_call_risk_engine",
+      "source_id": "action_triage",
       "destination_id": "action_promote_to_case",
       "conditions": [
         {
@@ -502,7 +502,7 @@
             "id": "",
             "name": "",
             "example": "",
-            "value": "$action_call_risk_engine.body.risk_decision",
+            "value": "$action_triage.body.risk_decision",
             "multiline": false,
             "multiselect": false,
             "options": null,
@@ -570,7 +570,7 @@
       ]
     },
     {
-      "source_id": "action_call_risk_engine",
+      "source_id": "action_triage",
       "destination_id": "action_promote_to_case",
       "conditions": [
         {
@@ -579,7 +579,7 @@
             "id": "",
             "name": "",
             "example": "",
-            "value": "$action_call_risk_engine.body.risk_decision",
+            "value": "$action_triage.body.risk_decision",
             "multiline": false,
             "multiselect": false,
             "options": null,
@@ -647,7 +647,7 @@
       ]
     },
     {
-      "source_id": "action_call_risk_engine",
+      "source_id": "action_triage",
       "destination_id": "action_promote_to_case",
       "conditions": [
         {
@@ -656,7 +656,7 @@
             "id": "",
             "name": "",
             "example": "",
-            "value": "$action_call_risk_engine.body.risk_decision",
+            "value": "$action_triage.body.risk_decision",
             "multiline": false,
             "multiselect": false,
             "options": null,
@@ -969,7 +969,7 @@
             "id": "",
             "name": "",
             "example": "",
-            "value": "$action_call_risk_engine.body.risk_decision",
+            "value": "$action_triage.body.risk_decision",
             "multiline": false,
             "multiselect": false,
             "options": null,
