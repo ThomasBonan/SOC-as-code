@@ -293,5 +293,21 @@ results.append(check("evidence: rule curée 60 -> auto_promote 50",
 results.append(check("evidence: rule générique + tag -> capé 50",
                      ef(max(0, eg("92205")), 70), 50))
 
+# ── Phase 10 / D — plancher d'enrichissement (IOC malveillant confirmé = preuve) ──
+es = behavior._enrichment_score
+# 41) Cortex malicious(3) seul -> 75 (contained) : un IOC malveillant n'est plus dilué.
+results.append(check("enrich-floor: cortex malicious -> 75", es(3, False), 75))
+# 42) MISP hit seul -> 75 (contained).
+results.append(check("enrich-floor: misp hit -> 75", es(0, True), 75))
+# 43) Cortex malicious + MISP -> 90 (escalated, corroboré).
+results.append(check("enrich-floor: cortex+misp -> 90", es(3, True), 90))
+# 44) Cortex suspicious(2) -> 50 (auto_promote, pas de containment auto).
+results.append(check("enrich-floor: suspicious -> 50", es(2, False), 50))
+# 45) Rien -> 0 (pas de plancher).
+results.append(check("enrich-floor: clean -> 0", es(0, False), 0))
+# 46) Le plancher d'enrichissement passe par _evidence_floor (côté contenu) -> contained.
+results.append(check("enrich via evidence_floor -> contained",
+                     ef(es(3, False), 0), 75))
+
 print(f"\n{sum(results)}/{len(results)} PASS")
 exit(0 if all(results) else 1)

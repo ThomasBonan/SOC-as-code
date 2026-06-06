@@ -147,10 +147,9 @@ b9 = client.post("/triage", json=scalar_body).get_json()
 print("  /triage scalar:", b9["risk_decision"], "score", b9["risk_score"], "cortex", b9["enrichment"]["cortex_max_level"])
 check("/triage scalar: hash extrait du body", b9["artifacts"]["sha256"], "a" * 64)
 check("/triage scalar: cortex enrichi (hash malicious)", b9["enrichment"]["cortex_max_level"], 3)
-# NB: cortex=3 SEUL sur workstation -> 45.83 -> reviewed (formule 5-dim actuelle, idem
-# wf-malware sans multiplier). Surfacé (pas auto_closed). Atteindre 'contained' sur un
-# IOC malveillant seul = re-tuning des poids (Incrément D). Ici on valide : surfacé.
-check("/triage scalar: malicious surfacé (pas auto_closed)", b9["risk_decision"] != "auto_closed", True)
+# Phase 10 / D : le plancher d'enrichissement fait qu'un IOC malveillant SEUL (cortex=3)
+# atteint 'contained' (75), même dilué par la moyenne 5-dim. Finding corrigé.
+check("/triage scalar: hash malicious -> contained (enrichment floor)", b9["risk_decision"], "contained")
 
 print(f"\n{sum(results)}/{len(results)} PASS")
 exit(0 if all(results) else 1)

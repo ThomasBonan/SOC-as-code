@@ -330,3 +330,22 @@ def _evidence_floor(content_score, mitre_score):
     content_floor = behavior_floor(content_score)
     mitre_floor = min(behavior_floor(mitre_score), MITRE_TAG_FLOOR_CAP)
     return max(content_floor, mitre_floor)
+
+
+def _safe_int_min(v):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _enrichment_score(cortex_max_level, misp_hit):
+    """Phase 10 / D — confirmed-malicious IOC reputation as a CONTENT-grade evidence
+    score (so it isn't diluted below containment by the weighted average)."""
+    lvl = max(0, min(3, _safe_int_min(cortex_max_level)))
+    s = 75 if lvl >= 3 else (50 if lvl == 2 else 0)
+    if misp_hit:
+        s = max(s, 75)
+    if lvl >= 3 and misp_hit:
+        s = 90
+    return s

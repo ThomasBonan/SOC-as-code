@@ -630,6 +630,25 @@ data:
         return max(content_floor, mitre_floor)
 
 
+    def _enrichment_score(cortex_max_level, misp_hit):
+        """High-confidence IOC reputation → a CONTENT-grade evidence score (Phase 10 / D).
+        A confirmed-malicious analyzer/intel verdict IS strong evidence and must NOT be
+        diluted below containment by the weighted average (a single malicious hash on a
+        workstation otherwise lands ~46 = reviewed). Folded into the evidence floor:
+          Cortex malicious (3)            → 75 (contained)
+          MISP hit                        → 75 (contained)
+          Cortex malicious (3) AND MISP   → 90 (escalated — corroborated)
+          Cortex suspicious (2)           → 50 (auto_promoted)
+        The weighted 5-dim score still applies (max with the floor) — never lowered."""
+        lvl = max(0, min(3, _safe_int(cortex_max_level, 0)))
+        s = 75 if lvl >= 3 else (50 if lvl == 2 else 0)
+        if misp_hit:
+            s = max(s, 75)
+        if lvl >= 3 and misp_hit:
+            s = 90
+        return s
+
+
     # ── Scoring formula ───────────────────────────────────────────────────────────
     def _compute(wazuh_severity: int, cortex_max_level: int, misp_hit: bool,
                  asset_type: str, frequency: int) -> dict:
@@ -938,6 +957,9 @@ data:
         mitre_tactics    = body.get("mitre_tactics")
         # Evidence-grade rule (curated high-fidelity allowlist) → CONTENT-grade floor.
         eg_score         = _evidence_grade_score(body.get("rule_id"))
+        # Enrichment floor (Phase 10 / D): a confirmed-malicious Cortex/MISP verdict is
+        # CONTENT-grade evidence → must reach containment even when the weighted average dilutes it.
+        enr_score        = _enrichment_score(cortex_max_level, misp_hit)
 
         result   = _compute(wazuh_severity, cortex_max_level, misp_hit, asset_type, frequency)
         base_score = result["score"]
@@ -967,20 +989,20 @@ data:
                         "techniques": m_tech, "tactics": m_tac, "source": "normalize+mitre",
                         "yara_matches": body.get("yara_matches") if isinstance(body.get("yara_matches"), list) else []}
             # eg_score (curated rule) joins the CONTENT side — full range, like a YARA hit.
-            floor = _evidence_floor(max(_yara_bs, eg_score), m_score)
+            floor = _evidence_floor(max(_yara_bs, eg_score, enr_score), m_score)
         elif BEHAVIOR_ENABLED:
             behavior = compute_behavior(command_line, mitre_ids, mitre_tactics)
             behavior["evidence_grade"] = eg_score
             _content = behavior["yara_score"]
             if behavior.get("encoded"):
                 _content = max(_content, ENCODED_PRESENT_SCORE)
-            floor = _evidence_floor(max(_content, eg_score), behavior.get("mitre_score", 0))
+            floor = _evidence_floor(max(_content, eg_score, enr_score), behavior.get("mitre_score", 0))
         else:
             behavior = {"behavior_score": eg_score, "encoded": False, "yara_matches": [],
                         "techniques": [], "tactics": [], "mitre_score": 0,
                         "evidence_grade": eg_score, "decoded_preview": ""}
             # Even with YARA disabled, an evidence-grade rule (+ capped MITRE tag) still floors.
-            floor = _evidence_floor(eg_score, m_score)
+            floor = _evidence_floor(max(eg_score, enr_score), m_score)
         final_score = round(max(adj_score, float(floor)), 2)
         decision = _decide(final_score)
 
@@ -1242,9 +1264,10 @@ data:
         asset_type = _resolve_asset_type({"asset_type": _scalar("asset_type") or _deep_get(agent, "labels.type"),
                                           "agent_name": _scalar("agent_name") or agent.get("name")})
         frequency = 1
+        enr_score = _enrichment_score(cortex_level, misp_hit)
         result = _compute(wazuh_severity, cortex_level, misp_hit, asset_type, frequency)
         base_score = result["score"]
-        floor = _evidence_floor(max(content, eg_score), m_score)
+        floor = _evidence_floor(max(content, eg_score, enr_score), m_score)
         final_score = round(max(base_score, float(floor)), 2)
         decision = _decide(final_score)
 
