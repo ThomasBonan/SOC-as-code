@@ -1,0 +1,396 @@
+---
+# ════════════════════════════════════════════════════════════════════════════════
+# _import_scenario_workflow.yml — Importe UN workflow Shuffle de scénario
+# ════════════════════════════════════════════════════════════════════════════════
+#
+# Sous-fichier inclus depuis workflows.yml dans une boucle sur shuffle_scenarios.
+# NE PAS appeler directement — dépend de facts pré-calculés par workflows.yml.
+#
+# Input (fact attendu en entrée, set par include_tasks ... vars: ...):
+#   _sh_scenario: dict avec au moins {key, json, rule_ids, ar_command, description}
+#
+# Facts consommés (déjà set par workflows.yml avant la boucle):
+#   _sh_admin_apikey
+#   _sh_environment_id, _sh_environment_name
+#   _sh_http_app_id
+#   _sh_thehive_write_key, _sh_cortex_key, _sh_misp_key
+#   _sh_wazuh_b64auth
+#   _sh_cortex_analyzer_id, _sh_cortex_hash_analyzer_mb_id, _sh_cortex_hash_analyzer_circl_id
+#
+# Output (set en fin d'exécution dans _sh_scenario_results[<key>]):
+#   workflow_id, webhook_trigger_id, webhook_url, hash
+#
+# Idempotence: le caller gère la matrice (hash dans marker ConfigMap global).
+# Cette tâche POST sans vérifier l'existant — appel uniquement quand le caller
+# a décidé qu'un import est nécessaire.
+# ════════════════════════════════════════════════════════════════════════════════
+
+- name: "shuffle | Workflows scenario - read JSON template [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_json: "{{ lookup('file', role_path + '/files/workflows/' + _sh_scenario.json) | from_json }}"
+
+# ── Garde-fou anti-orphelins (2026-06-06) ───────────────────────────────────────
+# Chaque import POST crée un NOUVEAU workflow (nouvel ID) ; sans purge, les anciens
+# homonymes s'accumulent (vu : 11 copies/scenario → 46 workflows). On supprime via
+# l'API Shuffle tout workflow de MÊME NOM avant de réimporter → 1 seul par scenario.
+# (Le CM webhook_urls pointait déjà sur le bon ; ceci nettoie le clutter + évite
+# l'ambiguïté de routing. Cf. incident selftest malware 2026-06-06.)
+- name: "shuffle | Workflows scenario - [anti-orphan] lister workflows existants [{{ _sh_scenario.key }}]"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/workflows"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sh_admin_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_existing_wf
+  no_log: true
+
+- name: "shuffle | Workflows scenario - [anti-orphan] IDs homonymes à purger [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_dupe_ids: >-
+      {{
+        (_sh_existing_wf.json | default([]))
+        | selectattr('name', 'defined')
+        | selectattr('name', 'equalto', _sh_scn_json.name)
+        | map(attribute='id') | list
+      }}
+
+- name: "shuffle | Workflows scenario - [anti-orphan] supprimer les homonymes [{{ _sh_scenario.key }}]"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/workflows/{{ item }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ _sh_admin_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201, 204, 404]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  loop: "{{ _sh_dupe_ids | default([]) }}"
+  register: _sh_dupe_del
+  changed_when: _sh_dupe_ids | default([]) | length > 0
+  no_log: true
+
+- name: "shuffle | Workflows scenario - [anti-orphan] récap [{{ _sh_scenario.key }}]"
+  ansible.builtin.debug:
+    msg: "{{ _sh_dupe_ids | default([]) | length }} workflow(s) homonyme(s) purgé(s) avant réimport de {{ _sh_scn_json.name }}"
+  changed_when: false
+
+# ── Slack webhook URL (Phase 8, 2026-05-28) ─────────────────────────────────
+# Source: ansible/.secrets/slack.env → SOC_SLACK_WEBHOOK_URL=https://hooks.slack.com/...
+# Resolution chain at workflow import time:
+#   1. Read .secrets/slack.env (lookup file, silent if absent)
+#   2. Regex-extract SOC_SLACK_WEBHOOK_URL value
+#   3. If soc_slack.enabled=false OR soc_slack.dry_run=true OR value empty →
+#      inject empty string. The HTTP action will fail at runtime with "invalid URL"
+#      but the branch is terminal, so workflow continues unaffected (no Slack
+#      message posted). Effectively a "muted" mode.
+- name: "shuffle | Workflows scenario - read Slack env file (silent) [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_slack_env_raw: >-
+      {{
+        lookup('file', playbook_dir + '/../' + (soc_slack.env_file | default('.secrets/slack.env')),
+               errors='ignore') | default('', true)
+      }}
+  no_log: true
+
+- name: "shuffle | Workflows scenario - parse Slack webhook URL [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_slack_webhook_url: >-
+      {{
+        (_sh_slack_env_raw
+          | regex_search('(?m)^\s*' ~ (soc_slack.env_var | default('SOC_SLACK_WEBHOOK_URL'))
+                         ~ '\s*=\s*[\"'']?([^\"''\s#]+)[\"'']?',
+                         '\1')
+          | default([''], true)
+          | first
+          | default('', true)
+        )
+        if (soc_slack.enabled | default(false) | bool)
+           and not (soc_slack.dry_run | default(true) | bool)
+        else ''
+      }}
+  no_log: true
+
+- name: "shuffle | Workflows scenario - inject runtime variables into workflow [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_patched: >-
+      {{
+        _sh_scn_json | combine({
+          'description': (_sh_scn_json.description | default('SOC scenario workflow'))
+            ~ ' | scenario=' ~ _sh_scenario.key
+            ~ ' | env=' ~ (soc_environment | default('dev')),
+          'execution_environment': _sh_environment_id,
+          'actions': (
+            _sh_scn_json.actions
+            | default([])
+            | map('combine', {
+                'environment': _sh_environment_name,
+                'authentication_id': '',
+                'app_id': _sh_http_app_id | default(''),
+                'is_valid': (_sh_http_app_id | default('') | length > 0)
+              })
+            | list
+          ),
+          'triggers': (
+            _sh_scn_json.triggers
+            | default([])
+            | map('combine', {
+                'status': 'running',
+                'environment': _sh_environment_name
+              })
+            | list
+          ),
+          'workflow_variables': [
+            {'name': 'ENV_THEHIVE_URL',     'value': shuffle_thehive_url,              'description': 'TheHive internal URL (.svc)'},
+            {'name': 'ENV_THEHIVE_APIKEY',  'value': _sh_thehive_write_key,            'description': 'TheHive write API key'},
+            {'name': 'ENV_CORTEX_URL',      'value': shuffle_cortex_url,               'description': 'Cortex internal URL (.svc)'},
+            {'name': 'ENV_CORTEX_APIKEY',   'value': _sh_cortex_key,                   'description': 'Cortex API key'},
+            {'name': 'ENV_CORTEX_ANALYZER',           'value': _sh_cortex_analyzer_id,             'description': 'Cortex IP analyzer UUID (MaxMind)'},
+            {'name': 'ENV_CORTEX_HASH_ANALYZER_MB',   'value': _sh_cortex_hash_analyzer_mb_id,     'description': 'Cortex hash analyzer UUID (MalwareBazaar)'},
+            {'name': 'ENV_CORTEX_HASH_ANALYZER_CIRCL','value': _sh_cortex_hash_analyzer_circl_id,  'description': 'Cortex hash analyzer UUID (CIRCL)'},
+            {'name': 'ENV_MISP_URL',        'value': shuffle_misp_url,                 'description': 'MISP internal URL (.svc)'},
+            {'name': 'ENV_MISP_APIKEY',     'value': _sh_misp_key,                     'description': 'MISP API key'},
+            {'name': 'ENV_WAZUH_API_URL',   'value': shuffle_wazuh_api_url,            'description': 'Wazuh API internal URL (port 55000)'},
+            {'name': 'ENV_WAZUH_B64AUTH',   'value': _sh_wazuh_b64auth,                'description': 'Wazuh basic auth (b64)'},
+            {'name': 'ENV_RISK_ENGINE_URL', 'value': shuffle_risk_engine_url,          'description': 'Risk Engine HTTP service'},
+            {'name': 'ENV_SOC_ENVIRONMENT', 'value': soc_environment | default('dev'), 'description': 'SOC environment'},
+            {'name': 'ENV_SCENARIO',        'value': _sh_scenario.key,                 'description': 'Scenario identifier (passed to risk engine)'},
+            {'name': 'ENV_AR_COMMAND',      'value': _sh_scenario.ar_command | default(''), 'description': 'Active Response command name for this scenario'},
+            {'name': 'ENV_SLACK_WEBHOOK_URL','value': _sh_slack_webhook_url | default(''),  'description': 'Slack incoming webhook URL (empty when dry_run or disabled)'},
+            {'name': 'ENV_SLACK_CHANNEL',    'value': soc_slack.channel | default('alertes-soc'), 'description': 'Slack channel name (cosmetic, displayed in Block Kit)'},
+            {'name': 'ENV_THEHIVE_PUBLIC_URL','value': 'https://thehive.' ~ (apps_domain | default('apps.soc.lab')), 'description': 'TheHive public Ingress URL (for Slack action buttons)'}
+          ]
+        }, recursive=True)
+      }}
+  no_log: true
+
+- name: "shuffle | Workflows scenario - POST workflow [{{ _sh_scenario.key }}]"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/workflows"
+    method: POST
+    body_format: json
+    headers:
+      Authorization: "Bearer {{ _sh_admin_apikey }}"
+    body: "{{ _sh_scn_patched }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_scn_import
+  no_log: true
+
+- name: "shuffle | Workflows scenario - capture workflow id [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_workflow_id: "{{ _sh_scn_import.json.id }}"
+
+- name: "shuffle | Workflows scenario - read workflow details after POST [{{ _sh_scenario.key }}]"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/workflows/{{ _sh_scn_workflow_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sh_admin_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_scn_detail
+
+- name: "shuffle | Workflows scenario - reactivate trigger + force env [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_reactivated: >-
+      {{
+        _sh_scn_detail.json | combine({
+          'execution_environment': _sh_environment_id,
+          'actions': (
+            _sh_scn_detail.json.actions
+            | default([])
+            | map('combine', {
+                'environment': _sh_environment_name,
+                'authentication_id': '',
+                'app_id': _sh_http_app_id | default(''),
+                'is_valid': (_sh_http_app_id | default('') | length > 0)
+              })
+            | list
+          ),
+          'triggers': (
+            _sh_scn_detail.json.triggers
+            | default([])
+            | map('combine', {
+                'status': 'running',
+                'environment': _sh_environment_name
+              })
+            | list
+          )
+        }, recursive=True)
+      }}
+
+- name: "shuffle | Workflows scenario - update workflow (running trigger) [{{ _sh_scenario.key }}]"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/workflows"
+    method: POST
+    body_format: json
+    headers:
+      Authorization: "Bearer {{ _sh_admin_apikey }}"
+    body: "{{ _sh_scn_reactivated }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200, 201]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_scn_reimport
+  no_log: true
+
+- name: "shuffle | Workflows scenario - refresh workflow details [{{ _sh_scenario.key }}]"
+  ansible.builtin.uri:
+    url: "{{ shuffle_api_url }}/api/v1/workflows/{{ _sh_scn_workflow_id }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ _sh_admin_apikey }}"
+    validate_certs: "{{ shuffle_validate_certs }}"
+    status_code: [200]
+    timeout: "{{ shuffle_http_timeout | int }}"
+  register: _sh_scn_detail
+
+- name: "shuffle | Workflows scenario - build OpenSearch repair payload [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_indexed: >-
+      {{
+        _sh_scn_detail.json | combine({
+          'execution_environment': _sh_environment_id,
+          'actions': (
+            _sh_scn_detail.json.actions
+            | default([])
+            | map('combine', {
+                'environment': _sh_environment_name,
+                'authentication_id': '',
+                'app_id': _sh_http_app_id | default(''),
+                'is_valid': (_sh_http_app_id | default('') | length > 0)
+              })
+            | list
+          ),
+          'triggers': (
+            _sh_scn_detail.json.triggers
+            | default([])
+            | map('combine', {
+                'status': 'running',
+                'environment': _sh_environment_name
+              })
+            | list
+          )
+        }, recursive=True)
+      }}
+
+- name: "shuffle | Workflows scenario - repair indexed workflow in OpenSearch [{{ _sh_scenario.key }}]"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - "{{ shuffle_kubeconfig_path }}"
+      - exec
+      - -i
+      - -n
+      - "{{ shuffle_namespace }}"
+      - shuffle-opensearch-master-0
+      - --
+      - curl
+      - -sf
+      - -X
+      - PUT
+      - "http://localhost:9200/workflow-000001/_doc/{{ _sh_scn_workflow_id }}"
+      - -H
+      - "Content-Type: application/json"
+      - --data-binary
+      - "@-"
+    stdin: "{{ _sh_scn_indexed | to_json }}"
+  register: _sh_scn_idx_repair
+  changed_when: (_sh_scn_idx_repair.rc | default(1)) == 0
+
+- name: "shuffle | Workflows scenario - extract webhook trigger id [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_webhook_triggers: >-
+      {{
+        _sh_scn_detail.json.triggers
+        | default([])
+        | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+        | list
+      }}
+    _sh_scn_webhook_trigger_id: >-
+      {{
+        (
+          _sh_scn_detail.json.triggers
+          | default([])
+          | selectattr('trigger_type', 'equalto', 'WEBHOOK')
+          | list
+          | first
+        ).id | default('')
+      }}
+    _sh_scn_start_action_id: >-
+      {{
+        (_sh_scn_detail.json.start | default(''))
+        if (_sh_scn_detail.json.start | default('') | length > 0)
+        else (
+          (_sh_scn_detail.json.actions | default([]) | first | default({})).id | default('')
+        )
+      }}
+
+- name: "shuffle | Workflows scenario - assert webhook trigger exists [{{ _sh_scenario.key }}]"
+  ansible.builtin.assert:
+    that:
+      - _sh_scn_webhook_triggers | length > 0
+      - _sh_scn_webhook_trigger_id | length > 0
+      - _sh_scn_start_action_id | length > 0
+    fail_msg: >-
+      Scenario {{ _sh_scenario.key }} workflow missing webhook trigger or start action.
+      triggers={{ _sh_scn_webhook_triggers | length }}
+      trigger_id={{ _sh_scn_webhook_trigger_id }}
+      start_action={{ _sh_scn_start_action_id }}
+
+- name: "shuffle | Workflows scenario - register OpenSearch hook [{{ _sh_scenario.key }}]"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -sf -X PUT "http://localhost:9200/hooks/_doc/{{ _sh_scn_webhook_trigger_id }}"
+    -H "Content-Type: application/json"
+    -d '{"id":"{{ _sh_scn_webhook_trigger_id }}","workflow_id":"{{ _sh_scn_workflow_id }}","info":{"name":"Wazuh {{ _sh_scenario.key }} Webhook","url":"/api/v1/hooks/webhook_{{ _sh_scn_webhook_trigger_id }}","type":"webhook"},"type":"webhook","status":"running","start":"{{ _sh_scn_start_action_id }}","workflows":["{{ _sh_scn_workflow_id }}"],"running_environment":"{{ _sh_environment_name }}","environment":"{{ _sh_environment_name }}","org_id":"{{ _sh_scn_import.json.org_id | default('') }}"}'
+  register: _sh_scn_hook_register
+  changed_when: _sh_scn_hook_register.rc == 0
+  failed_when: false
+
+- name: "shuffle | Workflows scenario - verify hook registration [{{ _sh_scenario.key }}]"
+  ansible.builtin.command: >
+    kubectl --kubeconfig {{ shuffle_kubeconfig_path }}
+    exec -n {{ shuffle_namespace }} shuffle-opensearch-master-0 --
+    curl -sf "http://localhost:9200/hooks/_doc/{{ _sh_scn_webhook_trigger_id }}"
+  register: _sh_scn_hook_verify
+  changed_when: false
+  failed_when: >-
+    _sh_scn_hook_verify.rc != 0
+    or '"found":true' not in _sh_scn_hook_verify.stdout
+
+- name: "shuffle | Workflows scenario - build webhook URL [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scn_webhook_url: >-
+      {{ shuffle_internal_url }}/api/v1/hooks/webhook_{{ _sh_scn_webhook_trigger_id }}
+
+- name: "shuffle | Workflows scenario - append result to accumulator [{{ _sh_scenario.key }}]"
+  ansible.builtin.set_fact:
+    _sh_scenario_results: >-
+      {{
+        (_sh_scenario_results | default({})) | combine({
+          _sh_scenario.key: {
+            'workflow_id':        _sh_scn_workflow_id,
+            'webhook_trigger_id': _sh_scn_webhook_trigger_id,
+            'webhook_url':        _sh_scn_webhook_url | trim,
+            'hash':               _sh_scenario_hashes[_sh_scenario.key],
+            'rule_ids':           _sh_scenario.rule_ids,
+            'ar_command':         _sh_scenario.ar_command | default(''),
+            'description':        _sh_scenario.description | default('')
+          }
+        })
+      }}
+
+- name: "shuffle | Workflows scenario - summary [{{ _sh_scenario.key }}]"
+  ansible.builtin.debug:
+    msg: >-
+      Scenario {{ _sh_scenario.key }} imported:
+      workflow_id={{ _sh_scn_workflow_id }},
+      trigger_id={{ _sh_scn_webhook_trigger_id }},
+      url={{ _sh_scn_webhook_url | trim }},
+      ar_command={{ _sh_scenario.ar_command | default('(none)') }}
