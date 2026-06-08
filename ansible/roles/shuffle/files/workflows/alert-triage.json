@@ -327,7 +327,7 @@
         },
         {
           "name": "body",
-          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_call_risk_engine.body.risk_decision\",\"mitre:$action_triage.body.techniques_csv\",\"tactic:$action_triage.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_call_risk_engine.body.risk_score},\"risk_decision\":{\"string\":\"$action_call_risk_engine.body.risk_decision\"}}}"
+          "value": "{\"tags\":[\"source:wazuh\",\"risk_engine:processed\",\"risk_decision:$action_triage.body.risk_decision\",\"mitre:$action_triage.body.techniques_csv\",\"tactic:$action_triage.body.tactics_csv\"],\"customFields\":{\"risk_score_v2\":{\"float\":$action_triage.body.risk_score},\"risk_decision\":{\"string\":\"$action_triage.body.risk_decision\"}}}"
         },
         {
           "name": "verify",

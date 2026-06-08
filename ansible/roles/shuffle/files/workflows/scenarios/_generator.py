@@ -252,7 +252,8 @@ def make_escalate(severity: int = 4, tlp: int = 3,
 
 
 def make_update_case_risk(x: int = 1100, y: int = 150,
-                          extra_tags: list[str] | None = None) -> dict[str, Any]:
+                          extra_tags: list[str] | None = None,
+                          score_action: str = "action_call_risk_engine") -> dict[str, Any]:
     """
     Persist risk_score_v2 + risk_decision custom fields in TheHive case.
     Parity with alert-triage workflow. Without this action, the case has no
@@ -264,23 +265,31 @@ def make_update_case_risk(x: int = 1100, y: int = 150,
     Used by the alert-triage workflow to surface the behavioral verdict
     (MITRE techniques / tactics) on the case. Scenarios pass nothing.
 
+    `score_action` is the action_id whose `.body.risk_score`/`.risk_decision`
+    carry the verdict. Scenarios call /score via `action_call_risk_engine` (the
+    default). The alert-triage workflow (Phase 10) scores via `action_triage`
+    (/triage) and MUST pass score_action="action_triage" — otherwise the field
+    refs point at a non-existent node, never resolve, and the case shows NO
+    risk_score (live bug 2026-06-08 on the first windows_defender case).
+
     NOTE: The custom field `risk_score_v2` uses `{"float": <value>}` envelope
     (TheHive 5 typed custom field input format). `risk_decision` uses `{"string": ...}`.
     Both fields must be pre-created (handled by 190-soc-risk-engine scoring_model).
     """
     headers = "Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json"
     # Build the body as a raw string (not via json.dumps) because the field
-    # values contain Shuffle variable references like `$action_call_risk_engine.body.risk_score`
+    # values contain Shuffle variable references like `$<score_action>.body.risk_score`
     # which must remain unquoted-numeric in the JSON for TheHive to accept it as float.
+    sa = score_action
     tags = ['"source:wazuh"', '"risk_engine:processed"',
-            '"risk_decision:$action_call_risk_engine.body.risk_decision"']
+            '"risk_decision:$' + sa + '.body.risk_decision"']
     for t in (extra_tags or []):
         tags.append('"' + t + '"')
     body = (
         '{"tags":[' + ",".join(tags) + '],'
         '"customFields":{'
-        '"risk_score_v2":{"float":$action_call_risk_engine.body.risk_score},'
-        '"risk_decision":{"string":"$action_call_risk_engine.body.risk_decision"}'
+        '"risk_score_v2":{"float":$' + sa + '.body.risk_score},'
+        '"risk_decision":{"string":"$' + sa + '.body.risk_decision"}'
         '}}'
     )
     return _http_action("action_update_case_risk", "PATCH", x, y,
@@ -1014,7 +1023,7 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         # Surface the behavioral verdict on the case: MITRE techniques + tactics
         # (Shuffle-safe CSV scalars from /normalize). One tag each — the analyst
         # sees WHICH classic technique fired (e.g. mitre:T1053.005, tactic:Persistence).
-        make_update_case_risk(x=1100, y=0, extra_tags=[
+        make_update_case_risk(x=1100, y=0, score_action="action_triage", extra_tags=[
             "mitre:$action_triage.body.techniques_csv",
             "tactic:$action_triage.body.tactics_csv",
         ]),
