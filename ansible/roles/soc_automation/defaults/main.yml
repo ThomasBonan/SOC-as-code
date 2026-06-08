@@ -39,12 +39,26 @@ soc_automation_wazuh_webhook_enable_fallback: false
 #   - sysmon_eid11_detections : FileCreate (dropper — exécutable/script déposé, ex.
 #                               "PowerShell created an executable in Windows root").
 #                               Le fichier est ensuite catégorisé par hash puis contenu.
+#   - windows_defender        : canal Defender NATIF (EventID 5001/5012… → rules built-in
+#                               621xx). Indispensable quand Defender est désactivé via
+#                               l'UI (pas de command_line Sysmon → la rule evidence-grade
+#                               100212 ne matche pas). Les rule_ids de SABOTAGE (62152 RTP
+#                               off, 62157/62159 scan off, 62153/62154 config changée) sont
+#                               enregistrés evidence-grade (evidence-rules.json) → plancher
+#                               contained. Les events bénins (scan terminé, MAJ signatures,
+#                               RTP réactivée) → score natif ~0 → auto_close, pas de bruit
+#                               TheHive. Disjoint des groupes scenarios + sysmon → pas de
+#                               double-dispatch. VOLUME : route TOUT le canal (≥ min_level)
+#                               vers Shuffle ; monter min_level si la flotte Defender est
+#                               bavarde (workers Shuffle 1.4 concurrents → ABORTED).
 soc_automation_wazuh_behavior_routing:
   enabled: true
   routes:
     - group:     "sysmon_eid1_detections"
       min_level: 3
     - group:     "sysmon_eid11_detections"
+      min_level: 3
+    - group:     "windows_defender"
       min_level: 3
   # Rétro-compat : si `routes` est absent (override d'env ancien), ces scalaires
   # synthétisent une route unique EID1.

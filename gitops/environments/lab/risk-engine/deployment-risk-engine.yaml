@@ -53,7 +53,7 @@ spec:
         checksum/mitre: "f962a18ef143ca927f73fc2286cb13c57130119a547b98df1a4070d2bf05b859"
         # SHA256 du registre evidence-grade monté — recalculé par _bump-checksums.py.
         # Chargé une fois au boot → un changement doit rouler le pod.
-        checksum/evidence: "74ac17202569e3fcd09ca01fae28c35a3216b106f914c872b3545ac3d02102a3"
+        checksum/evidence: "79869f9fd147ce8638b14e91750ab81019b3fe823d79bebf2da9acf69ae5c365"
     spec:
       securityContext:
         runAsNonRoot: true

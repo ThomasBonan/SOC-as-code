@@ -1,6 +1,6 @@
 {
-  "version": "1.0-2026-06-03",
-  "description": "Evidence-grade rule registry (Phase 10 / B). Maps a Wazuh rule_id to a behavioral severity (0-100) for rules whose DETECTION LOGIC is itself high-fidelity evidence (field-aware, low false-positive) — not a vague MITRE tag. Folded into _evidence_floor on the CONTENT side (full floor range), so a confirmed high-fidelity detection can reach contained/escalated even with NO enrichable IOC (e.g. native 'event log cleared'). This is the curated allowlist (Q1): only rule_ids listed here are trusted to score on their own. Generic rules + bare MITRE tags stay capped at auto_promote. Source of truth; mirrored to gitops/.../configmap-evidence-rules.yaml. Rule_ids 100200-100202 + 100210-100217 are deployed by 180-soc-automation (soc_sysmon_hacktools.xml + soc_evidence_rules.xml).",
+  "version": "1.1-2026-06-08",
+  "description": "Evidence-grade rule registry (Phase 10 / B + Defender native tamper). Maps a Wazuh rule_id to a behavioral severity (0-100) for rules whose DETECTION LOGIC is itself high-fidelity evidence (field-aware, low false-positive) — not a vague MITRE tag. Folded into _evidence_floor on the CONTENT side (full floor range), so a confirmed high-fidelity detection can reach contained/escalated even with NO enrichable IOC (e.g. native 'event log cleared'). This is the curated allowlist (Q1): only rule_ids listed here are trusted to score on their own. Generic rules + bare MITRE tags stay capped at auto_promote. Source of truth; mirrored to gitops/.../configmap-evidence-rules.yaml. Rule_ids 100200-100202 + 100210-100217 are deployed by 180-soc-automation (soc_sysmon_hacktools.xml + soc_evidence_rules.xml). Rule_ids 621xx are Wazuh BUILT-IN Windows Defender tamper events (T1562.001, 0600-win-wdefender_rules.xml) routed via the `windows_defender` behavior route — they fire when Defender is disabled through the GUI (native EventID 5001), where no Sysmon command_line exists for 100212 to match.",
   "default": 0,
   "rules": {
     "100200": 95,
@@ -13,6 +13,11 @@
     "100214": 90,
     "100215": 95,
     "100216": 75,
-    "100217": 60
+    "100217": 60,
+    "62152": 85,
+    "62157": 85,
+    "62159": 85,
+    "62153": 60,
+    "62154": 60
   }
 }

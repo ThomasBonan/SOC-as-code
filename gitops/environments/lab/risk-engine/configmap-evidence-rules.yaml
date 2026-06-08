@@ -24,8 +24,8 @@ metadata:
 data:
   evidence-rules.json: |
     {
-      "version": "1.0-2026-06-03",
-      "description": "Evidence-grade rule registry (Phase 10 / B). rule_id -> severity (0-100). Folded into _evidence_floor on the CONTENT side (full range): a curated high-fidelity rule can reach contained/escalated with NO enrichable IOC. Generic rules + bare MITRE tags stay capped at auto_promote. Mirrors ansible/roles/soc_risk_engine/files/evidence-rules.json.",
+      "version": "1.1-2026-06-08",
+      "description": "Evidence-grade rule registry (Phase 10 / B + Defender native tamper). rule_id -> severity (0-100). Folded into _evidence_floor on the CONTENT side (full range): a curated high-fidelity rule can reach contained/escalated with NO enrichable IOC. Generic rules + bare MITRE tags stay capped at auto_promote. Rule_ids 621xx are Wazuh built-in Windows Defender tamper events (T1562.001) routed via the `windows_defender` behavior route (native EventID 5001 — GUI disable, no Sysmon command_line). Mirrors ansible/roles/soc_risk_engine/files/evidence-rules.json.",
       "default": 0,
       "rules": {
         "100200": 95,
@@ -38,6 +38,11 @@ data:
         "100214": 90,
         "100215": 95,
         "100216": 75,
-        "100217": 60
+        "100217": 60,
+        "62152": 85,
+        "62157": 85,
+        "62159": 85,
+        "62153": 60,
+        "62154": 60
       }
     }
