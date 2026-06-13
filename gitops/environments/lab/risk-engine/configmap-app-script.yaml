@@ -732,7 +732,7 @@ data:
     MISP_APIKEY   = os.environ.get("MISP_APIKEY", "")
     CORTEX_HASH_ANALYZERS = [a for a in os.environ.get("CORTEX_HASH_ANALYZERS", "").split(",") if a.strip()]
     CORTEX_IP_ANALYZERS   = [a for a in os.environ.get("CORTEX_IP_ANALYZERS", "").split(",") if a.strip()]
-    ENRICH_HTTP_TIMEOUT = int(os.environ.get("ENRICH_HTTP_TIMEOUT", "75"))
+    ENRICH_HTTP_TIMEOUT = int(os.environ.get("ENRICH_HTTP_TIMEOUT", "30"))
     ENRICH_CACHE_TTL    = int(os.environ.get("ENRICH_CACHE_TTL", "3600"))
     ENRICH_VERIFY_TLS   = os.environ.get("ENRICH_VERIFY_TLS", "false").lower() in ("1", "true", "yes")
     ENRICH_ENABLED      = bool(_requests and (CORTEX_URL or MISP_URL))
@@ -802,7 +802,7 @@ data:
                 jid = (run.json() or {}).get("_id") or (run.json() or {}).get("id")
                 if not jid:
                     continue
-                rep = _requests.get(CORTEX_URL + "/api/job/" + jid + "/waitreport?atMost=60seconds",
+                rep = _requests.get(CORTEX_URL + "/api/job/" + jid + "/waitreport?atMost=25seconds",
                                     headers=hdr, timeout=ENRICH_HTTP_TIMEOUT, verify=ENRICH_VERIFY_TLS)
                 taxos = (((rep.json() or {}).get("report") or {}).get("summary") or {}).get("taxonomies") or []
                 for t in taxos:

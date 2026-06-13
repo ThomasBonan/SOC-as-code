@@ -1004,6 +1004,18 @@ def build_alert_triage_workflow() -> dict[str, Any]:
                          ', "mitre_tactics": [$exec.all_fields.rule.mitre.tactic]}')),
 
         make_ignore_alert(),
+        # "reviewed" (15-50): score visible on alert, no case. Analyst triages manually.
+        _http_action("action_update_alert_reviewed", "PATCH", 800, 300,
+                     url="$ENV_THEHIVE_URL/api/v1/alert/$action_create_thehive_alert.body._id",
+                     headers="Authorization: Bearer $ENV_THEHIVE_APIKEY\nContent-Type: application/json",
+                     body=(
+                         '{"addTags":["risk_engine:processed",'
+                         '"risk_decision:$action_triage.body.risk_decision",'
+                         '"mitre:$action_triage.body.techniques_csv",'
+                         '"tactic:$action_triage.body.tactics_csv"],'
+                         '"customFields":{"risk_score_v2":{"float":$action_triage.body.risk_score},'
+                         '"risk_decision":{"string":"$action_triage.body.risk_decision"}}}'
+                     )),
         make_promote_to_case(),
         make_add_case_observable("$action_normalize.body.sha256", dtype="hash",
                                  action_id="action_add_obs_hash", x=1300, y=-200),
@@ -1038,12 +1050,13 @@ def build_alert_triage_workflow() -> dict[str, Any]:
         _branch("action_normalize", "action_triage"),
 
         # decision branches — single-source multi-conditional fan-out (proven pattern).
-        # "reviewed" (15-50) does NOT create a case (alert stays for human triage) ;
-        # auto_promoted/contained/escalated promote.
-        _branch("action_triage", "action_ignore_alert",    condition_value="$action_triage.body.risk_decision", expected="auto_closed"),
-        _branch("action_triage", "action_promote_to_case", condition_value="$action_triage.body.risk_decision", expected="auto_promoted"),
-        _branch("action_triage", "action_promote_to_case", condition_value="$action_triage.body.risk_decision", expected="contained"),
-        _branch("action_triage", "action_promote_to_case", condition_value="$action_triage.body.risk_decision", expected="escalated"),
+        # auto_closed (<15) → ignore; reviewed (15-50) → update alert score, no case;
+        # auto_promoted/contained/escalated → promote to case.
+        _branch("action_triage", "action_ignore_alert",          condition_value="$action_triage.body.risk_decision", expected="auto_closed"),
+        _branch("action_triage", "action_update_alert_reviewed", condition_value="$action_triage.body.risk_decision", expected="reviewed"),
+        _branch("action_triage", "action_promote_to_case",       condition_value="$action_triage.body.risk_decision", expected="auto_promoted"),
+        _branch("action_triage", "action_promote_to_case",       condition_value="$action_triage.body.risk_decision", expected="contained"),
+        _branch("action_triage", "action_promote_to_case",       condition_value="$action_triage.body.risk_decision", expected="escalated"),
 
         # post-promote: persist risk (single parent) + guarded observables (terminal leaves)
         _branch("action_promote_to_case", "action_update_case_risk"),
